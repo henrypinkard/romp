@@ -122,6 +122,15 @@ class ViewBuilder(unittest.TestCase):
         # The provisional card reads the PERSISTED message caption ('<segid>#p'), not this directly; the
         # gist-specific tests write that caption to drive the card's "Analyzing: …" text.
         jd.gist_llm = lambda p: ""
+        # the model-health latch (jd._CALL_HEALTH) is process-global and shared by every module that loads
+        # the judge under the name romp_judge: the auto-nudge tests below each make a haiku call that fails
+        # (nothing stubs the judge's CLI subprocess, and in a test run it exits without output), and left in
+        # place those failures carried the model past DISTILL_FAIL_CAP for the rest of the run, so
+        # test_judge's Distiller give-up then blamed the haiku model instead of naming the generic cause
+        # (2026-09-08). Snapshot here, put back in tearDown.
+        with jd._health_lock:
+            self._health = (set(jd._CALL_HEALTH["degraded"]), jd._CALL_HEALTH["recovered"],
+                            {m: dict(s) for m, s in jd._CALL_HEALTH["stats"].items()})
         km._autonudge_cache.clear()
         km._goals_snap_owned.clear()                   # the memo tests assume no punch state or user-write
         km._user_goal_write.pop(SID, None)             # mark left by another test (both process-global)
@@ -164,6 +173,12 @@ class ViewBuilder(unittest.TestCase):
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
          km.NAMES, km._tmux_sessions, km._GLOBAL_CLAUDE_MD, jd.gist_llm) = self.saved
+        with jd._health_lock:
+            jd._CALL_HEALTH["degraded"].clear()
+            jd._CALL_HEALTH["degraded"].update(self._health[0])
+            jd._CALL_HEALTH["recovered"] = self._health[1]
+            jd._CALL_HEALTH["stats"].clear()
+            jd._CALL_HEALTH["stats"].update(self._health[2])
         self.td.cleanup()
 
     def _write_msg_caption(self, caption):

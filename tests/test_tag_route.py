@@ -75,10 +75,15 @@ class _TagRouteHarness(unittest.TestCase):
         self.td.cleanup()
 
     def _post(self, body):
+        # km.TOKEN, not os.environ at request time: the kernel binds TOKEN once at import, and pytest
+        # imports every collected module before any test runs, so a module collected later that ASSIGNS
+        # ROMP_SERVE_TOKEN at import (test_kernel.py does) changes what the environment holds by the time
+        # a request is sent; every request here was then refused with a 403 whenever this module was
+        # collected first (2026-09-08; test_kernel_names.py and test_color_route.py carry the same fix).
         req = urllib.request.Request(
             "http://127.0.0.1:%d/tag" % self.port, data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json",
-                     "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                     "X-Romp-Token": km.TOKEN})
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, json.loads(r.read().decode())
@@ -88,7 +93,7 @@ class _TagRouteHarness(unittest.TestCase):
     def _views(self):
         req = urllib.request.Request(
             "http://127.0.0.1:%d/views" % self.port,
-            headers={"X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+            headers={"X-Romp-Token": km.TOKEN})
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, json.loads(r.read().decode())
 
@@ -390,7 +395,7 @@ class GroupAliasSurvives(TagRoute):
         req = urllib.request.Request(
             "http://127.0.0.1:%d/group" % self.port, data=json.dumps({"name": "legacy", "add": ["web"]}).encode(),
             headers={"Content-Type": "application/json",
-                     "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                     "X-Romp-Token": km.TOKEN})
         with urllib.request.urlopen(req, timeout=10) as r:
             resp = json.loads(r.read().decode())
         self.assertTrue(resp["ok"])
@@ -410,7 +415,7 @@ class HttpFlagsMustBeBooleans(TagRoute):
         req = urllib.request.Request(
             "http://127.0.0.1:%d%s" % (self.port, path), data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json",
-                     "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                     "X-Romp-Token": km.TOKEN})
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, json.loads(r.read().decode())

@@ -33,6 +33,12 @@ ps = SourceFileLoader("romp_postal_selfid", os.path.join(BIN, "romp-postal-servi
 
 class ForkedSelfIdentity(unittest.TestCase):
     def setUp(self):
+        # the sessions-file seam is read PER CALL and sibling modules bind it once at IMPORT, so this
+        # module's listing is bound for the duration of each test and the prior binding put back after:
+        # left pointing here, test_postal_read_receipts resolved its recipient "web" against THIS listing,
+        # a different session id from the one its own listing names, and five of its receipt tests failed
+        # (2026-09-08)
+        self._seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = _SESS
         self._env = os.environ.get("CLAUDE_CODE_SESSION_ID")
 
@@ -41,6 +47,10 @@ class ForkedSelfIdentity(unittest.TestCase):
             os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         else:
             os.environ["CLAUDE_CODE_SESSION_ID"] = self._env
+        if self._seam is None:
+            os.environ.pop("ROMP_SESSIONS_FILE", None)
+        else:
+            os.environ["ROMP_SESSIONS_FILE"] = self._seam
 
     def test_exact_id_match_resolves_directly(self):
         os.environ["CLAUDE_CODE_SESSION_ID"] = STABLE

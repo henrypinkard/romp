@@ -93,7 +93,7 @@ class TabMetaPush(unittest.TestCase):
         req = urllib.request.Request(
             "http://127.0.0.1:%d%s" % (self.port, path), data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json",
-                     "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                     "X-Romp-Token": km.TOKEN})
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
 

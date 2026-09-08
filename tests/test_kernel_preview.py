@@ -29,7 +29,10 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
 km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
 
-TOKEN = os.environ["ROMP_SERVE_TOKEN"]
+# the request helpers send km.TOKEN, read at request time, never a token captured here at import: every
+# module that loads the kernel under the shared name re-executes it, so a module collected LATER that
+# assigns ROMP_SERVE_TOKEN at import (test_kernel.py does) re-binds the token the gate compares against,
+# and a value captured here was then refused with a 403 (2026-09-08)
 
 # a 1x1 transparent PNG — real image bytes so the mime/type path is exercised end-to-end
 PNG = bytes.fromhex(
@@ -71,7 +74,7 @@ class FilePreviewEndpoint(unittest.TestCase):
         cls.tmp.cleanup()
 
     def _req(self, path, method="GET", headers=None):
-        url = "http://127.0.0.1:%d%s%stoken=%s" % (self.port, path, "&" if "?" in path else "?", TOKEN)
+        url = "http://127.0.0.1:%d%s%stoken=%s" % (self.port, path, "&" if "?" in path else "?", km.TOKEN)
         req = urllib.request.Request(url, method=method, headers=headers or {})
         try:
             with urllib.request.urlopen(req, timeout=3) as r:
@@ -180,7 +183,7 @@ class FilePreviewEndpoint(unittest.TestCase):
                          "…while the text branch carries its marker — the asymmetry is the signal")
 
     def _req_range(self, path, rng):
-        url = "http://127.0.0.1:%d%s&token=%s" % (self.port, path, TOKEN)
+        url = "http://127.0.0.1:%d%s&token=%s" % (self.port, path, km.TOKEN)
         req = urllib.request.Request(url, headers={"Range": rng})
         try:
             with urllib.request.urlopen(req, timeout=3) as r:
@@ -281,7 +284,7 @@ class FileDownloadEndpoint(unittest.TestCase):
         cls.tmp.cleanup()
 
     def _req(self, path, method="GET", headers=None):
-        url = "http://127.0.0.1:%d%s%stoken=%s" % (self.port, path, "&" if "?" in path else "?", TOKEN)
+        url = "http://127.0.0.1:%d%s%stoken=%s" % (self.port, path, "&" if "?" in path else "?", km.TOKEN)
         req = urllib.request.Request(url, method=method, headers=headers or {})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:

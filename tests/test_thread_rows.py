@@ -102,14 +102,14 @@ class ThreadRowsRoute(unittest.TestCase):
 
     def _get(self, path):
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path),
-                                     headers={"X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                                     headers={"X-Romp-Token": km.TOKEN})
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
 
     def _post(self, path, body):
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), method="POST",
                                      data=json.dumps(body).encode(),
-                                     headers={"X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"],
+                                     headers={"X-Romp-Token": km.TOKEN,
                                               "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())

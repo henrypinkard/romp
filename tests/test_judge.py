@@ -5652,10 +5652,30 @@ class Distiller(unittest.TestCase):
         jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         return str(path)
 
+    def setUp(self):
+        # _giveup_cause reads the process-global model-health latch (jd._CALL_HEALTH), which every module
+        # that loads the judge under the name romp_judge shares: a sibling module's failing calls earlier in
+        # the same process made the give-up name that model instead of the generic cause (2026-09-08). Each
+        # test here starts from a clean latch; tearDown puts the process's own back.
+        with jd._health_lock:
+            self._health = (set(jd._CALL_HEALTH["degraded"]), jd._CALL_HEALTH["recovered"],
+                            {m: dict(s) for m, s in jd._CALL_HEALTH["stats"].items()})
+            jd._CALL_HEALTH["degraded"].clear()
+            jd._CALL_HEALTH["stats"].clear()
+            jd._CALL_HEALTH["recovered"] = False
+
     def tearDown(self):
         if hasattr(self, "_saved"):
             (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.distill_llm, jd.brief_llm) = self._saved
             jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
+        if not hasattr(self, "_health"):     # DistillSections drives an instance by hand: _setup + tearDown, no setUp
+            return
+        with jd._health_lock:
+            jd._CALL_HEALTH["degraded"].clear()
+            jd._CALL_HEALTH["degraded"].update(self._health[0])
+            jd._CALL_HEALTH["recovered"] = self._health[1]
+            jd._CALL_HEALTH["stats"].clear()
+            jd._CALL_HEALTH["stats"].update(self._health[2])
 
     def test_distills_completed_top_from_its_discontinuous_trail(self):
         records = [uline(T0, "do part one", "u1", ps="typed"),

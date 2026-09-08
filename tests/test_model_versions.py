@@ -263,7 +263,7 @@ class _ModelsServer(unittest.TestCase):
     def _models(self):
         req = urllib.request.Request(
             "http://127.0.0.1:%d/models" % self.port,
-            headers={"X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+            headers={"X-Romp-Token": km.TOKEN})
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
 

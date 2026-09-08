@@ -46,11 +46,22 @@ def _fresh_mid():
 
 class _RelayBase(unittest.TestCase):
     def setUp(self):
-        os.environ.pop("ROMP_SESSIONS_FILE", None)
+        # The bus reads ROMP_SESSIONS_FILE per CALL while sibling modules bind it once at IMPORT, so the
+        # value popped here (and overwritten by _set_live) is put BACK after each test. Popped for good,
+        # every later module's listing vanished with it: test_postal_read_receipts relayed to a name no
+        # listing answered for and five of its receipt tests failed whenever this module ran ahead of it
+        # (2026-09-08).
+        self._prior_seam = os.environ.pop("ROMP_SESSIONS_FILE", None)
         self._base = pm.KERNEL_BASE
-        self.addCleanup(lambda: (setattr(pm, "KERNEL_BASE", self._base),
-                                 os.environ.pop("ROMP_SESSIONS_FILE", None),
-                                 pm.HEARTBEATS.clear()))
+        self.addCleanup(self._restore_seam)
+
+    def _restore_seam(self):
+        pm.KERNEL_BASE = self._base
+        pm.HEARTBEATS.clear()
+        if self._prior_seam is None:
+            os.environ.pop("ROMP_SESSIONS_FILE", None)
+        else:
+            os.environ["ROMP_SESSIONS_FILE"] = self._prior_seam
 
     def _msg(self, to):
         return {"mid": _fresh_mid(), "to": to, "frm": "web", "frm_id": ALPHA, "body": "hi"}

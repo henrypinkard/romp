@@ -31,7 +31,10 @@ SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load
 SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
 km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
 
-TOKEN = os.environ["ROMP_SERVE_TOKEN"]
+# the request helpers send km.TOKEN, read at request time, never a token captured here at import: every
+# module that loads the kernel under the shared name re-executes it, so a module collected LATER that
+# assigns ROMP_SERVE_TOKEN at import (test_kernel.py does) re-binds the token the gate compares against,
+# and a value captured here was then refused with a 403 (2026-09-08)
 
 
 class _FakeProc:
@@ -120,7 +123,7 @@ class DemandDoors(unittest.TestCase):
                                    "misses": 0, "proc": None}
 
     def _req(self, path, method="GET", body=None):
-        url = "http://127.0.0.1:%d%s%stoken=%s" % (self.port, path, "&" if "?" in path else "?", TOKEN)
+        url = "http://127.0.0.1:%d%s%stoken=%s" % (self.port, path, "&" if "?" in path else "?", km.TOKEN)
         req = urllib.request.Request(url, method=method,
                                      data=json.dumps(body).encode() if body is not None else None,
                                      headers={"Content-Type": "application/json"} if body is not None else {})
