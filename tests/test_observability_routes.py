@@ -98,7 +98,7 @@ class ObservabilityRoutes(unittest.TestCase):
     def _get(self, path, token=True):
         url = "http://127.0.0.1:%d%s" % (self.port, path)
         req = urllib.request.Request(url, headers=(
-            {"X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]} if token else {}))
+            {"X-Romp-Token": km.TOKEN} if token else {}))
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, json.loads(r.read().decode() or "null")

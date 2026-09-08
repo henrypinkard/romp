@@ -75,6 +75,8 @@ class KernelUp(unittest.TestCase):
         pm.KERNEL_BASE = self._base
         if self._seam is not None:
             os.environ["ROMP_SESSIONS_FILE"] = self._seam
+        else:
+            os.environ.pop("ROMP_SESSIONS_FILE", None)   # the no-kernel test binds /nonexistent; never leave it
 
     def test_true_when_healthz_answers(self):
         with _HealthzStub() as base:

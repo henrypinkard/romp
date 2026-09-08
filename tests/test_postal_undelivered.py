@@ -29,12 +29,19 @@ RECIP = "22222222-2222-2222-2222-222222222222"
 class StuckMailWarning(unittest.TestCase):
     def setUp(self):
         self._seamfile = os.path.join(tempfile.mkdtemp(), "sessions.json")
+        # the seam is read per CALL and sibling modules bind it once at IMPORT: put the prior binding
+        # back after each test rather than popping it for good (test_postal_read_receipts lost its
+        # listing and its five receipt tests failed whenever this module ran ahead, 2026-09-08)
+        self._seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = self._seamfile      # local_agents() reads this instead of a live kernel
         for d in (pm.MAILROOT, pm.WARNED, pm.MAILPENDING):     # isolate each test
             shutil.rmtree(d, ignore_errors=True)
 
     def tearDown(self):
-        os.environ.pop("ROMP_SESSIONS_FILE", None)
+        if self._seam is None:
+            os.environ.pop("ROMP_SESSIONS_FILE", None)
+        else:
+            os.environ["ROMP_SESSIONS_FILE"] = self._seam
 
     def _set_recip_state(self, state):
         Path(self._seamfile).write_text(json.dumps(

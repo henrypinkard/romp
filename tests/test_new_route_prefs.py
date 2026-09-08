@@ -65,7 +65,7 @@ class NewRoutePrefs(unittest.TestCase):
     def _post(self, body):
         req = urllib.request.Request("http://127.0.0.1:%d/new" % self.port,
                                      data=json.dumps(body).encode(),
-                                     headers={"X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"],
+                                     headers={"X-Romp-Token": km.TOKEN,
                                               "Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=5) as r:
             return json.loads(r.read())
@@ -165,7 +165,7 @@ class NewRouteEnv(unittest.TestCase):
     def _post(self, body):
         req = urllib.request.Request("http://127.0.0.1:%d/new" % self.port,
                                      data=json.dumps(body).encode(),
-                                     headers={"X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"],
+                                     headers={"X-Romp-Token": km.TOKEN,
                                               "Content-Type": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
@@ -355,7 +355,7 @@ class NewRouteTags(unittest.TestCase):
     def _post(self, body):
         req = urllib.request.Request("http://127.0.0.1:%d/new" % self.port,
                                      data=json.dumps(body).encode(),
-                                     headers={"X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"],
+                                     headers={"X-Romp-Token": km.TOKEN,
                                               "Content-Type": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=5) as r:

@@ -94,7 +94,7 @@ class _Routes(unittest.TestCase):
         km._flags_cache.clear()
         self.td.cleanup()
 
-    def _post(self, path, body=None, raw=None, token=os.environ["ROMP_SERVE_TOKEN"]):
+    def _post(self, path, body=None, raw=None, token=km.TOKEN):
         headers = {"Content-Type": "application/json"}
         if token is not None:
             headers["X-Romp-Token"] = token

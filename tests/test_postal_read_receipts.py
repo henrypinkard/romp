@@ -53,6 +53,14 @@ def _resp(host, **kw):
 
 class _Base(unittest.TestCase):
     def setUp(self):
+        # the sessions-file and host seams are read PER CALL, and a batch run's other postal modules bind,
+        # pop or overwrite them in their own tests: bind OURS for the duration of each test and put the
+        # prior values back after (the idiom test_postal_agents_render.ShortIdAddresses uses). Relying on
+        # the import-time binding alone, five receipt tests here relayed to a name no listing answered
+        # for whenever a module that pops the seam ran ahead of this one (2026-09-08).
+        self._seams = {k: os.environ.get(k) for k in ("ROMP_SESSIONS_FILE", "ROMP_POSTAL_HOST")}
+        os.environ["ROMP_SESSIONS_FILE"] = _SESS
+        os.environ["ROMP_POSTAL_HOST"] = "TESTHOST"
         os.environ["ROMP_POSTAL_PEERS"] = "1"
         ps.PEERS.clear()
         ps.PEER_STATE.clear()
@@ -66,6 +74,11 @@ class _Base(unittest.TestCase):
 
     def tearDown(self):
         os.environ.pop("ROMP_POSTAL_PEERS", None)
+        for k, v in self._seams.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def _trusted_peer(self, host="boxalias"):
         ps.peer_update({"host": host, "port": 19999, "up": True, "trust": "trusted"})

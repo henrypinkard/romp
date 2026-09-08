@@ -33,8 +33,20 @@ def _relay(mid, body="ship it", frm="api", origin=None):
     return m
 
 
+def _put_seam_back(prior):
+    """Each class below pins OUR sessions seam per test (the bus reads it per call; a later-collected
+    postal module's import binds it elsewhere) and puts the PRIOR binding back after: left pointing here,
+    test_postal_read_receipts read this module's listing whenever it ran later in the same process
+    (2026-09-08)."""
+    if prior is None:
+        os.environ.pop("ROMP_SESSIONS_FILE", None)
+    else:
+        os.environ["ROMP_SESSIONS_FILE"] = prior
+
+
 class InboundTrustGate(unittest.TestCase):
     def setUp(self):
+        self._seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = _SESS   # pin OUR sessions seam (read live; a later-collected postal test clobbers it)
         # fresh peer table + empty stores each test
         ps.PEERS.clear()
@@ -44,6 +56,9 @@ class InboundTrustGate(unittest.TestCase):
                     f.unlink()
             except OSError:
                 pass
+
+    def tearDown(self):
+        _put_seam_back(self._seam)
 
     def _set_trust(self, host, level, up=True):
         ps.peer_update({"host": host, "port": 47101, "up": up, "trust": level})
@@ -171,6 +186,7 @@ class TokenProvenDialerGate(InboundTrustGate):
 
     def tearDown(self):
         ps._relay_in = self._orig_relay_in
+        super().tearDown()
 
     def test_unknown_origin_defaults_to_directed(self):
         # OVERRIDES the inherited default-hold test: with the dialer token-proven, unknown-origin
@@ -204,6 +220,7 @@ class ExchangeHandleIsTokenProven(unittest.TestCase):
     gate — so an attached machine's own relays deliver instead of quarantining on the dialed side."""
 
     def setUp(self):
+        self._seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = _SESS
         os.environ["ROMP_POSTAL_PEERS"] = "1"
         ps.PEERS.clear()
@@ -222,6 +239,7 @@ class ExchangeHandleIsTokenProven(unittest.TestCase):
 
     def tearDown(self):
         os.environ.pop("ROMP_POSTAL_PEERS", None)
+        _put_seam_back(self._seam)
 
     def test_handle_delivers_unknown_dialers_direct_relay(self):
         req = {"host": "MYSTERY", "epoch": 1, "proto": ps.PEER_PROTO, "presence": [], "holds": [],
@@ -260,6 +278,7 @@ class ExchangeHandleIsTokenProven(unittest.TestCase):
 
 class QuarantineDecide(unittest.TestCase):
     def setUp(self):
+        self._seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = _SESS   # pin OUR sessions seam (see InboundTrustGate.setUp)
         ps.PEERS.clear()
         ps.peer_update({"host": "TESTHOST", "port": 47101, "up": True, "trust": "directed"})
@@ -269,6 +288,9 @@ class QuarantineDecide(unittest.TestCase):
                     f.unlink()
             except OSError:
                 pass
+
+    def tearDown(self):
+        _put_seam_back(self._seam)
 
     def test_approve_delivers_and_clears(self):
         ps._relay_in("TESTHOST", _relay("q-appr-1", body="original text"))

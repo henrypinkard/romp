@@ -321,7 +321,7 @@ class CheckinRoute(unittest.TestCase):
         req = urllib.request.Request(
             "http://127.0.0.1:%d/checkin" % self.port, data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json",
-                     "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                     "X-Romp-Token": km.TOKEN})
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, json.loads(r.read().decode())
@@ -438,7 +438,7 @@ class TrustDoorHostChecked(unittest.TestCase):
         def post(body):
             req = urllib.request.Request(
                 "http://127.0.0.1:%d/tunnels/trust" % self.port, data=json.dumps(body).encode(),
-                headers={"Content-Type": "application/json", "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                headers={"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
             try:
                 with urllib.request.urlopen(req, timeout=10) as r:
                     return r.status, json.loads(r.read().decode())
@@ -629,7 +629,7 @@ class RefusalSaidOnBothMachines(unittest.TestCase):
         self.td.cleanup()
 
     def _row(self, hub_pid=4242):
-        return {"host": "hub", "local_port": self.port, "token": os.environ["ROMP_SERVE_TOKEN"],
+        return {"host": "hub", "local_port": self.port, "token": km.TOKEN,
                 "rk_port": 29855, "rb_port": 25302, "hub_pid": hub_pid, "status": "up", "detail": ""}
 
     def _dial_log(self):

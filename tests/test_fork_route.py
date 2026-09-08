@@ -65,7 +65,7 @@ class ForkRoute(unittest.TestCase):
         req = urllib.request.Request(
             "http://127.0.0.1:%d/fork" % self.port, data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json",
-                     "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                     "X-Romp-Token": km.TOKEN})
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, json.loads(r.read().decode())

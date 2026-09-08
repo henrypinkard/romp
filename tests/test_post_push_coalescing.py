@@ -109,7 +109,7 @@ class ControlRouteLatency(unittest.TestCase):
     def _post(self, path, body):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         c.request("POST", path, json.dumps(body),
-                  {"Content-Type": "application/json", "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                  {"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
         r = c.getresponse()
         out = (r.status, r.read())
         c.close()

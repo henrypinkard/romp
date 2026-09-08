@@ -1221,7 +1221,7 @@ class Route(unittest.TestCase):
         req = urllib.request.Request(
             "http://127.0.0.1:%d/watch-pr" % self.port, data=json.dumps(body).encode(),
             headers=dict({"Content-Type": "application/json"},
-                         **({"X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]} if token else {})))
+                         **({"X-Romp-Token": km.TOKEN} if token else {})))
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, json.loads(r.read().decode())
