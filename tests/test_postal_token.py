@@ -183,6 +183,18 @@ class BusBodiesAreObjects(_BusServer):
         self.assertEqual(r["error"], 'body must be a JSON object, got "' + "x" * 60 + '\u2026"')
         self.assertLess(len(r["error"]), 100)
 
+    def test_a_container_holding_a_long_string_echoes_well_formed(self):
+        # review find, 2026-09-08: a slice of the serialized container cut mid-token, so the echo came
+        # back with its quote and bracket open; the cut now lands inside the string, at any depth
+        st, r = self._post("/send", json.dumps(["x" * 100_000]).encode())
+        self.assertEqual(st, 400, r)
+        self.assertEqual(r["error"], 'body must be a JSON object, got ["' + "x" * 60 + '\u2026"]')
+        st, r = self._post("/send", json.dumps(list(range(1000))).encode())
+        self.assertEqual(st, 400, r)
+        echo = r["error"].split("got ", 1)[1]
+        self.assertEqual(json.loads(echo), [0, 1, 2, 3, 4, 5, 6, 7, "\u2026"], "cut at the element level")
+        self.assertLess(len(r["error"]), 300)
+
 
 class BusBodyGate(_BusServer):
     """The bus reads a body only within bounds -- the kernel's gate, mirrored. _body() used to trust the
