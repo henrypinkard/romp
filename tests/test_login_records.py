@@ -191,6 +191,8 @@ class Registry(unittest.TestCase):
             self.assertEqual(lg.token_cmd_error(ok), "", ok)
         self.assertIn("looks like it carries the credential", lg.token_cmd_error("echo name." + "Zz9" * 14),
                       "a dotted prefix hides no plain run")
+        # accepted: a four-segment run is not a JWT and its short segments pass the plain rule
+        self.assertEqual(lg.token_cmd_error("echo " + ".".join(["A1" * 9] * 4)), "")
         # the refusal says the value typed here is already exposed and must be rotated
         self.assertIn("rotate", lg.token_cmd_error("printf %s " + _token_shaped()))
         # a forty-digit hex run is also a gpg key fingerprint: it passes in a gpg command or after --recipient
@@ -215,6 +217,12 @@ class Registry(unittest.TestCase):
             self.assertEqual(lg.why_unavailable(rec), "", "a bare record too")
             self.assertFalse(lg.has_token_cmd(dict(rec, tokenCmd="  ")), "presence is the only read-time rule")
             self.assertIn("no token command is recorded", lg.why_unavailable(dict(rec, tokenCmd="")))
+            # a non-string command is no command, never coerced into one
+            for odd in (123, ["cat", "x"], {"cmd": "x"}, True):
+                self.assertFalse(lg.has_token_cmd(dict(rec, tokenCmd=odd)), repr(odd))
+                self.assertIn("no token command is recorded", lg.why_unavailable(dict(rec, tokenCmd=odd)), repr(odd))
+            odd_rec = _rec(Path(d), "Odd", tokenCmd=7)
+            self.assertFalse(lg.record_state(Path(d), odd_rec["id"])["hasCmd"])
 
 
 class TheHelperScript(unittest.TestCase):
@@ -769,6 +777,54 @@ class StoredLoginPick(_Backend):
         self.be._note_auth_source(s, "none")
         self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("authLoginLive"), "")
         self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("launchedLogin"), "")
+
+    def test_an_attach_to_a_live_host_keeps_the_evidence_and_the_launched_login(self):
+        rec = _rec(self.be.state_dir, "Work")
+        self.be._log = lambda m, problem=False: None
+        sid = self.be.spawn("n", "/tmp", auth="login:" + rec["id"])
+        s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
+        # the connect loop's order: the lease pre-read, then the options build; no host, no lease: a launch, stamped
+        self.assertFalse(self.be._connect_would_attach(s), "no lease: a launch")
+        s._connect_attach = self.be._connect_would_attach(s)
+        self.be._options(s, dict)
+        self.assertEqual((s._options_login, s._launched_login, s.auth_login_live), (rec["id"], rec["id"], None))
+        self.be._note_auth_source(s, "apiKeyHelper")
+        reg = sb.read_reg(self.be.state_dir, sid)
+        self.assertEqual((reg["launchedLogin"], reg["authLoginLive"]), (rec["id"], rec["id"]))
+        # the kernel restarts while the host keeps the CLI running: a live host lease names this session
+        me = os.getpid()
+        sb.write_lease(self.be.state_dir, {"sid": sid, "fsid": sid, "pid": me, "start": sb.proc_start(me),
+                                           "holder": {"pid": me, "start": sb.proc_start(me), "kind": "host"},
+                                           "version": "", "t": time.time()})
+        s2 = sb.SdkSession(self.be, reg)
+        self.assertEqual((s2._launched_login, s2.auth_login_live), (rec["id"], rec["id"]), "restored from the row")
+        self.assertTrue(self.be._connect_would_attach(s2), "the lease reads attach")
+        # meanwhile another session got the record refused: TODAY's availability would carry no login at all
+        lg.mark_refused(self.be.state_dir, rec["id"], "refused elsewhere")
+        s2._connect_attach = self.be._connect_would_attach(s2)
+        self.be._options(s2, dict)
+        self.assertEqual(s2._options_login, "", "the options would fall to the key")
+        self.assertEqual((s2._launched_login, s2.auth_login_live), (rec["id"], rec["id"]),
+                         "an attach replays no init: the evidence about the running CLI stands, and its login is not recomputed")
+        reg2 = sb.read_reg(self.be.state_dir, sid)
+        self.assertEqual((reg2["launchedLogin"], reg2["authLoginLive"]), (rec["id"], rec["id"]), "the row keeps it for the next restart")
+        # so the feed's gate still speaks for the login, and a served reply on it still clears
+        row = {"authLogin": rec["id"], "authLabel": "Work", "authLoginLive": s2.snapshot()["authLoginLive"]}
+        self.assertEqual(km._login_refusal_label(row, {"authErr": True, "text": "invalid x-api-key"}), "Work")
+        import types
+        s2._ah_note_assistant(types.SimpleNamespace(model="claude-opus-5", message_id="m4", parent_tool_use_id=None, error=None))
+        self.assertNotIn("refused", lg.read_record(self.be.state_dir, rec["id"]))
+        # the pre-read outrun: the host died between the lease read and the host road, which launches after all and
+        # stamps then (the hosts file off, so the road ends at a kernel child: the real function, through its launch exit)
+        import asyncio
+        sb.lease_path(self.be.state_dir, sid).unlink()
+        (Path(self.be.state_dir) / "session-hosts").write_text("off\n")
+        s2._connect_attach = True
+        self.assertIsNone(asyncio.run(self.be._host_transport_for(s2, {}, ())))
+        self.assertFalse(s2._connect_attach)
+        self.assertEqual((s2._launched_login, s2.auth_login_live), ("", None), "launched after all: stamped from the options")
+        reg3 = sb.read_reg(self.be.state_dir, sid)
+        self.assertEqual((reg3["launchedLogin"], reg3["authLoginLive"]), ("", None))
 
     def test_the_once_flag_resets_on_a_new_pick_and_on_a_helper_answered_init(self):
         rec = _rec(self.be.state_dir, "Work")

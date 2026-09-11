@@ -490,8 +490,9 @@ and an API auth error marks a stored login refused only on a session whose
 launch carried that login's helper and whose CLI used it. That evidence is
 per process: a relaunch that no longer carries the helper (the login went
 unavailable, then a model or effort change) starts with none, and it is kept
-on the session's registry row so a session re-attached after a kernel restart
-keeps it through the turn. A served reply on
+on the session's registry row so a session re-attached to its running CLI
+after a kernel restart keeps it through the turn: an attach launches nothing
+and resets nothing. A served reply on
 a session whose helper did answer is the deciding event the other way and
 clears the refusal; a judge call never clears one (its envelope does not say
 which login answered), and the judges of a session on a refused login take the

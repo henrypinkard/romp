@@ -4987,6 +4987,7 @@ class SdkSession:
         self._host = None
         self._host_intent = False          # set before the host attach or spawn begins, so a drain mid-attach detaches
         self._host_is_attach = False       # the current host connect is an ATTACH (a replay-bearing hello)
+        self._connect_attach = False       # this connect was read as an attach before its options build (T346): no launch stamp
         self._host_attach_retries = 0
         self.detached = False
         self._host_end_grace = None
@@ -6340,6 +6341,13 @@ class SdkSession:
             self._drop_live_work("reconnect")
             # settle + recover anything the abandoned client stranded — see _reconcile_stranded
             self._reconcile_stranded()
+            # Whether this connect ATTACHES to a live host (a restart survived: the CLI keeps running and replays no
+            # init) or launches a CLI, read off the lease BEFORE the options build: _options stamps the launch's login
+            # and resets the init evidence only for a launch (review 2026-09-11: the stamp ran on every connect and
+            # wiped the evidence the reg had just restored on the very attach it was persisted for). A pre-read the
+            # lease outran (a host that died in between) is corrected by _host_transport_for, which stamps when it
+            # launches after all.
+            self._connect_attach = self.backend._connect_would_attach(self)
             try:
                 opts = self.backend._options(self, ClaudeAgentOptions)
             except Exception as e:
@@ -9349,6 +9357,30 @@ class SdkBackend:
     def session_hosts_on(self) -> bool:
         return _ht().session_hosts_on(self.state_dir)
 
+    def _connect_would_attach(self, sess) -> bool:
+        """Whether the connect about to be made ATTACHES to a live host (the lease reads 'attach') rather than
+        launching a CLI. Read by the connect loop before _options, which stamps a launch's login and resets the
+        init evidence only when it launches. False on any doubt: the launch stamp is the safe default (the init
+        that follows a launch refreshes the evidence; an attach replays none)."""
+        try:
+            if not (self.session_hosts_on() or self._host_lease_applies(sess)):
+                return False
+            return _ht().host_lease_state(read_lease(self.state_dir, sess.sid), time.time()) == "attach"
+        except Exception:
+            return False
+
+    def _stamp_launch_login(self, sess) -> None:
+        """A LAUNCH is being made from the options last built for `sess`: record the stored login it carries
+        (_options_login; "" = the machine's own) and reset the init evidence to none (this process has said
+        nothing yet), both persisted (_persist_login_evidence). Never run for an attach: the running CLI's
+        evidence, restored from the reg, is about a process that is still there, and the login it carried is
+        not recomputed from today's availability (a record refused by another session meanwhile must not move
+        the attached session's spend rows onto the machine's login; review 2026-09-11)."""
+        login_id = str(getattr(sess, "_options_login", "") or "")
+        sess._launched_login = login_id
+        sess.auth_login_live = None
+        self._persist_login_evidence(sess, launchedLogin=login_id, authLoginLive=None)
+
     def _host_lease_applies(self, sess) -> bool:
         """A host holds (or held) this session: a live host lease must be attached, a dead host's journal
         replayed, and a lease-less leftover (a host that ended unattended after its idle grace, removing its
@@ -9391,6 +9423,12 @@ class SdkBackend:
             # records no kernel consumed. Replay that tail through the same road (no wait: no holder to wait
             # for; no host.died row: nothing died), then clear the directory.
             await self._host_orphan_recover(sess, opts, None, msg_classes, died=False)
+        if state != "attach" and getattr(sess, "_connect_attach", False):
+            # the connect loop's lease pre-read took this connect for an attach and the host has gone since: every
+            # road from here LAUNCHES a CLI (a kernel child, a fresh host), so the launch stamp the options build
+            # skipped is made now (review 2026-09-11)
+            sess._connect_attach = False
+            self._stamp_launch_login(sess)
         hosts_on, hosts_value = _ht().session_hosts_read(self.state_dir)   # one read: the branch and its log agree
         if state == "none" and not hosts_on:
             # the kill switch: with the setting file saying off nothing SPAWNS a host, whatever happened to the last
@@ -11537,13 +11575,16 @@ class SdkBackend:
         else:
             kw["env"] = dict(kw["env"], **helper_fast_org_env(self._log, sess.cwd))
         sess._launched_keyed = launch_keyed
-        # the stored login this launch actually carried ("" = the machine's own), and NO evidence yet from this process:
-        # a relaunch that stops carrying the helper (the login went unavailable, then a model or effort reconnect) must
-        # not keep the old init's word, or a revoked KEY's auth error would refuse the stored login and a reply served
-        # on the fallback would clear a real refusal (review 2026-09-11). Persisted for a hosted re-attach (__init__).
-        sess._launched_login = login_id
-        sess.auth_login_live = None
-        self._persist_login_evidence(sess, launchedLogin=login_id, authLoginLive=None)
+        # What a launch from THESE options carries ("" = the machine's own). For a LAUNCH the stamp records it as the
+        # launched login and resets the init evidence to none: a relaunch that stops carrying the helper (the login
+        # went unavailable, then a model or effort reconnect) must not keep the old init's word, or a revoked KEY's
+        # auth error would refuse the stored login and a reply served on the fallback would clear a real refusal.
+        # For an ATTACH to a live host (the connect loop read the lease first) nothing is stamped: no CLI launches,
+        # no init replays, and the evidence and the launched login stand as the reg restored them; the host road
+        # stamps if it launches after all (review 2026-09-11, twice).
+        sess._options_login = login_id
+        if not getattr(sess, "_connect_attach", False):
+            self._stamp_launch_login(sess)
         sess._launched_unkeyed_pick = side == "key" and not launch_keyed
         if self.session_hosts_on():
             # under a host, a hook the kernel cannot answer in time (a restart in progress) is answered by the

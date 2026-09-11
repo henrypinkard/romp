@@ -51,6 +51,8 @@ JWT_SEGMENT_LEN = 16
 
 
 def _jwt_shaped(run: str) -> bool:
+    # exactly three segments, the JWT's header.payload.signature: a four-segment run (a JWE has five) is not one and
+    # passes here, its segments still judged one by one by the plain rule (accepted, review 2026-09-11)
     segs = run.split(".")
     return len(segs) == 3 and all(len(seg) >= JWT_SEGMENT_LEN and re.search(r"[A-Z0-9]", seg) for seg in segs)
 
@@ -77,7 +79,8 @@ def has_token_cmd(rec) -> bool:
     """Whether a stored record carries a token command at all: presence, the only read-time rule. The shape check
     (token_cmd_error) is applied at add time and never to a stored record (review 2026-09-11: a rule that tightened
     read an existing record as 'no token command recorded' and its sessions fell off the login)."""
-    return isinstance(rec, dict) and bool(str(rec.get("tokenCmd") or "").strip())
+    cmd = rec.get("tokenCmd") if isinstance(rec, dict) else None
+    return isinstance(cmd, str) and bool(cmd.strip())   # a non-string is no command (never coerced into one)
 
 
 def token_cmd_error(cmd) -> str:
