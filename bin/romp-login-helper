@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# romp-login-helper <login-id> [<state dir>]: Claude Code's apiKeyHelper for a romp session billed to a STORED
+# Claude login (T346; docs/reference.md "Several Claude logins"). The kernel writes
+# `apiKeyHelper: "<this script> <id> <state dir>"` into that session's per-session settings layer; the CLI runs
+# it per request (refreshing on its own TTL), and it runs the login's own TOKEN COMMAND, recorded in the login's
+# record (STATE/logins/<id>.json, field tokenCmd; 1Password's `op read op://vault/item/field` is the documented
+# example, and romp assumes nothing about it), whose output is the login's setup-token, to stdout only. The token
+# never touches a romp file, a romp environment or a log line: this script's one output is the CLI's pipe. Any
+# failure is one stderr line naming the login id and the step, never a value, and a non-zero exit (the CLI then
+# fails the request loudly: an auth error the session's card names by the login's label).
+set -euo pipefail
+id="${1:-}"
+if [[ -z "$id" || ! "$id" =~ ^[0-9a-f]{12}$ ]]; then
+    echo "romp-login-helper: a stored login's 12-hex id is the first argument" >&2
+    exit 2
+fi
+state="${2:-${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}}"
+rec="$state/logins/$id.json"
+cmd="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception as e:
+    sys.stderr.write("romp-login-helper: the record for login %s does not read (%s)\n" % (sys.argv[2], type(e).__name__))
+    sys.exit(1)
+c = d.get("tokenCmd") if isinstance(d, dict) else None
+if not isinstance(c, str) or not c.strip() or any(ord(ch) < 32 for ch in c):
+    sys.stderr.write("romp-login-helper: the record for login %s names no token command\n" % sys.argv[2])
+    sys.exit(1)
+print(c)' "$rec" "$id")"
+# the command's own stderr passes through (its tool names its failure); its exit code is this script's
+exec /bin/sh -c "$cmd"

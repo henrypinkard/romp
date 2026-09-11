@@ -81,6 +81,7 @@ CENSUS = {
     "_chat_stat_key": ("sig", "taskout", "the fold's per-output identity; the same stat the taskout dep re-takes"),
     "_chat_turn_fp": ("pure", "over a turn"),
     "_claude_account_label": ("sig", "acct"),
+    "_claude_login_display": ("sig", "acct", "the login as the Billing rows name it: the account file's name and organisation plus the credentials file's kind word (T346)"),
     "_claudemd_docs": ("sig", "claudemd", "the CLAUDE.md files on the chain from the cwd to its git root, plus the global one"),
     "_cleared_ids": ("sig", "cleared"),
     "_clearing_now": ("sig", "backend", "the backend's clearing bracket"),

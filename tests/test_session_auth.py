@@ -954,16 +954,20 @@ class Availability(unittest.TestCase):
         a = km._auth_avail()
         self.assertNotIn("loginWhy", a)
         self.assertNotIn("keyWhy", a)
-        self.assertEqual(km._auth_avail_status(), {"login": True, "key": True})
+        st = km._auth_avail_status()
+        self.assertEqual({k: st[k] for k in ("login", "key")}, {"login": True, "key": True})
+        self.assertEqual(st["logins"][0]["machine"], True, "the login list rides beside (T346), the machine's own first")
         self._world(FAKE_KEY, "")
         a = km._auth_avail()
         self.assertEqual(a["loginWhy"], km.jd._cred.WHY_NO_LOGIN)
-        self.assertEqual(km._auth_avail_status(), {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_NO_LOGIN})
+        self.assertEqual({k: v for k, v in km._auth_avail_status().items() if k != "logins"},
+                         {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_NO_LOGIN})
         self._world("", "aaaaaaaaaaaa")
         self.assertEqual(km._auth_avail()["keyWhy"], km.jd._cred.WHY_NO_HELPER)
         self._world(FAKE_KEY, "aaaaaaaaaaaa", managed=True)
         self.assertEqual(km._auth_avail()["loginWhy"], km.jd._cred.WHY_MANAGED_HELPER)
-        self.assertEqual(km._auth_avail_status(), {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_MANAGED_HELPER})
+        self.assertEqual({k: v for k, v in km._auth_avail_status().items() if k != "logins"},
+                         {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_MANAGED_HELPER})
         self.assertNotIn(FAKE_KEY, json.dumps(km._auth_avail()), "the reasons carry no key material either")
 
     def test_the_default_falls_to_the_side_that_exists_both_ways(self):
@@ -1087,7 +1091,7 @@ class DrivePlumbing(unittest.TestCase):
     def test_the_op_is_routed_parked_and_replayed(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn('"setAuth", "endSession"', src.replace("\n", " "), "an ID_OPS member")
-        self.assertIn('elif t == "setAuth" and msg.get("value") in ("login", "key"):', src)
+        self.assertIn('elif t == "setAuth" and lg.parse_pick(msg.get("value"))[0]:', src)   # T346: 'login' | 'key' | 'login:<id>'
         self.assertIn("def _set_auth_or_park(be, sid, value):", src)
         self.assertIn('_gate_or_park(sid, ("auth", value))', src)   # parks on the gate, or hands over (2026-09-05)
         self.assertIn('elif op[0] == "auth":', src)
@@ -1097,7 +1101,7 @@ class DrivePlumbing(unittest.TestCase):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         # (parent + tags joined the signature with tab groups, 2026-09-04 — auth's slot is unchanged)
         self.assertIn("def _create_sdk_session(nm, cwd, auth=\"\", prefs=None, client=None, env=None, parent=\"\", tags=()):", src)
-        self.assertEqual(src.count('auth=(a if a in ("login", "key") else "")'), 2,
+        self.assertEqual(src.count('auth=(a if lg.parse_pick(a)[0] else "")'), 2,
                          "the WS op and POST /new both pass it")
 
     def test_the_abc_names_the_control_and_the_default_refuses(self):
