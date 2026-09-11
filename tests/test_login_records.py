@@ -181,6 +181,18 @@ class Registry(unittest.TestCase):
         self.assertIn("looks like it carries the credential", lg.token_cmd_error("printf %s " + _token_shaped()))
         self.assertIn("looks like it carries the credential", lg.token_cmd_error("echo " + "".join(["A1b2"] * 11)))
         self.assertEqual(lg.token_cmd_error("cat /a/" + "x" * 60 + "/token"), "", "a long path segment is not a credential")
+        # a dotted run (a JWT-shaped bearer: three runs joined by dots) is one credential, not three short words
+        self.assertIn("looks like it carries the credential",
+                      lg.token_cmd_error("echo " + ".".join(["eyJ" + "a" * 14, "b" * 16, "c" * 16])))
+        # the refusal says the value typed here is already exposed and must be rotated
+        self.assertIn("rotate", lg.token_cmd_error("printf %s " + _token_shaped()))
+        # a forty-digit hex run is also a gpg key fingerprint: it passes in a gpg command or after --recipient
+        fp = "0123456789abcdef" * 2 + "01234567"
+        self.assertEqual(len(fp), 40)
+        self.assertEqual(lg.token_cmd_error("gpg --quiet --decrypt --recipient %s ~/.secrets/token.gpg" % fp), "")
+        self.assertEqual(lg.token_cmd_error("gpg2 -d -r %s ~/.secrets/token.gpg" % fp), "")
+        self.assertEqual(lg.token_cmd_error("some-tool --recipient=%s" % fp), "")
+        self.assertIn("looks like it carries the credential", lg.token_cmd_error("echo " + fp), "a bare hex run is still refused")
         self.assertEqual(lg.token_cmd_error(lg.op_read_command("op://Vault/romp login Work/credential")), "")
 
 
@@ -642,6 +654,64 @@ class StoredLoginPick(_Backend):
         self.assertEqual(len(recon), 4, "every wrong landing asks for the reconnect onto the fallback side")
         self.assertTrue(all("reconnecting onto the fallback side" in m for m, p in logs if "helper was not used" in m))
 
+    def test_a_wrong_landing_with_nothing_to_fall_to_stays_put_and_reconnects_at_most_once(self):
+        rec = _rec(self.be.state_dir, "Work")
+        logs, recon = [], []
+        self.be._log = lambda m, problem=False: logs.append((m, problem))
+        # a box with no helper and no signed-in machine login: a relaunch would carry the same failing helper
+        self.be.key_state = lambda: "missing"
+        self.be.login_ok = lambda: False
+        s = self._sess(3, auth="login", authLogin=rec["id"])
+        self.be._options(s, dict)
+        s.request_reconnect = lambda defer=True: recon.append(1)
+        self.be._note_auth_source(s, "none")
+        self.assertEqual(self.be.pick_fall("login", rec["id"]), "", "the probe: nothing to fall to")
+        self.assertEqual(recon, [], "an identical relaunch is never asked for")
+        self.assertEqual((s.auth_login_live, s._launched_login), ("", ""), "refused and flagged where it landed")
+        self.assertIn("refused", lg.read_record(self.be.state_dir, rec["id"]))
+        rows = [m for m, p in logs if "helper was not used" in m and p]
+        self.assertEqual(len(rows), 1, logs)
+        self.assertIn("nothing to fall to", rows[0])
+        self.assertNotIn("reconnecting", rows[0])
+        # the machine's login back: one reconnect per session however many inits report the wrong landing
+        lg.clear_refused(self.be.state_dir, rec["id"])
+        self.be.login_ok = lambda: True
+        s2 = self._sess(4, auth="login", authLogin=rec["id"])
+        self.be._options(s2, dict)
+        s2.request_reconnect = lambda defer=True: recon.append(2)
+        self.be._note_auth_source(s2, "none")
+        self.assertEqual(recon, [2])
+        self.assertTrue(any("reconnecting onto the fallback side (login)" in m for m, p in logs), logs)
+        s2._launched_login = rec["id"]           # a second init reporting the same wrong landing
+        self.be._note_auth_source(s2, "none")
+        self.assertEqual(recon, [2], "asked once")
+        self.assertTrue(any("already reconnected once" in m for m, p in logs), logs)
+
+    def test_api_health_files_under_the_credential_that_answered_not_the_pick(self):
+        rec = _rec(self.be.state_dir, "Work")
+        self.be._log = lambda m, problem=False: None
+        picked = self.be.api_health.auth_label("none", login_id=rec["id"], display=self.be.login_display(rec["id"]))
+        machine = self.be.api_health.auth_label("none")
+        self.assertNotEqual(picked, machine)
+        # the helper answered: the bucket is the stored login's
+        s = self._sess(5, auth="login", authLogin=rec["id"])
+        self.be._options(s, dict)
+        self.be._note_auth_source(s, "apiKeyHelper")
+        self.assertEqual(s.auth_label, picked)
+        # the helper did not answer and the machine's own login did the work: the machine's bucket, not the pick's
+        s = self._sess(6, auth="login", authLogin=rec["id"])
+        self.be._options(s, dict)
+        s.request_reconnect = lambda defer=True: None
+        self.be._note_auth_source(s, "none")
+        self.assertEqual(s.auth_label, machine)
+        # the fallback relaunch (the record now refused, the key does the work) files under the key's bucket
+        s = self._sess(7, auth="login", authLogin=rec["id"])
+        self.be._options(s, dict)
+        self.assertEqual(s._launched_login, "", "the refused record falls to the key")
+        self.be._note_auth_source(s, "apiKeyHelper")
+        self.assertTrue(s.auth_label.startswith("key"), s.auth_label)
+        self.assertNotEqual(s.auth_label, picked)
+
     def test_the_seed_skip_names_a_dead_remembered_stored_login(self):
         rec = _rec(self.be.state_dir, "Work")
         lg.mark_refused(self.be.state_dir, rec["id"], "refused")
@@ -805,6 +875,21 @@ class Doors(unittest.TestCase):
         self.assertEqual(src.count('auth=(a if lg.parse_pick(a)[0] else "")'), 2, "both create doors")
         self.assertIn('msg.get("type") == "loginRemove"', src)
         self.assertIn('jd._API_HEALTH_NOTE_FN = _judge_api_health_note', src)
+
+
+    def test_an_auth_error_refuses_the_stored_login_only_when_its_helper_answered(self):
+        err = {"authErr": True, "text": "invalid x-api-key"}
+        row = {"authLogin": ZID, "authLabel": "Work", "authLoginLive": ZID}
+        self.assertEqual(km._login_refusal_label(row, err), "Work", "the helper answered: the error is the login's")
+        self.assertEqual(km._login_refusal_label(dict(row, authLoginLive=""), err), "",
+                         "the CLI signed in with something else: the fallback's error says nothing about the login")
+        self.assertEqual(km._login_refusal_label(dict(row, authLoginLive=None), err), "",
+                         "before an init, or a launch that fell to the key under a managed helper: never tried")
+        self.assertEqual(km._login_refusal_label(row, {"authErr": False, "text": "overloaded"}), "")
+        self.assertEqual(km._login_refusal_label({}, err), "")
+        src = open(os.path.join(ROOT, "kernel", "kernel.py")).read()
+        self.assertEqual(src.count("_auth_login_lbl = _login_refusal_label(_lm_row, aerr)"), 1,
+                         "the feed's one refusal site reads the gate")
 
 
 class Judges(unittest.TestCase):

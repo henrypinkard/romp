@@ -481,15 +481,25 @@ next launch takes the same fall a dead machine login takes (the API key when a
 helper is configured, else the machine's own login, said in the Billing row as
 a fall). The session is not ended, since that would drop the conversation: it
 keeps running on the fallback side, flagged, and the Billing menu switches it
-elsewhere on a click. A served reply on a session whose helper did answer is
-the deciding event the other way and clears the refusal; a judge call never
-clears one (its envelope does not say which login answered), and the judges of
-a session on a refused login take the same fallback, said once in the kernel
-log. The helper bounds the command at fifteen seconds (the kernel's own helper
+elsewhere on a click. The reconnect is asked once per session, and only when
+the machine has a side to fall to (a helper, or a signed-in machine login);
+with neither, a relaunch would carry the same failing helper and land wrong
+again, so the session stays where it landed, flagged. The API-health bucket and
+the spend rows follow the credential that actually answered, never the pick,
+and an API auth error marks a stored login refused only on a session whose
+launch carried that login's helper and whose CLI used it. A served reply on
+a session whose helper did answer is the deciding event the other way and
+clears the refusal; a judge call never clears one (its envelope does not say
+which login answered), and the judges of a session on a refused login take the
+same fallback, said once in the kernel log. The helper bounds the command at fifteen seconds (the kernel's own helper
 bound; `ROMP_LOGIN_HELPER_TIMEOUT_S` overrides it). A command whose text
-carries a credential-shaped run is refused at add time: it would ride the
-shell's argument list on every refresh, readable to every process of the same
-user.
+carries a credential-shaped run (a setup-token's prefix, or forty or more
+token characters outside a path, dots included) is refused at add time: it
+would ride the shell's argument list on every refresh, readable to every
+process of the same user, and the refusal says the value typed there is
+already exposed through the shell's history and should be rotated. A
+forty-digit hex run inside a `gpg` command, or right after `--recipient`, is a
+key fingerprint and passes.
 
 A machine or session with no stored login works exactly as today: the ordinary
 Claude Code login and the API key path are untouched, and the stored logins

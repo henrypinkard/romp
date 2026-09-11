@@ -34,9 +34,23 @@ ID_RE = re.compile(r"^[0-9a-f]{12}$")
 OP_REF_RE = re.compile(r"^op://[^/\r\n\t]+/[^/\r\n\t]+/[^/\r\n\t]+(?:/[^/\r\n\t]+)?$")   # item titles may carry spaces
 TOKEN_CMD_MAX = 500                 # one shell line: the command the helper runs to print the token
 # A credential's SHAPE inside a command's text: a setup-token's prefix, or a run of forty or more token characters
-# not inside a path (a key pasted in place of a command that reads one). Such a command would ride /bin/sh's argv on
-# every refresh, readable to every process of the same user through ps, so it is refused at add time.
-CREDENTIAL_SHAPE_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}|(?<![A-Za-z0-9_/.\-])[A-Za-z0-9_\-]{40,}(?![A-Za-z0-9_/.\-])")
+# not inside a path (a key pasted in place of a command that reads one), dots included so a JWT-shaped bearer (three
+# runs joined by dots) reads as one run. Such a command would ride /bin/sh's argv on every refresh, readable to every
+# process of the same user through ps, so it is refused at add time. A forty-digit HEX run is also a gpg key
+# fingerprint: one inside a gpg command, or right after --recipient/-r, passes (review 2026-09-11).
+CREDENTIAL_SHAPE_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}|(?<![A-Za-z0-9_/.\-])[A-Za-z0-9_.\-]{40,}(?![A-Za-z0-9_/.\-])")
+HEX_RUN_RE = re.compile(r"^[0-9A-Fa-f]{40}$")
+GPG_CMD_RE = re.compile(r"(?:^|[\s;&|(`$])gpg2?(?:\s|$)")
+RECIPIENT_RE = re.compile(r"(?:--recipient|-r)(?:\s+|=)$")
+
+
+def credential_shaped(cmd: str) -> bool:
+    """Whether `cmd` carries a credential-shaped run (CREDENTIAL_SHAPE_RE), a gpg fingerprint excepted."""
+    for m in CREDENTIAL_SHAPE_RE.finditer(cmd):
+        if HEX_RUN_RE.match(m.group(0)) and (GPG_CMD_RE.search(cmd) or RECIPIENT_RE.search(cmd[:m.start()])):
+            continue
+        return True
+    return False
 
 
 def token_cmd_error(cmd) -> str:
@@ -48,10 +62,11 @@ def token_cmd_error(cmd) -> str:
         return "the token command must be at most %d characters" % TOKEN_CMD_MAX
     if any(ord(ch) < 32 for ch in cmd):
         return "the token command must be one line with no control characters"
-    if CREDENTIAL_SHAPE_RE.search(cmd):
-        return ("the command text looks like it carries the credential itself, which would ride the shell's argument list "
-                "on every refresh; keep the token in a store and have the command read it (--op <reference>, or "
-                "--cmd 'cat <private file>')")
+    if credential_shaped(cmd):
+        # said at the moment the value has already reached the shell's history and this command's argument list
+        return ("the command text looks like it carries the credential itself; a value typed on a command line is "
+                "already exposed (the shell's history, the command's argument list), so rotate it, then keep the new "
+                "token in a store and have the command read it (--op <reference>, or --cmd 'cat <private file>')")
     return ""
 
 

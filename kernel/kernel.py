@@ -35131,10 +35131,11 @@ def build_feed(now, live_map=None):
         _cap_off = _cap_switch_offer(fsid, aerr) if aerr else None   # the billing-switch OFFER (never a silent switch, 2026-08-30)
         # a session billed to a STORED login (T346) whose credential the API refused: the card names the login
         # by its label, and the registry marks the record refused so every menu greys it with the reason until
-        # it is removed or added again (logins.mark_refused is idempotent: an unchanged reason writes nothing)
+        # it is removed or added again (logins.mark_refused is idempotent: an unchanged reason writes nothing).
+        # Gated on the launch having CARRIED that login's helper and the CLI having used it (authLoginLive, the
+        # init's evidence), never on the pick: a session that fell to the key never tried the stored credential
         _lm_row = ((live_map if live_map is not None else _live_map()) or {}).get(fsid) or {}
-        _auth_login_lbl = (str(_lm_row.get("authLabel") or "login")
-                           if (aerr and aerr.get("authErr") and _lm_row.get("authLogin")) else "")
+        _auth_login_lbl = _login_refusal_label(_lm_row, aerr)
         if _auth_login_lbl:
             lg.mark_refused(jd.STATE, str(_lm_row["authLogin"]), aerr.get("text") or "the API refused this login")
         api_top = None
@@ -36412,6 +36413,21 @@ def _judge_api_health_note(kind, auth, model, msg, fsid):
            else "server_error" if st is not None and st >= 500
            else "unknown")
     ah.note_gaveup(now, auth=label, family=fam, status=st, category=cat, sid=sid, turn=0)
+
+
+def _login_refusal_label(row, aerr):
+    """The stored login an API auth error refused, as its display label, or "". Only when the session's launch
+    carried that login's helper AND the CLI used it (authLoginLive names the login: the init's evidence) does the
+    error speak about the login; a session that fell to the key or the machine's own login (a managed helper, a
+    refused record, a wrong landing) never tried the stored credential, so its auth error marks nothing (review
+    2026-09-11: a revoked key marked an untried login refused)."""
+    if not (aerr and aerr.get("authErr")):
+        return ""
+    row = row or {}
+    lid = str(row.get("authLogin") or "")
+    if not lid or str(row.get("authLoginLive") or "") != lid:
+        return ""
+    return str(row.get("authLabel") or "login")
 
 
 def _auth_pick_label(value):

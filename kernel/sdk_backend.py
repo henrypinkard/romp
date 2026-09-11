@@ -10766,29 +10766,49 @@ class SdkBackend:
                 # way: said loudly naming what the CLI used, the record marked refused (every menu greys it), and
                 # the session RECONNECTED so its next launch takes the documented fall (the key when a helper is
                 # configured, else the machine's own login, said in the status as authPickUnavailable/authPickFell)
-                # instead of running unflagged on whatever the CLI found. The session is not ended, since that would
-                # drop the user's conversation: it keeps running on the fallback side with the Billing row saying so.
+                # instead of running unflagged on whatever the CLI found; once per session, and only when there IS
+                # a fall (below). The session is not ended, since that would drop the user's conversation: it keeps
+                # running on the fallback side (or, with no fall, where it landed) with the Billing row saying so.
                 sess.auth_login_live = ""
                 used = ("the machine's own login" if (not _word or _word == "none")
                         else "the CLI's %s credential" % str(source).strip())
                 why = "the token command did not answer and the CLI signed in with %s instead" % used
-                self._log("auth (%s): the %s login's helper was not used: %s; reconnecting onto the fallback side"
-                          % (sess.name, self.login_display(_ll), why), problem=True)
                 _logins.mark_refused(self.state_dir, _ll, why)
                 sess._launched_login = ""       # the evidence: this process does not bill the stored login
+                # The reconnect relaunches onto the documented fall, read AFTER the refusal is recorded: the key when
+                # a helper is configured, else the machine's own login. With NOTHING to fall to the relaunch would
+                # carry the same failing helper, land wrong again and reconnect again, forever (review 2026-09-11:
+                # four rounds, four problem rows, no backoff), so the session stays where it landed, refused and
+                # flagged; and however many inits report a wrong landing, the reconnect is asked once per session.
                 try:
-                    sess.request_reconnect()
+                    fall = self.pick_fall("login", _ll)
                 except Exception:
-                    pass
+                    fall = ""
+                head = "auth (%s): the %s login's helper was not used: %s; " % (sess.name, self.login_display(_ll), why)
+                if not fall:
+                    self._log(head + "nothing to fall to on this box, so the session stays where it landed, flagged",
+                              problem=True)
+                elif getattr(sess, "_wrong_landing_reconnected", False):
+                    self._log(head + "already reconnected once, staying put", problem=True)
+                else:
+                    self._log(head + "reconnecting onto the fallback side (%s)" % fall, problem=True)
+                    sess._wrong_landing_reconnected = True
+                    try:
+                        sess.request_reconnect()
+                    except Exception:
+                        pass
         keyed = bool(source) and str(source).strip().lower() != "none"
         # The /api-health bucket label, resolved here — once per init, from the init's own source word
         # and what THIS session was launched with — and cached on the session (api_health_auth_label).
         # romp records no key identity (it holds no key since 2026-09-08), so a CLI-found ANTHROPIC_API_KEY
         # labels key:env and a helper key:helper; the login's account digest labels the login side.
         try:
-            _lid = getattr(sess, "auth_login", "") or ""      # getattr: __new__-built test doubles
-            sess.auth_label = self.api_health.auth_label(source, login_id=_lid,
-                                                         display=self.login_display(_lid))   # romp records no key identity: the source word labels
+            # The bucket follows the EVIDENCE, never the pick: _launched_login names the stored login only when this
+            # launch carried its helper and the init said the helper answered (cleared just above on a wrong landing,
+            # "" on a fallback launch), so a session working on the machine's login or the key files there, not
+            # under the refused login's bucket (review 2026-09-11). romp records no key identity: the source word labels.
+            _lid = getattr(sess, "_launched_login", "") or ""      # getattr: __new__-built test doubles
+            sess.auth_label = self.api_health.auth_label(source, login_id=_lid, display=self.login_display(_lid))
         except Exception as e:
             self._log("api-health: auth label failed (%s): %s" % (sess.name, e))
         # The CLI landed on a DIFFERENT auth than EXPECTED — the expected side is the box-wide
