@@ -36400,9 +36400,9 @@ def _judge_api_health_note(kind, auth, model, msg, fsid):
     now = time.time()
     sid = str(fsid or "judges")
     if kind == "ok":
+        # never a clearer of a refusal: the judge's envelope carries no evidence of WHICH login answered (a
+        # session's init word does; _note_auth_source and _ah_note_assistant own the clear)
         ah.note_ok(now, auth=label, family=fam, sid=sid, message_id=None)
-        if lid:
-            lg.clear_refused(be.state_dir, lid)     # a served judge call on the stored login is the deciding event too
         return
     st = _judge_err_status(msg)
     low = str(msg or "").lower()

@@ -5475,7 +5475,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
       // a STORED login picked, but the init's evidence says the CLI never used its helper and signed in with the
       // machine's own login (T346): the wrong account, said as such, never shown as the pick applied
       : (s.status.auth === "login" && s.status.authLogin && s.status.authLoginLive === "")
-        ? `⚠ Login (${loginName(s.status)}) picked, but the CLI signed in with the machine's own login: this session bills that`
+        ? `⚠ Login (${loginName(s.status)}) picked, but the CLI signed in with another credential: this session bills that`
       // the pick names a side this box cannot bill (the kernel's authPickUnavailable, with the reason
       // in authAvail): the launch went to the other side, and the row says so (the user 2026-09-08)
       : s.status.authPickUnavailable === s.status.auth
@@ -6630,7 +6630,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     const sb = el("span", "ctx-item-sub");
     sb.textContent = st.authPending ? "applying…"
       : (st.auth === "login" && st.authLogin && st.authLoginLive === "")
-        ? "⚠ CLI used the machine's login"   // the stored login's helper was not used (T346): the init's evidence
+        ? "⚠ CLI used another credential"   // the stored login's helper was not used (T346): the init's evidence
       : st.authPickUnavailable === st.auth
         // the pick names a side this box cannot bill — the launch went to the other one when it exists
         ? `⚠ ${wordOf(st.auth)} unavailable` + (authFellTo(st) ? `, billing ${wordOf(authFellTo(st))}` : "")

@@ -26,8 +26,8 @@ test("the status and the availability reply carry WHICH login, typed", () => {
 test("a stored login the CLI did not use is said on the hover and the sub-line, from the init's evidence", () => {
   // authLoginLive "" = the CLI signed in with the machine's own login instead of the stored one's helper (the
   // kernel's _note_auth_source reads the init's source word); absent before an init, the record id when it answered
-  assert.match(RENDER, /: \(s\.status\.auth === "login" && s\.status\.authLogin && s\.status\.authLoginLive === ""\)\s*\n\s*\? `⚠ Login \(\$\{loginName\(s\.status\)\}\) picked, but the CLI signed in with the machine's own login: this session bills that`/);
-  assert.match(RENDER, /: \(st\.auth === "login" && st\.authLogin && st\.authLoginLive === ""\)\s*\n\s*\? "⚠ CLI used the machine's login"/);
+  assert.match(RENDER, /: \(s\.status\.auth === "login" && s\.status\.authLogin && s\.status\.authLoginLive === ""\)\s*\n\s*\? `⚠ Login \(\$\{loginName\(s\.status\)\}\) picked, but the CLI signed in with another credential: this session bills that`/);
+  assert.match(RENDER, /: \(st\.auth === "login" && st\.authLogin && st\.authLoginLive === ""\)\s*\n\s*\? "⚠ CLI used another credential"/);
 });
 
 test("the tab menu's Billing submenu lists every login plus the key, the current one by WHICH login", () => {

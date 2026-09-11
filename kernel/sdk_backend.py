@@ -10759,14 +10759,27 @@ class SdkBackend:
             if _word == "apikeyhelper":
                 source = "none"
                 sess.auth_login_live = _ll
-            elif not _word or _word == "none":
+            else:
+                # ANY other word means the helper did not answer and the CLI signed in with something else: absent
+                # or 'none' is the machine's own login from its credentials file; '/login managed key', 'user',
+                # 'project', 'temporary' or ANTHROPIC_API_KEY another credential entirely. The wrong account either
+                # way: said loudly naming what the CLI used, the record marked refused (every menu greys it), and
+                # the session RECONNECTED so its next launch takes the documented fall (the key when a helper is
+                # configured, else the machine's own login, said in the status as authPickUnavailable/authPickFell)
+                # instead of running unflagged on whatever the CLI found. The session is not ended, since that would
+                # drop the user's conversation: it keeps running on the fallback side with the Billing row saying so.
                 sess.auth_login_live = ""
-                why = "the token command did not answer and the CLI signed in with the machine's own login instead"
-                self._log("auth (%s): the %s login's helper was not used: %s"
+                used = ("the machine's own login" if (not _word or _word == "none")
+                        else "the CLI's %s credential" % str(source).strip())
+                why = "the token command did not answer and the CLI signed in with %s instead" % used
+                self._log("auth (%s): the %s login's helper was not used: %s; reconnecting onto the fallback side"
                           % (sess.name, self.login_display(_ll), why), problem=True)
                 _logins.mark_refused(self.state_dir, _ll, why)
-            else:
-                sess.auth_login_live = ""       # a key source: the contradiction below rings as for any login pick
+                sess._launched_login = ""       # the evidence: this process does not bill the stored login
+                try:
+                    sess.request_reconnect()
+                except Exception:
+                    pass
         keyed = bool(source) and str(source).strip().lower() != "none"
         # The /api-health bucket label, resolved here — once per init, from the init's own source word
         # and what THIS session was launched with — and cached on the session (api_health_auth_label).

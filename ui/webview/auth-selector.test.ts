@@ -114,7 +114,7 @@ test("the chat tab hover says Billing whenever the backend reports it, naming th
     "a confirmed contradiction leads with the warning");
   // the SWITCH CONTROL (the Billing submenu) carries the same truth where the pick lives
   // (T346: the stored-login evidence branch sits between "applying…" and the unavailable pick)
-  assert.match(RENDER, /sb\.textContent = st\.authPending \? "applying…"\s*\n\s*: \(st\.auth === "login" && st\.authLogin && st\.authLoginLive === ""\)\s*\n\s*\? "⚠ CLI used the machine's login"[^\n]*\n\s*: st\.authPickUnavailable === st\.auth\s*\n(?:\s*\/\/[^\n]*\n)*\s*\? `⚠ \$\{wordOf\(st\.auth\)\} unavailable`[^\n]*\n\s*: st\.authLive && st\.authLive !== st\.auth\s*\n\s*\? `⚠ CLI reports \$\{st\.authLive === "key" \? "API key" : "login"\}`/,
+  assert.match(RENDER, /sb\.textContent = st\.authPending \? "applying…"\s*\n\s*: \(st\.auth === "login" && st\.authLogin && st\.authLoginLive === ""\)\s*\n\s*\? "⚠ CLI used another credential"[^\n]*\n\s*: st\.authPickUnavailable === st\.auth\s*\n(?:\s*\/\/[^\n]*\n)*\s*\? `⚠ \$\{wordOf\(st\.auth\)\} unavailable`[^\n]*\n\s*: st\.authLive && st\.authLive !== st\.auth\s*\n\s*\? `⚠ CLI reports \$\{st\.authLive === "key" \? "API key" : "login"\}`/,
     "the submenu sub-line shows the contradiction, not the unapplied pick");
 });
 

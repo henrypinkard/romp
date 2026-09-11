@@ -71,6 +71,9 @@ em = load_source("romp_event_model", HERE / "event_model.py")
 em.set_checkpoint_dir(lambda: STATE / "checkpoints")   # T323 stage 3: the fold checkpoints live under the state root, read at
 #                                                        call time so _rebind_state moves them with everything else
 _cred = sys.modules.get("romp_credentials") or load_source("romp_credentials", HERE / "credentials.py")
+# the stored Claude logins' registry (T346): a judge call for a session billed to one names that login's helper,
+# and never runs as a login the registry holds refused
+_logins = sys.modules.get("romp_logins") or load_source("romp_logins", HERE / "logins.py")
 
 HOME     = Path.home()
 STATE    = Path(os.environ.get("ROMP_STATE_DIR")   # per-kernel state root override (plans/multi-kernel.md)
@@ -1705,8 +1708,19 @@ def _judge_auth(fsid):
             a = lid = ""
     if a == "login" and lid and re.fullmatch(r"[0-9a-f]{12}", lid):
         # a session billed to a STORED login (T346): its judges bill that same login, carried as the pick value
-        # 'login:<id>' so _judge_cmd names the login's helper and every latch and row says WHICH login
-        return "login:" + lid
+        # 'login:<id>' so _judge_cmd names the login's helper and every latch and row says WHICH login. A stored
+        # login the registry holds REFUSED (or expired, or gone) is never run as: the call takes the session's own
+        # fallback (the key when a helper is configured, else the machine's login), said once per session, and a
+        # judge call never clears a refusal (its envelope carries no evidence of which login answered).
+        why = _logins.why_unavailable(_logins.record_state(STATE, lid))
+        if not why:
+            return "login:" + lid
+        fall = "key" if _key_available() else "login"
+        if (fsid, lid) not in _LOGIN_FALL_SAID:
+            _LOGIN_FALL_SAID.add((fsid, lid))
+            sys.stderr.write("romp-judge: session %s bills a stored login that is unavailable (%s); its judge calls bill "
+                             "the %s instead\n" % (str(fsid or "")[:8], why, "API key" if fall == "key" else "machine's login"))
+        return fall
     if a in ("login", "key"):
         return a
     return "key" if _key_available() else "login"
@@ -1725,6 +1739,7 @@ def _login_helper_cmd(login_id):
     return "%s %s %s" % (shlex.quote(str(HERE.parent / "bin" / "romp-login-helper")), login_id, shlex.quote(str(STATE)))
 
 
+_LOGIN_FALL_SAID = set()       # (fsid, login id) pairs whose judge fall off a refused stored login was said (once each)
 _API_HEALTH_NOTE_FN = None     # the kernel wires the API-health ring's judge source (T346, the user 2026-09-11: one
                                # accounting per login, the judges included): fn(kind, auth, model, msg, fsid) with kind
                                # 'ok' | 'gaveup'; standalone judges note nothing

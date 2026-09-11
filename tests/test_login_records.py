@@ -177,6 +177,11 @@ class Registry(unittest.TestCase):
         self.assertEqual(lg.token_cmd_error(""), "a token command (a shell line that prints the token) is required")
         self.assertIn("one line", lg.token_cmd_error("cat x\ncat y"))
         self.assertEqual(lg.token_cmd_error("cat ~/.secrets/enterprise-token"), "", "any command; romp runs it, never reads it")
+        # a command that carries the credential itself would ride the shell's argument list on every refresh: refused
+        self.assertIn("looks like it carries the credential", lg.token_cmd_error("printf %s " + _token_shaped()))
+        self.assertIn("looks like it carries the credential", lg.token_cmd_error("echo " + "".join(["A1b2"] * 11)))
+        self.assertEqual(lg.token_cmd_error("cat /a/" + "x" * 60 + "/token"), "", "a long path segment is not a credential")
+        self.assertEqual(lg.token_cmd_error(lg.op_read_command("op://Vault/romp login Work/credential")), "")
 
 
 class TheHelperScript(unittest.TestCase):
@@ -241,6 +246,16 @@ class TheHelperScript(unittest.TestCase):
         self.assertEqual((seen.get("XDG_CONFIG_HOME"), seen.get("LC_TIME")), ("/x/config", "C"), "the XDG and LC names pass")
         self.assertTrue(set(seen) <= {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "CLAUDE_CONFIG_DIR", "PWD", "SHLVL", "_", "OLDPWD"}
                         | {k for k in seen if k.startswith(("LC_", "XDG_"))}, sorted(seen))
+
+    def test_a_hung_command_is_cut_by_the_bound(self):
+        import subprocess, time as _t
+        rec = _rec(self.state, "Hung", tokenCmd="sleep 30")
+        t0 = _t.time()
+        p = subprocess.run([os.path.join(BIN, "romp-login-helper"), rec["id"], str(self.state)], capture_output=True, text=True,
+                           env=dict(self.env, ROMP_LOGIN_HELPER_TIMEOUT_S="1"))
+        self.assertLess(_t.time() - t0, 10, "the bound cut it")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(p.stdout, "")
 
     def test_any_command_serves_not_only_1password(self):
         # a token kept in a private file, read by a plain command: romp assumes nothing about the store
@@ -608,6 +623,25 @@ class StoredLoginPick(_Backend):
         s._ah_note_assistant(types.SimpleNamespace(model="claude-opus-5", message_id="m2", parent_tool_use_id=None, error=None))
         self.assertEqual(lg.read_record(self.be.state_dir, rec["id"])["refused"], "again")
 
+    def test_a_landing_on_another_credential_is_refused_named_and_reconnected(self):
+        rec = _rec(self.be.state_dir, "Work")
+        logs, recon = [], []
+        self.be._log = lambda m, problem=False: logs.append((m, problem))
+        for word, named in (("/login managed key", "the CLI's /login managed key credential"),
+                            ("ANTHROPIC_API_KEY", "the CLI's ANTHROPIC_API_KEY credential"),
+                            ("none", "the machine's own login"), ("", "the machine's own login")):
+            lg.clear_refused(self.be.state_dir, rec["id"])
+            s = self._sess(9, auth="login", authLogin=rec["id"])
+            self.be._options(s, dict)
+            self.assertEqual(s._launched_login, rec["id"])
+            s.request_reconnect = lambda defer=True: recon.append(1)
+            self.be._note_auth_source(s, word)
+            self.assertEqual(s.auth_login_live, "", word)
+            self.assertEqual(s._launched_login, "", "this process does not bill the stored login (spend and the ring say so)")
+            self.assertIn(named, lg.read_record(self.be.state_dir, rec["id"])["refused"], word)
+        self.assertEqual(len(recon), 4, "every wrong landing asks for the reconnect onto the fallback side")
+        self.assertTrue(all("reconnecting onto the fallback side" in m for m, p in logs if "helper was not used" in m))
+
     def test_the_seed_skip_names_a_dead_remembered_stored_login(self):
         rec = _rec(self.be.state_dir, "Work")
         lg.mark_refused(self.be.state_dir, rec["id"], "refused")
@@ -750,6 +784,9 @@ class Doors(unittest.TestCase):
         self.assertEqual(st, 400)
         st, d = self._req("/logins", {"add": {"tokenCmd": "cat x"}})
         self.assertEqual(st, 400)
+        st, d = self._req("/logins", {"add": {"label": "Pasted", "tokenCmd": "printf %s " + _token_shaped()}})
+        self.assertEqual(st, 400, "a credential pasted as the command is refused at the door")
+        self.assertIn("looks like it carries the credential", d["error"])
         st, d = self._req("/logins", {"add": {"label": "Plain", "tokenCmd": "cat ~/.secrets/enterprise-token"}})
         self.assertEqual((st, d["ok"]), (200, True), "any command, not only 1Password")
         self.assertTrue(lg.remove(self.state, d["id"]))
@@ -801,6 +838,20 @@ class Judges(unittest.TestCase):
             jd._LOGIN_AUTH_ENV_FN = saved
         self.assertTrue(jd._is_login_auth("login:" + self.rec["id"]) and jd._is_login_auth("login") and not jd._is_login_auth("key"))
 
+    def test_a_refused_stored_login_never_runs_a_judge_call(self):
+        import io, contextlib
+        lg.mark_refused(self.state, self.rec["id"], "OAuth token has expired")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            first = jd._judge_auth(SID)
+            second = jd._judge_auth(SID)
+        self.assertIn(first, ("key", "login"), "the session's own fallback, never the refused login")
+        self.assertEqual(first, second)
+        self.assertEqual(err.getvalue().count("bills a stored login that is unavailable"), 1, "said once per session")
+        self.assertIn("was refused", err.getvalue())
+        lg.clear_refused(self.state, self.rec["id"])
+        self.assertEqual(jd._judge_auth(SID), "login:" + self.rec["id"], "cleared: the login is run as again")
+
     def test_the_latch_and_the_usage_row_say_which_login(self):
         jd._auth_down_mark(SID, "login:" + self.rec["id"], "OAuth token has expired")
         row = jd._auth_down_map()[SID]
@@ -843,7 +894,8 @@ class Judges(unittest.TestCase):
             self.assertIn("key:helper", labels, "a key call files under the helper's bucket, unchanged")
             lg.mark_refused(d, self.rec["id"], "refused once")
             km._judge_api_health_note("ok", "login:" + self.rec["id"], "claude-opus-5", "", SID)
-            self.assertNotIn("refused", lg.read_record(d, self.rec["id"]), "a served judge call clears the refusal")
+            self.assertEqual(lg.read_record(d, self.rec["id"])["refused"], "refused once",
+                             "a served judge call clears nothing: its envelope carries no evidence of which login answered")
         finally:
             km._sdk = saved
             jd._API_HEALTH_NOTE_FN = None

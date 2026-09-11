@@ -44,4 +44,9 @@ done
 while IFS= read -r k; do
     case "$k" in LC_*|XDG_*) keep+=("$k=${!k}") ;; esac
 done < <(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p')
-exec env -i "${keep[@]}" /bin/sh -c "$cmd" </dev/null 2>/dev/null
+# a bound on the command, like the kernel's own helper run (credentials.HELPER_TIMEOUT_S): the CLI's own budget is
+# not pinned, and a hung secret manager must fail the request rather than hold it; a machine without coreutils'
+# timeout runs unbounded (the CLI's budget then decides). ROMP_LOGIN_HELPER_TIMEOUT_S overrides the 15 s.
+lim="${ROMP_LOGIN_HELPER_TIMEOUT_S:-15}"
+if command -v timeout >/dev/null 2>&1; then set -- timeout "$lim" /bin/sh -c "$cmd"; else set -- /bin/sh -c "$cmd"; fi
+exec env -i "${keep[@]}" "$@" </dev/null 2>/dev/null

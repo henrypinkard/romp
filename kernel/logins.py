@@ -33,6 +33,10 @@ ID_RE = re.compile(r"^[0-9a-f]{12}$")
 # or with a section op://<vault>/<item>/<section>/<field> (`romp login add --op <ref>` writes `op read` for it)
 OP_REF_RE = re.compile(r"^op://[^/\r\n\t]+/[^/\r\n\t]+/[^/\r\n\t]+(?:/[^/\r\n\t]+)?$")   # item titles may carry spaces
 TOKEN_CMD_MAX = 500                 # one shell line: the command the helper runs to print the token
+# A credential's SHAPE inside a command's text: a setup-token's prefix, or a run of forty or more token characters
+# not inside a path (a key pasted in place of a command that reads one). Such a command would ride /bin/sh's argv on
+# every refresh, readable to every process of the same user through ps, so it is refused at add time.
+CREDENTIAL_SHAPE_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}|(?<![A-Za-z0-9_/.\-])[A-Za-z0-9_\-]{40,}(?![A-Za-z0-9_/.\-])")
 
 
 def token_cmd_error(cmd) -> str:
@@ -44,6 +48,10 @@ def token_cmd_error(cmd) -> str:
         return "the token command must be at most %d characters" % TOKEN_CMD_MAX
     if any(ord(ch) < 32 for ch in cmd):
         return "the token command must be one line with no control characters"
+    if CREDENTIAL_SHAPE_RE.search(cmd):
+        return ("the command text looks like it carries the credential itself, which would ride the shell's argument list "
+                "on every refresh; keep the token in a store and have the command read it (--op <reference>, or "
+                "--cmd 'cat <private file>')")
     return ""
 
 

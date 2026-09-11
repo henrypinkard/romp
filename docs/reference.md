@@ -470,13 +470,26 @@ at mode 0600 in a 0700 directory.
 
 A failing command is loud, never a quiet fall onto another account. The
 session's first request fails with an auth error the card names by the login's
-label. When the CLI never used the helper and signed in with the machine's own
-login from its credentials file instead, the init's own report is the evidence
-(its source word), the tab hover reads `picked, but the CLI signed in with the
-machine's own login`, the submenu's sub-line `CLI used the machine's login`,
-the problem ring says so, and the record is marked refused so every menu greys
-it with that reason. A served reply on the login is the deciding event the
-other way and clears the refusal.
+label. When the CLI never used the helper and signed in with something else
+(the machine's own login from its credentials file, a managed key, a key found
+in a settings file), the init's own report is the evidence: its source word is
+anything but the helper's. The problem ring names what the CLI used, the tab
+hover reads `picked, but the CLI signed in with another credential`, the
+submenu's sub-line `CLI used another credential`, the record is marked refused
+so every menu greys it with that reason, and the session is reconnected so its
+next launch takes the same fall a dead machine login takes (the API key when a
+helper is configured, else the machine's own login, said in the Billing row as
+a fall). The session is not ended, since that would drop the conversation: it
+keeps running on the fallback side, flagged, and the Billing menu switches it
+elsewhere on a click. A served reply on a session whose helper did answer is
+the deciding event the other way and clears the refusal; a judge call never
+clears one (its envelope does not say which login answered), and the judges of
+a session on a refused login take the same fallback, said once in the kernel
+log. The helper bounds the command at fifteen seconds (the kernel's own helper
+bound; `ROMP_LOGIN_HELPER_TIMEOUT_S` overrides it). A command whose text
+carries a credential-shaped run is refused at add time: it would ride the
+shell's argument list on every refresh, readable to every process of the same
+user.
 
 A machine or session with no stored login works exactly as today: the ordinary
 Claude Code login and the API key path are untouched, and the stored logins
