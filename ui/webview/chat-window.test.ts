@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { applyTailAfter, prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore } from "./chat-window";
+import { applyTailAfter, prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore, reattachKeys, REATTACH_KEYS } from "./chat-window";
 
 const ev = (u: string) => ({ uuid: u, kind: "user", md: u });
 const run = (...u: string[]) => u.map(ev);
@@ -91,10 +91,21 @@ test("render.ts wires the three rules, tracks the pending needFull reason, hides
   assert.ok(more.includes("const am = afterMore(!!msg.more, !!s.headKnown, s.events.length);"), "chatMore decides through the rule");
   assert.ok(more.includes("if (msg.id === activeId && s.detached) window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));"), "…and a still-detached run re-checks its edge after the page painted");
   const active = RENDER.slice(RENDER.indexOf("function setActive(id: string"), RENDER.indexOf("\n}\n", RENDER.indexOf("function setActive(id: string")));
-  assert.ok(active.includes("activeId = id;\n  updateLivePaused();"), "a tab switch re-evaluates the strip for the entering tab");
+  // (T357: the unfocused state's clear sits between the two lines; the re-evaluation still follows the activation)
+  const actAt = active.indexOf("activeId = id;\n  vanishedId = null;"), pausedAt = active.indexOf("updateLivePaused();");
+  assert.ok(actAt >= 0 && pausedAt > actAt && pausedAt - actAt < 200, "a tab switch re-evaluates the strip for the entering tab");
   assert.ok(RENDER.includes('turn.dataset.orphanOf = String((ev as { orphanOf?: string }).orphanOf)'), "an orphan note's turn carries its record uuid");
   assert.equal((RENDER.match(/\.turn\[data-orphan-of="\$\{cssEscape\(uuid\)\}"\]/g) || []).length, 2, "…and both anchor lookups read it");
   assert.ok(RENDER.includes("(e as { orphanOf?: string }).orphanOf === uuid"), "…as does the events-list search behind them");
+});
+
+test("the re-attach ask carries the run's newest keys, bounded, and render.ts posts them ahead of the ask", () => {
+  const long = Array.from({ length: REATTACH_KEYS + 40 }, (_, i) => ev("k" + i));
+  const keys = reattachKeys(long);
+  assert.equal(keys.length, REATTACH_KEYS); assert.equal(keys[0], "k40"); assert.equal(keys[keys.length - 1], "k" + (REATTACH_KEYS + 39));
+  assert.deepEqual(reattachKeys([ev("a"), { uuid: "a", key: "a#2", kind: "tool" }, { kind: "todo" }]), ["a", "a#2"], "keys, not uuids; a keyless card is skipped");
+  const fn = RENDER.slice(RENDER.indexOf("function reattachLive(sid: string): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function reattachLive(sid: string): void {")));
+  assert.ok(fn.indexOf('type: "reattachKeys", id: sid, keys: reattachKeys(') > 0 && fn.indexOf('type: "reattachKeys"') < fn.indexOf('requestFullSession(sid, "reattach")'), "the keys go out before the ask");
 });
 
 test("render.ts speaks proto 2 at ready and routes the four proto-2 frames through this module", () => {

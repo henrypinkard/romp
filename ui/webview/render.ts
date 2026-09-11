@@ -15,13 +15,15 @@ import type { ParsedAsk } from "../ask-types";
 import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
 import type { CmtPopFrac } from "./comment-pop-size";
 import { CMT_POP_SIZE_KEY, CMT_POP_THREAD_DEFAULT, parseCmtPopSize, clampCmtPopPx, toCmtPopFrac, isCmtPopMax,
-         centerCmtPop, cmtPopCapPx } from "./comment-pop-size";
+         centerCmtPop, cmtPopCapPx, CMT_POP_MIN_W, CMT_POP_MIN_H, CMT_POP_CAP_W, CMT_POP_CAP_H, CMT_POP_EDGE } from "./comment-pop-size";
 import { ctxFallbackColor, pickTone, readableRgb } from "./ctx-color";
 import { applyTheme } from "./theme";
 import { installPostalWash } from "./postal-wash";   // the incoming postal card's tint lightness, measured from the page (T337c)
 import { applyDenseChrome } from "./dense-chrome";
 import { SessionViews, viewVisible, viewsKey, revealIn, viewTagUnion, viewTags, type TagUnion, type SessionTag } from "./session-views";
-import { prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore } from "./chat-window";   // the uuid-anchored wire (T323 stage 4b)
+import { prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore, reattachKeys } from "./chat-window";   // the uuid-anchored wire (T323 stage 4b)
+import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./subagent-wait";   // the viewer's wait bound and its stall (T355)
+import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip } from "./tag-menu";
@@ -69,10 +71,12 @@ import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { openUrlView } from "./file-view";                 // the URL mode of the same viewer (md-url-view.test.ts)
 import { isMarkdownUrl } from "./md-links";
 import { openPathLink, linkifyPathTokens, selectionOpenIn } from "./path-links";   // the path matcher the chat's links are made from (a shared module)
+import { PREVIEW_DWELL_MS, PREVIEW_GRACE_MS, HoverIntent, parsePreviewLink, previewKindOf, sliceUrl, contentFor, textOnlyContent, stripRemoteLoads, type PreviewContent } from "./file-preview";   // the file preview popover's pure half (T351)
 import { initFileBrowse, openFileBrowse } from "./file-browse";   // the browser is pane-local here now (the user 2026-08-24)
 import { pastedFilePath } from "./paste-path";
 import { insertAtCaret } from "./composer-insert";
 import { hostNameNodes, hostPartsNodes, hostPrefix, hostOf, hostIsDown, hostIsDialing, hostDownNote } from "./host-prefix";
+import { focusAfterDismiss, emptyStateParts } from "./pane-focus";   // where focus goes when a tab leaves, and the empty body's line (T357)
 import { MENTION_MAX_ROWS, mentionQuery, rankMentions, mentionMoreNote, mentionToken, insertMention, mentionKeyAction, mentionSegments } from "./composer-mention";   // the @-mention card's rules, pure; the DOM is setupComposer's mention block and markMentions
 import type { MentionCandidate, MentionQuery } from "./composer-mention";
 import { defaultCommentName, defaultBreakoutName, defaultForkName, nameToSend } from "./comment-name";
@@ -141,8 +145,8 @@ type ChatEvent = (
   // event renders as a labelled notice (renderInjected), never the user's bubble (the user 2026-09-07)
   // gist: a romp SYSTEM notice's USER-facing head, lifted by the kernel from the notice's <!-- romp-gist -->
   // marker (2026-09-08) — the body is written to the agent and never doubles as the head
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; gist?: string; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; absorbed?: boolean; sentAt?: number; hiddenByPending?: boolean; source?: InjectedSource; preamble?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string> }
-  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string> }   // spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; gist?: string; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; absorbed?: boolean; sentAt?: number; hiddenByPending?: boolean; source?: InjectedSource; preamble?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string> }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string> }   // pathPreview: the links a hover may preview, by kind (T351). spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
       kind: "tool";
@@ -355,7 +359,8 @@ interface Session { id: string; name: string; color: Color | null; events: ChatE
 // agent's own transcript, fed by {type:"subagent"} frames. Client-only — the kernel never lists it in
 // tabOrder (reconcileTabOrder keeps a known, never-kernel-seen id), so it lives exactly as long as the
 // viewer. anchorUuid = the parent's Agent tool head, for the header's link back.
-interface SubInfo { parentId: string; agentId: string; meta: SubMeta | null; running: boolean; truncated: boolean; error: string | null; loaded: boolean; anchorUuid: string | null; }
+interface SubInfo { parentId: string; agentId: string; meta: SubMeta | null; running: boolean; truncated: boolean; error: string | null; loaded: boolean; anchorUuid: string | null;
+                    stalled?: boolean; askedAt?: number; }   // stalled: the ask went unanswered past SUBAGENT_OPEN_WAIT_MS (T355)
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -1032,6 +1037,17 @@ fetch(kernelUrl("/palette"), { cache: "no-store" }).then((r) => r.json())
   .then((d) => { if (Array.isArray(d.colors)) paletteColors = d.colors; }).catch(() => { /* menu omits the swatch row */ });
 const mru: string[] = [];             // recency stack, front = most-recently-active (close → return to previous)
 let activeId: string | null = null;
+// UNFOCUSED (T357, the user 2026-09-11): the tab the user was on left the strip on its own (a kernel restart that
+// dropped the remote tabs until their host came back, a host relay down, a session gone). The pane never jumps to
+// ANOTHER session on its own: no active tab, a body that names the session that vanished, the composer disabled with
+// no session name, and focus RESTORED to that same session when its tab returns (the arrival path and applyTabOrder
+// read vanishedId). Only the user's own ✕ keeps the recency fallback, and only a pick by the user moves focus
+// (setActive clears these). pane-focus.ts holds the rule and the words.
+let vanishedId: string | null = null;
+let vanishedWhy: VanishWhy | null = null;
+let vanishedName = "";
+/** why the pane is unfocused: a dismissal's reason, or "hidden" (the tab view stopped showing the active tab) */
+type VanishWhy = DismissWhy | "hidden";
 let renderingSid: string | null = null;   // the session id syncView is currently building (for per-session fold keys)
 // The SESSION whose transcript DOM is being built — the id preview/image URLs must bake in, host prefix
 // included. Distinct from renderingSid, which is a fold KEY the comment popover retargets to its thread id.
@@ -1051,6 +1067,13 @@ let renderingOwnerSid: string | null = null;
 let renderingIntoThread = false;
 // restore the last-active tab on refresh (persisted via setState); one-shot, applied when its session arrives
 let wantActive: string | null = (() => { try { return ((vscodeApi?.getState?.() || {}) as any).activeId || null; } catch { return null; } })();
+// THE USER'S ACTUAL TRIGGER (T357, the review): a kernel restart RELOADS the page, so no dismissal runs; the persisted
+// choice above is all the pane has, and the local kernel's sessions arrive before a remote host relays again. An
+// outstanding wantActive is treated like a vanished id: the pane stays UNFOCUSED, its body naming the awaited session
+// (the name persisted beside the id, since the page knows nothing else about it yet), adopts nothing until that id
+// arrives (its frame, or the strip re-listing it), and clears the wait when the user picks another tab (setActive). A
+// session that never returns leaves the body standing until a pick: no timer.
+let wantActiveName: string = (() => { try { return String(((vscodeApi?.getState?.() || {}) as any).activeName || ""); } catch { return ""; } })();
 let pendingAnchor: string | null = null; // deep-link target waiting to be scrolled to
 let pendingAnchorIntent: string | null = null; // kind the uuid anchor must honor — sticks with pendingAnchor across render-pass retries (pendingAnchorKind is cleared each pass, this isn't)
 let pendingAnchorT: number | null = null; // time fallback (epoch s) when the uuid can't resolve
@@ -1560,13 +1583,14 @@ document.addEventListener("click", (e) => {
 // hears one and reads as all-off, which the framed gate makes moot anyway.
 let panesOn: Record<string, boolean> = {};
 let panesAvail: Record<string, boolean> = {};   // …and which panes EXIST to bring forward (avail: the Files control's setting, T317); absent = available
-function openPath(path: string, sid?: string | null, ev?: MouseEvent | null): void {
+function openPath(path: string, sid?: string | null, ev?: MouseEvent | null, frag?: string | null): void {
   if (!vscodeApi) return;
   if (location.protocol === "http:" || location.protocol === "https:") {
     const to = sid || activeId || null;
     const route = fileLinkRoute(settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
     // with its gesture, read first: a Cmd/Ctrl- or middle-click on a PDF takes the browser's own tab wherever
-    // the plain click would have landed; a plain click routed to the Files pane is handed to the shell
+    // the plain click would have landed; a plain click routed to the Files pane is handed to the shell.
+    // `frag`: a section to land on (the preview popover's "open" of a path#slug link, T351), through either route
     openFileClick(ev, path, to, route === "pane" ? () => {
       // Fire-and-forget by nature: postMessage to a live parent never throws, so there is no catchable
       // failure here and no honest in-document fallback exists. The message names its target pane and
@@ -1575,9 +1599,9 @@ function openPath(path: string, sid?: string | null, ev?: MouseEvent | null): vo
       // from. Looked up, never invented: a sid neither list names sends null, and the pane's resolver
       // falls to the kernel's stub.
       const s = to ? (sessions.get(to) ?? tabMeta.get(to)) : undefined;
-      window.parent.postMessage({ romp: "viewFile", path, sid: to, pane: "pane",
+      window.parent.postMessage({ romp: "viewFile", path, sid: to, pane: "pane", frag: frag || null,
         identity: s && s.name ? { name: s.name, color: s.color ?? null } : null }, "*");
-    } : undefined);
+    } : undefined, frag || null);
     return;
   }
   vscodeApi.postMessage(sid ? { type: "openFile", path, id: sid } : { type: "openFile", path });
@@ -2150,10 +2174,173 @@ function bindPathLink(a: HTMLElement): HTMLElement {
   const open = a.dataset.path || "", relative = a.dataset.rel === "1";
   a.addEventListener("click", (e) => {
     e.stopPropagation();
-    openPath(open, relative ? activeId : null, e);
+    filePreviewIntent.cancel();
+    openPath(open, relative ? activeId : null, e, a.dataset.frag || null);   // data-frag: the section a path#slug link names (T351)
   });
-  onMiddleClick(a, (e) => openPath(open, relative ? activeId : null, e));
+  onMiddleClick(a, (e) => openPath(open, relative ? activeId : null, e, a.dataset.frag || null));
+  armFilePreview(a);   // a hover (or the keyboard's focus) previews the file (T351)
   return a;
+}
+// A `#slug` right after a path token names a SECTION (the lab team's glossary links, `path#fold`, T351): the token walk
+// marks the path alone, so the slug is the link's next text. It moves into the link (the token reads whole) as data-frag,
+// the file viewer's own convention for the section to land on (file-view-links.ts), and the preview shows that section.
+function absorbFragment(link: HTMLElement): void {
+  const nx = link.nextSibling;
+  if (!nx || nx.nodeType !== 3) return;
+  const m = /^#([a-z0-9][a-z0-9-]*)/.exec(nx.textContent || "");
+  if (!m) return;
+  link.dataset.frag = m[1];
+  link.appendChild(document.createTextNode(m[0]));
+  nx.textContent = (nx.textContent || "").slice(m[0].length);
+}
+
+// ── the file PREVIEW popover (T351, the user 2026-09-11) ──────────────────────────────────────────
+// Hovering a local file link pops up a card with the rendered head of the file, or the section a `path#slug` link
+// names, near-instantly: the kernel keeps the text of recently linked files with a heading index and warms it on the
+// pusher's path, so the hover is one small fetch of already-sliced text (GET /file?slice=1) rendered with the chat's
+// own marked in one call. The card wears the comment popover's vocabulary (comment-pop-size.ts's fractions, the
+// menu-card surface) but is transient: it opens after a dwell, closes on leave (with a grace to cross into it), on
+// Escape, on a scroll, on a click elsewhere and when the link it is anchored to leaves the document, and is never draggable. Progressive
+// disclosure: the link is the gist, the card the summary, "open" the mechanics (the full viewer, scrolled to the
+// section). A link the kernel did not allow to preview (pathPreview absent: outside the session's folder and the
+// user's home, unverified, a secrets-shaped name, not a kind it shows, over the caps) gets the text-only card and
+// NO request. The content shape is the one contract every provider fills (file-preview.ts PreviewContent; stage 2's
+// glossary lookup lands in the same card).
+let filePreviewEl: HTMLElement | null = null;
+let filePreviewSeq = 0;                        // the fetch that may fill the card: a later show retires an earlier answer
+let filePreviewAnchorWatch: MutationObserver | null = null;   // watches the anchored link's own removal (a re-render, a tab pick)
+function hideFilePreview(): void {
+  filePreviewSeq++;
+  if (filePreviewAnchorWatch) { filePreviewAnchorWatch.disconnect(); filePreviewAnchorWatch = null; }
+  if (filePreviewEl) { filePreviewEl.style.display = "none"; filePreviewEl.replaceChildren(); }
+}
+// The card is anchored to a link NODE; a re-render that drops the node (a streaming turn's replaceChildren, a tab pick,
+// a window rebuild) fires no pointerleave, so the card would stand stranded. The closer is the node's own removal
+// (the review): a MutationObserver on the thread sees the link leave the document and cancels the intent. Tab-strip
+// rebuilds are not the event (they run on every push and would close the card on unrelated state).
+function watchFilePreviewAnchor(a: HTMLElement): void {
+  if (filePreviewAnchorWatch) filePreviewAnchorWatch.disconnect();
+  const root = document.getElementById("content") || document.body;
+  filePreviewAnchorWatch = new MutationObserver(() => { if (!a.isConnected) filePreviewIntent.cancel(); });
+  filePreviewAnchorWatch.observe(root, { childList: true, subtree: true });
+}
+const filePreviewIntent = new HoverIntent<HTMLElement>(PREVIEW_DWELL_MS, PREVIEW_GRACE_MS, (a) => showFilePreview(a), () => hideFilePreview());
+function ensureFilePreview(): HTMLElement {
+  if (filePreviewEl && filePreviewEl.isConnected) return filePreviewEl;
+  const p = el("div", "file-preview-pop"); p.id = "file-preview-pop";
+  p.setAttribute("role", "dialog"); p.setAttribute("aria-label", "file preview");
+  p.style.display = "none";
+  p.addEventListener("pointerenter", () => filePreviewIntent.pin());   // inside the card: it stays
+  p.addEventListener("pointerleave", () => filePreviewIntent.unpin());
+  document.body.appendChild(p);
+  filePreviewEl = p;
+  document.getElementById("content")?.addEventListener("scroll", () => filePreviewIntent.cancel(), { passive: true });
+  return p;
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") filePreviewIntent.cancel(); });
+document.addEventListener("pointerdown", (e) => {
+  if (filePreviewEl && filePreviewEl.style.display !== "none" && !filePreviewEl.contains(e.target as Node)) filePreviewIntent.cancel();
+}, true);
+function armFilePreview(a: HTMLElement): void {
+  a.addEventListener("pointerenter", () => filePreviewIntent.enter(a));
+  a.addEventListener("pointerleave", () => filePreviewIntent.leave());
+  a.addEventListener("focus", () => filePreviewIntent.enter(a));     // the keyboard's route to the same card
+  a.addEventListener("blur", () => filePreviewIntent.leave());
+}
+// the comment popover's size (70% × 60% of the pane, capped, never under the minimum), below the link when there is
+// room, else above it, and inside the viewport by the popover edge
+function placeFilePreview(p: HTMLElement, a: HTMLElement): void {
+  const pane = (document.getElementById("content") || document.body).getBoundingClientRect();
+  const w = Math.max(CMT_POP_MIN_W, Math.min(pane.width * CMT_POP_THREAD_DEFAULT.w, innerWidth * CMT_POP_CAP_W));
+  const h = Math.max(CMT_POP_MIN_H, Math.min(pane.height * CMT_POP_THREAD_DEFAULT.h, innerHeight * CMT_POP_CAP_H));
+  const r = a.getBoundingClientRect();
+  p.style.width = w + "px"; p.style.height = h + "px";
+  const below = r.bottom + 6 + h <= innerHeight - CMT_POP_EDGE;
+  p.style.top = (below ? r.bottom + 6 : Math.max(CMT_POP_EDGE, r.top - 6 - h)) + "px";
+  p.style.left = Math.max(CMT_POP_EDGE, Math.min(r.left, innerWidth - w - CMT_POP_EDGE)) + "px";
+}
+function renderFilePreview(p: HTMLElement, c: PreviewContent, sid: string | null): void {
+  p.replaceChildren();
+  const head = el("div", "fp-head");
+  const title = el("span", "fp-title"); title.textContent = c.title; title.title = c.title; head.appendChild(title);
+  if (c.subtitle) { const s = el("span", "fp-sub"); s.textContent = c.subtitle; head.appendChild(s); }
+  if (c.open) {
+    const b = el("button", "fp-open") as HTMLButtonElement; b.type = "button"; b.textContent = c.open.label; b.title = "the whole file, in the viewer";
+    const { path, frag } = c.open;
+    b.addEventListener("click", (e) => { e.stopPropagation(); filePreviewIntent.cancel(); openPath(path, sid, e, frag || null); });
+    head.appendChild(b);
+  }
+  p.appendChild(head);
+  if (c.note) { const n = el("div", "fp-note"); n.textContent = c.note; p.appendChild(n); }
+  const body = el("div", "fp-body fp-" + c.kind);
+  if (c.body.markdown != null) {
+    body.classList.add("md");
+    body.replaceChildren(...Array.from(previewMdClean(c.body.markdown).childNodes));   // its paths stay text here (the viewer, one click away, links them)
+  }
+  else if (c.body.html != null) { const clean = sanitizeMd(c.body.html); stripRemoteLoads(clean, location.origin, location.href); body.replaceChildren(clean); }   // a provider's own HTML, through the one sanitizer and the same strip
+  else if (c.body.url && c.kind === "image") { const img = el("img", "fp-img") as HTMLImageElement; img.src = c.body.url; img.alt = c.title; body.appendChild(img); }
+  else if (c.body.url && c.kind === "pdf") { const f = el("iframe", "fp-pdf") as HTMLIFrameElement; f.src = c.body.url + "#page=1&toolbar=0"; f.title = c.title; body.appendChild(f); }
+  else if (c.kind === "code") {
+    const pre = el("pre", "fp-code"); const code = el("code", ""); const lang = c.body.lang || "";
+    let html = "";
+    try { html = lang && hljs.getLanguage(lang) ? hljs.highlight(c.body.text || "", { language: lang }).value : ""; } catch { html = ""; }
+    if (html) { code.innerHTML = html; code.className = "hljs language-" + lang; } else code.textContent = c.body.text || "";
+    pre.appendChild(code); body.appendChild(pre);
+  }
+  else { const tx = el("div", "fp-text"); tx.textContent = c.body.text || ""; body.appendChild(tx); }
+  p.appendChild(body);
+}
+// A previewed document renders on the sanitizer's INERT DOM (DOMPurify's own document, no browsing context) and is
+// stripped of every remote load THERE, before its nodes are adopted into the page: an <img>'s src or srcset, a
+// <picture>'s <source>, a <video>'s poster or src, an <audio>, an SVG <image>, in any spelling the URL parser reads
+// as another origin (file-preview.ts stripRemoteLoads). A file the user did not choose to open must never send a
+// request elsewhere on a hover, and a strip AFTER innerHTML raced the browser's fetch and lost (the review): the beacon
+// had fired while the user saw alt text. Images load only from this kernel (the /file route, a relative path, a data:
+// URI). The viewer, opened on purpose, keeps its own rules. Not the chat's md(): its PR links and parked-image heal
+// are the chat's, and a previewed file's `#123` is prose, not the session's pull request.
+function previewMdClean(src: string): HTMLElement {
+  let clean: HTMLElement;
+  try { clean = sanitizeMd(marked.parse(src) as string); }
+  catch { clean = document.createElement("div"); clean.textContent = src; }
+  stripRemoteLoads(clean, location.origin, location.href);
+  return clean;
+}
+function showFilePreview(a: HTMLElement): void {
+  const open = a.dataset.path || "";
+  if (!open) return;
+  const sid = activeId;                          // the kernel resolves a relative path against it and confines by its folder
+  const parsed = parsePreviewLink(open);
+  const path = parsed.path, anchor = a.dataset.frag || parsed.anchor;   // the section: the absorbed #slug, else one inside a file:// URI
+  const kind = a.dataset.preview || null;
+  const p = ensureFilePreview();
+  placeFilePreview(p, a);
+  p.style.display = "";
+  watchFilePreviewAnchor(a);
+  const seq = ++filePreviewSeq;
+  // the acceptance is latency (the user 2026-09-11: how quickly rendered markdown shows): the card stamps the time from
+  // the dwell's end to its rendered content as data-render-ms, and whether the slice came from the kernel's cache as
+  // data-slice-hit, so the served lab reads the measurement off the card instead of timing the page from outside
+  const t0 = performance.now();
+  delete p.dataset.renderMs; delete p.dataset.sliceHit;
+  const stamp = (hit: boolean | null): void => {
+    p.dataset.renderMs = (performance.now() - t0).toFixed(1);
+    if (hit !== null) p.dataset.sliceHit = hit ? "1" : "0";
+  };
+  if (!kind) {                                   // the kernel allowed no preview: text and the way to the file, no request
+    renderFilePreview(p, textOnlyContent(path, anchor, "shown as text: outside the session's folder and your home, or not a kind the preview shows"), sid);
+    stamp(null);
+    return;
+  }
+  if (kind === "image" || kind === "pdf") { renderFilePreview(p, contentFor(path, anchor, kind, sid, null), sid); stamp(null); return; }
+  p.replaceChildren(rompLoaderInner("reading…", { wordmark: false }));   // the loader first (ui/CLAUDE.md), the text the moment it lands
+  fetch(sliceUrl(path, sid, anchor), { credentials: "same-origin" })
+    .then((r) => r.json().then((j) => ({ ok: r.ok, j })).catch(() => ({ ok: false, j: null })))
+    .then(({ ok, j }) => {
+      if (seq !== filePreviewSeq) return;        // the card moved on (another link, a close): this answer is stale
+      renderFilePreview(p, ok ? contentFor(path, anchor, kind, sid, j) : textOnlyContent(path, anchor, (j && j.why) || "could not read the file"), sid);
+      stamp(ok && j ? !!j.hit : null);
+    })
+    .catch(() => { if (seq === filePreviewSeq) { renderFilePreview(p, textOnlyContent(path, anchor, "could not read the file"), sid); stamp(null); } });
 }
 // Make bare file:// URLs AND bare file paths inside a rendered CHAT message clickable (assistant replies +
 // your own bubbles) — a relative `design/foo.md` opens too, resolved against the session's cwd (the user
@@ -2179,7 +2366,13 @@ function bindPathLink(a: HTMLElement): HTMLElement {
 // file:// URIs are explicit absolute paths — never gated on the map. (The gates and the map walk are
 // path-links.ts's; the map is threaded through to it.)
 function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[],
-    pathLinks?: Record<string, string>, pathPins?: Record<string, string>): void {
+    pathLinks?: Record<string, string>, pathPins?: Record<string, string>, pathPreview?: Record<string, string>): void {
+  // pathPreview (T351): the kernel's word on which of these links a hover may PREVIEW, by kind; the link carries it
+  // as data-preview, and a link without it gets the text-only card with no request
+  const armPreview = (link: HTMLElement, tok: string, open: string) => {
+    const k = previewKindOf(tok, pathPreview) || previewKindOf(open, pathPreview);
+    if (k) link.dataset.preview = k; else delete link.dataset.preview;
+  };
   // A whole-backtick http(s) URL becomes a TAPPABLE link that still looks like code (the user
   // 2026-08-16, on mobile, wanting to tap through to a dashboard link a session sent). Bare URLs
   // and [text](url) already link via marked's gfm autolink + the global anchor click delegate;
@@ -2207,6 +2400,7 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
       const tok = (code.textContent || "").trim();
       if (!verified.has(tok)) continue;
       const link = bindPathLink(openPathLink(tok, tok, true));
+      armPreview(link, tok, tok);
       code.replaceChildren(link);                              // the <code> chrome stays; its content is the link
       kernelVerified.add(tok);
       if (previewKind(tok) && !previewable.includes(tok) && !(skipThumbs && skipThumbs.includes(tok))) {
@@ -2220,6 +2414,8 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
   // order; this document binds each click and reads the hits for the figure pass below.
   for (const { el: link, open, verified } of linkifyPathTokens(root, pathLinks)) {
     bindPathLink(link);
+    armPreview(link, link.textContent || "", open);
+    absorbFragment(link);
     if (verified) kernelVerified.add(open);   // the kernel stat'd it this build
     if (previewKind(open) && !previewable.includes(open) && !(skipThumbs && skipThumbs.includes(open))) {
       previewable.push(open);
@@ -3420,7 +3616,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         if (more) {
           const full = el("div", "nudge-full md");
           full.innerHTML = md(raw);
-          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins);
+          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);
           bubble.appendChild(full);
           bubble.classList.add("nudge-collapsible");
           // toggle rides the stable document.body delegate (data-act), NOT a per-render listener —
@@ -3435,7 +3631,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         // the user's OWN words keep their line breaks (userMd); a harness-injected note — compact
         // summary, command stdout — shares this branch and stays on the assistant grammar
         bubble.innerHTML = kind === "user" ? userMd(ev.md) : md(ev.md);
-        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins);   // bare file:// URLs in a message → clickable (open in the host's default app)
+        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);   // bare file:// URLs in a message → clickable (open in the host's default app)
         if (kind === "user") markMentions(bubble);   // in the user's own bubble a typed "@name" that names a live session wears that session's color; a harness note is not the user naming a session
       }
       // images, IN the bubble (part of his message): thumbnail + open/copy caption;
@@ -3592,7 +3788,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const body = el("div", "assistant md");
     body.innerHTML = md(ev.md);
     highlight(body);
-    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins);   // bare file:// URLs + verified spaced filenames → clickable
+    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);   // bare file:// URLs + verified spaced filenames → clickable
     turn.appendChild(body);
     return turn;
   }
@@ -5315,6 +5511,10 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   order.length = 0;
   for (const id of next) order.push(id);
   for (const id of kernelOrder) kernelListed.add(id);
+  // T357: the tab the user was on is re-listed (a host re-attach, a relay redial) → focus goes back to it; the
+  // skeleton branch of showActive asks for its frame. Another session's tab appearing does nothing here.
+  const back = vanishedId || wantActive;   // …or the tab this page showed before a reload, awaited since boot
+  if (back && order.includes(back)) setActive(back);
   renderTabs();
 }
 // The tabOrder frame's `skeleton` list (2026-09-07): the tabs the kernel is withholding from this page after a
@@ -5462,7 +5662,9 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   if (s.status.effort) rows.push(["Effort", s.status.effort]);
   // Backend is a plain labelled FIELD now, under the others (the user 2026-07-08 — no longer a coloured
   // "SDK backend" badge at the top of the tooltip; it reads as one of the session's config fields).
-  if (be) rows.push(["Backend", backendLabel(be)]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
+  if (be) rows.push(["Backend", backendLabel(be)]);
+  // the session's mail state (T356): off means peers cannot see or mail it and its own sends are refused
+  rows.push(["Mail", s.postalServiceOff ? "off: this session neither sends nor receives peer mail" : "on"]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
   // Billing: whether this tab bills the API key or the Claude login — and WHICH login account (the
   // user 2026-08-09: shown whenever the backend reports it, one-auth machines included). No key material, ever.
   // When the CLI's own init landed on the OTHER side (authLive — say, a key found via apiKeyHelper
@@ -6088,7 +6290,13 @@ function renderTabs() {
     // re-validate at FIRE time, not schedule time: an activation between the two (a feed click
     // opening an ephemeral peek, a reveal landing) can have made the active tab visible — bouncing
     // then would kick the user off the very tab they just opened (the no-flap rule)
-    setTimeout(() => { if (activeId !== next && activeId && !tabInView(activeId)) setActive(next); }, 0);
+    // …but never at ANOTHER session on the pane's own initiative (T357): the pane goes unfocused, naming the tab the
+    // view no longer shows, and comes back to it below when the view shows it again
+    setTimeout(() => { if (activeId !== next && activeId && !tabInView(activeId)) unfocusHiddenByView(activeId); }, 0);
+  }
+  if (!activeId && vanishedId && vanishedWhy === "hidden" && visibleIds.includes(vanishedId)) {
+    const back = vanishedId;
+    setTimeout(() => { if (!activeId && vanishedId === back && tabInView(back)) setActive(back); }, 0);
   }
   // TAB SECTIONS (the user 2026-09-04): groups are tags. With sectioning on (per browser — the
   // tag-lens menu's "Group tabs by tag") and some tag holding a visible tab, the strip renders one
@@ -7003,7 +7211,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
 window.addEventListener("romp-hosts", () => { renderTabs(); syncComposerPh(); });
 // a dial attempt to a remote host began or ended (federation.ts dialEvent): the host-down foot's swirl
 // spins while one is in flight, as of the last /tunnels poll, so it repaints on this event and on nothing else
-window.addEventListener("romp:hostDial", () => { syncHostOfflineFoot(); });
+window.addEventListener("romp:hostDial", () => { syncHostOfflineFoot(); repaintEmptyStateIfUnfocused(); });   // the unfocused body's "reconnecting" follows the dial state too (T357)
 window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) dismissTabMenu(); }, true);
 // an Escape that closed the menu says so on the event (preventDefault), so the section view's own Escape
 // (installSnapshotEscape, armed at this same capture phase, later in the listener order) yields to it
@@ -7079,7 +7287,11 @@ function startTabRename(id: string, copy?: string) {   // `copy`: which copy of 
 // Keyboard nav on a focused tab: ←/→ step prev/next; ↑/↓ jump to the nearest tab
 // in the row above/below (tabs wrap via flex-wrap).
 function onTabKey(e: KeyboardEvent) {
-  if (!activeId || !order.length) return;
+  if (!order.length) return;
+  if (!activeId) {   // from the unfocused pane an arrow lands on the first visible tab (T357)
+    if ((e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "ArrowDown") && pickFirstVisibleTab()) { e.preventDefault(); focusActiveTab(); }
+    return;
+  }
   if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
     e.preventDefault();
     const dir = e.key === "ArrowRight" ? 1 : -1;
@@ -7159,7 +7371,8 @@ window.addEventListener("keydown", (e) => {
   if (isTypingTarget(e.target)) return;
   if (document.querySelector(".picker-overlay")) return;   // #picker / #confirm open
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-    if (!activeId || order.length < 2) return;
+    if (!activeId) { if (pickFirstVisibleTab()) e.preventDefault(); return; }   // from the unfocused pane: the first visible tab (T357)
+    if (order.length < 2) return;
     const dir = e.key === "ArrowRight" ? 1 : -1;
     const ord = visibleOrder();                 // never cycle onto a view-hidden session
     const i = ord.indexOf(activeId);
@@ -9899,6 +10112,14 @@ function renderCommentPopover(): void {
     crow.append(attach, box, send);
     pop.appendChild(crow);
     if (metaRowPending) pop.appendChild(metaRowPending);   // model/effort under the box, like the chat
+    if (th && th.mailOff) {
+      // T356 (the user 2026-09-11): a thread's mail is off, both directions, until it is broken out; the popover
+      // is the thread's whole surface, so it says so here
+      const mail = el("div", "cmt-note cmt-mail");
+      mail.textContent = "Mail off: this thread neither sends nor receives peer mail until you break it out.";
+      mail.title = "Peers cannot see or mail this thread, and its own mail is refused. Break out turns mail on.";
+      pop.appendChild(mail);
+    }
     if (th && th.status === "open") {
       // the thread is a real session under the hood — its model/effort switch LIVE through the
       // chat's own ops (setModel/setEffort route by sid; be.owns makes the thread reachable).
@@ -9966,6 +10187,10 @@ function renderCommentPopover(): void {
     const note = el("div", "cmt-note");
     note.textContent = "The discussion continues there.";
     pop.appendChild(note);
+    // the break-out flipped its mail on (T356): said once, here, where the user looks after breaking it out
+    const mailOn = el("div", "cmt-note cmt-mail");
+    mailOn.textContent = "Its mail is on now: peers can reach it and it can send.";
+    pop.appendChild(mailOn);
     const row = el("div", "cmt-actions");
     const open = el("button", "cmt-act") as HTMLButtonElement;
     open.type = "button";
@@ -10975,40 +11200,20 @@ function syncViewInner(id: string, atBottom?: boolean): View {
   // (the user 2026-06-19). Idempotent: leaves an existing placeholder in place; the first real event clears it.
   if (s.events.length === 0) {
     const only = v.el.childNodes.length === 1 ? (v.el.firstChild as HTMLElement) : null;
-    // …and rebuild a placeholder whose STARTING loader outlived its create (the failure flips it to
-    // the couldn't-start notice below — the spinning loader would be a lie on a failed tab)
-    const staleStart = !!only && only.classList?.contains("tx-starting") && failedProvisionals.has(id);
-    if (!only || !only.classList?.contains("tx-empty") || staleStart) {
+    // The placeholder is rebuilt when its KIND changes (pane-placeholder.ts): a viewer's loader gives way to the kernel's
+    // error sentence, the stall past the wait, or "written nothing yet"; a starting tab's loader to the couldn't-start
+    // notice (its create failed); the same kind twice is left alone (no churn on repeated pushes that stay empty).
+    const kind = placeholderKind({ sub: s.sub, failedRevive: failedRevives.get(id) || null,
+                                   provisional: isProvisionalId(id), provisionalFailed: failedProvisionals.has(id) });
+    if (!only || !only.classList?.contains("tx-empty") || !placeholderStands(only, kind)) {
       while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
       const ph = el("div", "tx-empty"); v.el.appendChild(ph);
-      // A PROVISIONAL tab is not empty, it is STARTING — so it wears the romp loader (the repo's rule for
-      // any wait), not the placeholder that tells you to send something. The composer below it is live
-      // either way: anything typed here is held and flushed when the session lands. A FAILED create's
-      // tab says what happened instead (the user 2026-08-08) — the loader would be a lie.
-      if (failedRevives.has(id)) {
-        ph.textContent = failedRevives.get(id) || "";
-        ph.classList.add("tx-revive-failed");
-      } else if (s.sub && s.sub.error) {
-        // the kernel could not open the agent's file: its sentence, loud, in the pane (never a blank)
-        ph.textContent = s.sub.error;
-        ph.classList.add("tx-revive-failed");
-      } else if (s.sub && !s.sub.loaded) {
-        // the viewer's first frame is in flight → the romp loader holds the pane (the wait-state rule)
-        ph.classList.add("tx-starting");
-        ph.appendChild(rompLoaderInner("opening the agent's transcript…"));
-      } else if (s.sub) {
-        ph.textContent = "This agent has written nothing yet.";
-      } else if (isProvisionalId(id) && failedProvisionals.has(id)) {
-        ph.textContent = "This session couldn't start. What you typed is kept in the box below; "
-          + "✕ on the tab discards both.";
-      } else if (isProvisionalId(id)) {
-        ph.classList.add("tx-starting");
-        const sw = el("img", "tx-starting-swirl") as HTMLImageElement;
-        sw.src = mediaSrc("romp-swirl-glyph.svg"); sw.alt = ""; sw.onerror = () => sw.remove();
-        const wm = el("div", "tx-starting-msg");
-        wm.textContent = "Starting " + s.name + "… you can type now; romp sends it when it's up.";
-        ph.append(sw, wm);
-      } else ph.textContent = "No messages yet.";
+      fillPlaceholder(ph, kind, {
+        el, loader: rompLoaderInner, button: () => document.createElement("button"), br: () => document.createElement("br"),
+        swirl: () => { const sw = el("img", "tx-starting-swirl") as HTMLImageElement; sw.src = mediaSrc("romp-swirl-glyph.svg"); sw.alt = ""; sw.onerror = () => sw.remove(); return sw; },
+        text: { error: s.sub?.error, failedRevive: failedRevives.get(id), stall: subagentStallText(), sessionName: s.name },
+        onRetry: () => askSubagent(id),
+      });
     }
     v.rendered = 0; v.stale = false; v.winStart = 0; v.winEnd = 0;
     return v;
@@ -11831,6 +12036,58 @@ function fillSnapshotRow(btn: HTMLElement, r: SnapRow, now: number): void {
 // `keep` (review find, 2026-09-08): a caller that must EMPTY the view before showing it (rerenderAll on a
 // settings change) captures the reader's anchor first and hands it here — by the time this runs there is
 // no DOM left to capture from and the emptied box no longer overflows. undefined = capture here.
+// The empty body's line (pane-focus.ts emptyStateParts, T357): which session vanished and why, its name dressed the way
+// the strip dresses it (host prefix, identity colour), "reconnecting" when its host is dialing; or the plain invitation.
+function paintEmptyState(empty: HTMLElement): void {
+  const awaited = !vanishedId && wantActive ? wantActive : null;   // the persisted tab, not listed yet after a reload
+  const named = vanishedId || awaited;
+  const v = vanishedId && vanishedWhy && vanishedWhy !== "close"
+    ? { name: vanishedName || tabMeta.get(vanishedId)?.name || vanishedId, why: vanishedWhy, dialing: hostIsDialing(vanishedId) }
+    : awaited ? { name: wantActiveName || tabMeta.get(awaited)?.name || awaited, why: "awaited" as const, dialing: hostIsDialing(awaited) }
+    : null;
+  const parts = emptyStateParts(v, order.length > 0);
+  empty.replaceChildren(document.createTextNode(parts.head));
+  if (parts.name != null) {
+    const b = el("b", "empty-state-name");
+    b.replaceChildren(...hostNameNodes(parts.name, named));
+    const c = named ? tabMeta.get(named)?.color?.bg : null;
+    if (c) b.style.color = c;
+    empty.appendChild(b);
+  }
+  empty.appendChild(document.createTextNode(parts.tail));
+  empty.classList.toggle("unfocused", !!v);
+  empty.dataset.vanished = named || "";
+}
+// The body's "reconnecting" is the federation manager's dial state: re-painted on its change event (the romp:hostDial
+// listener beside syncHostOfflineFoot calls this), so a redial that starts a moment after the paint says so (the
+// review), never a timer.
+function repaintEmptyStateIfUnfocused(): void {
+  if (activeId) return;
+  const e = document.getElementById("empty-state");
+  if (e) paintEmptyState(e);
+}
+
+// The tab VIEW stopped showing the active tab (a tag the view selects on was removed; T357, the review): the same
+// rule as a dismissal — the pane goes UNFOCUSED naming the session the view no longer shows, and never re-points
+// itself at another session. renderTabs restores it when the view shows it again.
+function unfocusHiddenByView(id: string): void {
+  if (activeId !== id) return;
+  stashActiveDraft(id);
+  activeId = null; vanishedId = id; vanishedWhy = "hidden"; vanishedName = sessions.get(id)?.name || tabMeta.get(id)?.name || id;
+  loadComposerFor(null);
+  renderTabs();
+  showActive();
+}
+/** From the unfocused pane a keyboard step lands on the first visible tab: a user gesture, allowed (the review's medium:
+ *  the cycle and the arrows returned early on no active tab, silently). */
+function pickFirstVisibleTab(): boolean {
+  if (activeId) return false;
+  const first = visibleOrder()[0];
+  if (!first) return false;
+  setActive(first);
+  return true;
+}
+
 function showActive(keep?: { uuid: string; y: number } | null) {
   const content = document.getElementById("content");
   if (!content) return;
@@ -11915,11 +12172,18 @@ function showActive(keep?: { uuid: string; y: number } | null) {
       // design. AFTER notifyActive above, so `activeTab` precedes `needFull` on the wire and the kernel builds
       // this tab first; the awaitingFull guard makes it one ask per outstanding load.
       if (skeleton) requestFullSession(activeId, "skeleton-click");
-    } else if (!empty) {
-      empty = el("div", "empty-state"); empty.id = "empty-state";
-      empty.textContent = "No session open — click + to add one.";
-      content.appendChild(empty);
-    } else { empty.style.display = ""; }
+    } else {
+      // UNFOCUSED, or no tab at all (T357): the body says which session vanished and that a pick is the way on; the
+      // box takes no input and names no session (a pick re-enables it: the skeleton branch above, or the session
+      // frame's own showActive through setComposerAskMode)
+      if (!empty) { empty = el("div", "empty-state"); empty.id = "empty-state"; content.appendChild(empty); }
+      paintEmptyState(empty);
+      empty.style.display = "";
+      const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+      if (ta) { ta.disabled = true; ta.placeholder = order.length ? "Pick a tab to start" : "Click + to add a session"; syncComposerPh(); }
+      const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
+      if (sendBtn) sendBtn.disabled = true;
+    }
     document.body.style.removeProperty("--active-accent"); // no session → neutral window border
     updateStatusline();
     // Take the leaving tab's go-to-bottom and reply chips down with it. They were measured against ITS transcript,
@@ -13007,9 +13271,46 @@ function openSubagentView(parentId: string, agentId: string, anchorUuid: string 
     });
     if (!order.includes(id)) order.push(id);
     vscodeApi?.postMessage({ type: "openSubagent", id: parentId, agentId });
+    armSubagentWait(id);   // the frame is expected within SUBAGENT_OPEN_WAIT_MS (T355)
   } else if (anchorUuid && cur.sub) cur.sub.anchorUuid = anchorUuid;
   setActive(id);
 }
+
+// The viewer's ask, with its wait (T355): the frame is expected on this socket within SUBAGENT_OPEN_WAIT_MS; past that the
+// pane shows the stall and a retry in place of the loader (a frame that never arrives left "opening…" up for good).
+function askSubagent(id: string): void {
+  const s = sessions.get(id);
+  if (!s || !s.sub) return;
+  vscodeApi?.postMessage({ type: "openSubagent", id: s.sub.parentId, agentId: s.sub.agentId });
+  armSubagentWait(id);
+}
+function armSubagentWait(id: string): void {
+  const s = sessions.get(id);
+  if (!s || !s.sub) return;
+  const p = s.sub;
+  p.loaded = false; p.stalled = false; p.askedAt = Date.now();
+  const asked = p.askedAt;
+  window.setTimeout(() => {
+    const cur = sessions.get(id);
+    if (!cur || !cur.sub || cur.sub.askedAt !== asked) return;   // answered, retried or closed meanwhile
+    if (!subagentStalled(cur.sub.loaded, Date.now() - asked)) return;
+    cur.sub.stalled = true;
+    const v = views.get(id);
+    if (v) { v.rendered = 0; v.stale = true; }
+    if (activeId === id) showActive();
+  }, SUBAGENT_OPEN_WAIT_MS);
+}
+// A connection coming back: the reconnected kernel holds no viewer registry for this client, so every viewer STILL WAITING
+// (no frame yet, or stalled) asks again; a viewer that has its answer keeps it (a re-ask would put the loader back over
+// "written nothing yet"). The reconnect-class events this pane can see: the local socket's romp:wsup, a remote host's relay
+// socket reopening (romp:hostRelayUp: a remote kernel's restart fires that and not wsup, the 2026-09-01 finding the upload
+// re-ship records), and the extension's pipeState up (the VS Code webview never sees wsup).
+function reaskWaitingSubagents(host?: string): void {
+  for (const [id, s] of sessions)
+    if (s.sub && (!s.sub.loaded || s.sub.stalled) && (host === undefined || hostOf(s.sub.parentId) === host)) askSubagent(id);
+}
+window.addEventListener("romp:wsup", () => reaskWaitingSubagents(""));   // the local kernel's own viewers (a host's relay
+//                                                                            reopening re-asks in the romp:hostRelayUp listener below)
 
 function closeSubagentView(id: string): void {
   const p = subParts(id);
@@ -13035,7 +13336,7 @@ function applySubagentFrame(m: any): void {
   const id = subTabId(parentId, agentId);
   const s = sessions.get(id);
   if (!s || !s.sub) { vscodeApi?.postMessage({ type: "closeSubagent", id: parentId, agentId }); return; }
-  s.sub.loaded = true;
+  s.sub.loaded = true; s.sub.stalled = false;   // answered, late or not: no re-ask puts the loader back over it (T355)
   s.sub.error = m.error ? String(m.error) : null;
   s.sub.running = !!m.running;
   s.sub.truncated = !!m.truncated;
@@ -14580,7 +14881,7 @@ function updateStatusline() {
     sl.replaceChildren(openingLine(loading ? "Loading session" : "Opening session"));
     return;
   }
-  if (!s) return;
+  if (!s) { sl.replaceChildren(); return; }   // no tab at all, or the UNFOCUSED pane (T357): the line says nothing, not the last session's chips
   sl.replaceChildren();
   if (s.sub) {
     // a subagent viewer has no session state, model or context to show — the header above the
@@ -14856,6 +15157,7 @@ window.addEventListener("romp:hostRelayUp", (e) => {
   // event a remote kernel's restart produces (it fires neither romp:wsup nor hostUp), so settled previews
   // make their one attempt here as well
   refreshSettledPreviews();
+  reaskWaitingSubagents(h);   // …and that host's subagent viewers still waiting ask again (T355: a remote kernel's restart; an empty host is the local one)
   // …and the tab this pane is LOOKING AT, when that host owns it (T246, the user 2026-09-07): the relay's
   // open is the moment the remote kernel holds a FRESH client for this pane — after that kernel restarted,
   // one with no active tab at all. Its pusher builds and flushes a client's active tab first; every tab is
@@ -15949,14 +16251,18 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
     clearSeek();
   }
   activeId = id;
+  vanishedId = null; vanishedWhy = null; vanishedName = ""; wantActive = null;   // any activation ends the unfocused state, the awaited tab included (T357)
   updateLivePaused();   // the entering tab's own detached state shows or hides the strip (round 2, item 7)
-  try { vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), activeId: id }); } catch { /* ignore */ }
+  try {   // the name rides beside the id: after a reload the unfocused body names the awaited tab before its host relays (T357)
+    vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), activeId: id, activeName: liveSession(id)?.name || tabMeta.get(id)?.name || "" });
+  } catch { /* ignore */ }
   renderTabs();
   showActive();
   schedulePrebuild(); // warm the OTHER tabs in idle (MRU-first) so the next switch is instant
 }
 
 function cycleTab(dir: number) {
+  if (pickFirstVisibleTab()) return;            // from the unfocused pane: the first visible tab (T357)
   const ord = visibleOrder();                   // never cycle onto a view-hidden session
   if (ord.length < 2 || !activeId) return;
   const i = ord.indexOf(activeId);
@@ -16113,7 +16419,10 @@ function upsert(msg: any) {
   // fallback tab active with the box unheld, and the next blind keystroke landed there after all (the
   // T236 harness, omission path: the tab is re-listed within seconds). setActive clears the note.
   if (composerNoteSid === msg.id) setActive(msg.id);
-  const adopted = !activeId;
+  // T357: the session the user was on is back (its host re-attached, the relay redialed) → its focus is restored;
+  // and while it is away, an arrival of ANY OTHER session adopts nothing — the pane stays unfocused
+  if (vanishedId === msg.id) setActive(msg.id);
+  const adopted = !activeId && !vanishedId && !wantActive;   // …nor while the persisted tab is still awaited after a reload (T357)
   if (adopted) { activeId = msg.id; loadComposerFor(msg.id, true); }   // adopted as the only tab → its draft too (T236: the once-per-page restore below never covers a session that LEFT and came back)
   if (wantActive && msg.id === wantActive) { wantActive = null; setActive(msg.id); }   // restore persisted tab on arrival
   renderTabs();                                   // a new id appended to `order` above → strip repaints in kernel order
@@ -16137,6 +16446,10 @@ function upsert(msg: any) {
       }
     }
     renderBgTasks();
+  } else if (!activeId) {
+    // no tab is active (the awaited tab after a reload, the unfocused pane): the arriving view stays hidden and the
+    // body paints its line over the boot loader — nothing adopted it above (T357)
+    showActive();
   }
   // A non-active session's view is left to sync lazily when it's next shown.
   // The session the user just created has ARRIVED: the provisional tab hands over its queued messages
@@ -16534,6 +16847,7 @@ function updateLivePaused(): void {
 function reattachLive(sid: string): void {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || !s.detached) return;
+  vscodeApi?.postMessage({ type: "reattachKeys", id: sid, keys: reattachKeys(s.events as { uuid?: string; key?: string }[]) });   // the run as held, for the kernel's shared clause
   requestFullSession(sid, "reattach");   // the kernel's full tail frame re-bases this client; upsert merges it into the held run
 }
 
@@ -16737,15 +17051,19 @@ function dismissSession(id: string, why: DismissWhy, doomed?: ReadonlySet<string
   const mi = mru.indexOf(id); if (mi >= 0) mru.splice(mi, 1);   // before the fallback read below — never the dead id
   renderTabs();                          // tab removed from `order` above → repaint without it
   if (wasActive) {
-    // MRU: return to the previously-active tab, not the positional neighbor — one still on the strip (the
-    // dead id left `mru` above; an id `order` no longer carries would bind the box to a tab nobody can see,
-    // and the next keystroke would file under it) and not one this same teardown takes next.
+    // Where the box goes (pane-focus.ts focusAfterDismiss; T357, the user 2026-09-11): only the user's OWN ✕ hands it
+    // to the recency fallback — MRU, then the first tab still on the strip (the dead id left `mru` above; an id `order`
+    // no longer carries would bind the box to a tab nobody can see), never one this same teardown takes next — since
+    // they closed the tab and the box changing hands is the one case they already know. Every other departure (a
+    // kernel restart that dropped the remote tabs until their host came back, a host relay down, a session gone)
+    // leaves the pane UNFOCUSED: activeId null with the strip still showing, the body naming what vanished, and focus
+    // restored to THAT session when its tab returns — never to another session on the pane's own initiative (the
+    // user ended up typing to a box they had not chosen). The arrival path guards its adoption on vanishedId.
     const home = hostOf(id);   // "" for a local id, and then no sibling rule: every local tab would "share" it
     const goingToo = (x: string) => (doomed?.has(x) ?? false) || (why === "hostDrop" && !!home && hostOf(x) === home);
-    // …and with no recency left (the user only ever looked at this one tab), the first tab still on the
-    // strip: leaving activeId null with tabs showing read "No session open" under a visible strip, and
-    // handed the box to whichever session frame happened to arrive next (the harness caught both, T236).
-    activeId = mru.find((x) => order.includes(x) && !goingToo(x)) || order.find((x) => !goingToo(x)) || null;
+    const next = focusAfterDismiss(why, mru, order, goingToo);
+    activeId = next.activeId;
+    if (next.unfocused) { vanishedId = id; vanishedWhy = why; vanishedName = name; }
     loadComposerFor(activeId);   // the strip was showing the CLOSED session's chip/thumbnails/draft — swap in the new active tab's (usually none)
     // The box just changed hands under the user. Their own ✕ is the one case they already know; for every
     // other reason BLUR it — a keystroke a moment later must not land in the survivor's session unnoticed
@@ -16849,6 +17167,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     return;
   }
   // the pipe's down edge is the VS Code twin of the shim's romp:wsdown: unconfirmed sends say so (markPendingLost)
+  if (m.type === "pipeState" && m.up) reaskWaitingSubagents();   // the extension's reconnect-class event (it never sees romp:wsup), T355
   if (m.type === "pipeState") { if (!m.up) markPendingLost("connection"); pipeBanner(!!m.up, Number(m.queued) || 0); return; }
   // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
   // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's
@@ -16952,6 +17271,13 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     // an unreadable parent, the SDK setup hint). It gets a dialog naming the reason and takes the
     // provisional tab down with it; a toast would slide past the one moment it needed to be read.
     if (provisionalId) failProvisional(m.text); else warnToast(m.text);
+  }
+  else if (m.type === "spendCeiling" && typeof m.text === "string" && m.text) {
+    // the spend guard's word (T350): a session crossed the hourly spend ceiling, or fell back under it. Its OWN type,
+    // never `warn`: a warn arriving while a create is in flight is read above as that create's verdict, and this
+    // sentence is about another session entirely. The durable record is the shell's bell (the row rides the problem
+    // ring); this is the moment's toast.
+    warnToast(m.text);
   }
   // `err` is the LOUD channel, deliberately distinct from `warn` (the user 2026-07-29): a warn toast fades
   // after 12s, which is right for "that name has a bad character" and wrong for "the message you just typed
