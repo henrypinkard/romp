@@ -181,9 +181,16 @@ class Registry(unittest.TestCase):
         self.assertIn("looks like it carries the credential", lg.token_cmd_error("printf %s " + _token_shaped()))
         self.assertIn("looks like it carries the credential", lg.token_cmd_error("echo " + "".join(["A1b2"] * 11)))
         self.assertEqual(lg.token_cmd_error("cat /a/" + "x" * 60 + "/token"), "", "a long path segment is not a credential")
-        # a dotted run (a JWT-shaped bearer: three runs joined by dots) is one credential, not three short words
+        # a JWT-shaped bearer (three dot-joined base64url segments) is one credential; dotted NAMES are not
         self.assertIn("looks like it carries the credential",
-                      lg.token_cmd_error("echo " + ".".join(["eyJ" + "a" * 14, "b" * 16, "c" * 16])))
+                      lg.token_cmd_error("echo " + ".".join(["eyJ" + "A1" * 8, "B2" * 10, "c3" * 12])))
+        for ok in ("pass show claude.login.work.setup.token.credential",
+                   "gopass show -o work.claude.enterprise.setup.token.value",
+                   "fetch-token --host vault.internal.example.com --name claude.enterprise.login.token",
+                   "echo " + ".".join(["verylongwordsegmentone", "verylongwordsegmenttwo", "verylongwordsegmentthree"])):
+            self.assertEqual(lg.token_cmd_error(ok), "", ok)
+        self.assertIn("looks like it carries the credential", lg.token_cmd_error("echo name." + "Zz9" * 14),
+                      "a dotted prefix hides no plain run")
         # the refusal says the value typed here is already exposed and must be rotated
         self.assertIn("rotate", lg.token_cmd_error("printf %s " + _token_shaped()))
         # a forty-digit hex run is also a gpg key fingerprint: it passes in a gpg command or after --recipient
@@ -194,6 +201,20 @@ class Registry(unittest.TestCase):
         self.assertEqual(lg.token_cmd_error("some-tool --recipient=%s" % fp), "")
         self.assertIn("looks like it carries the credential", lg.token_cmd_error("echo " + fp), "a bare hex run is still refused")
         self.assertEqual(lg.token_cmd_error(lg.op_read_command("op://Vault/romp login Work/credential")), "")
+
+    def test_a_stored_record_is_never_re_read_against_the_shape_rule(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            # the add-time rule refuses this command today; a record written under an older rule keeps its sessions
+            cmd = "printf %s " + _token_shaped()
+            self.assertNotEqual(lg.token_cmd_error(cmd), "")
+            rec = _rec(Path(d), "Work", tokenCmd=cmd)
+            st = lg.record_state(Path(d), rec["id"])
+            self.assertTrue(st["hasCmd"])
+            self.assertEqual(lg.why_unavailable(st), "")
+            self.assertEqual(lg.why_unavailable(rec), "", "a bare record too")
+            self.assertFalse(lg.has_token_cmd(dict(rec, tokenCmd="  ")), "presence is the only read-time rule")
+            self.assertIn("no token command is recorded", lg.why_unavailable(dict(rec, tokenCmd="")))
 
 
 class TheHelperScript(unittest.TestCase):
@@ -711,6 +732,70 @@ class StoredLoginPick(_Backend):
         self.be._note_auth_source(s, "apiKeyHelper")
         self.assertTrue(s.auth_label.startswith("key"), s.auth_label)
         self.assertNotEqual(s.auth_label, picked)
+
+    def test_a_relaunch_without_the_helper_clears_the_live_evidence_and_persists_it(self):
+        rec = _rec(self.be.state_dir, "Work")
+        self.be._log = lambda m, problem=False: None
+        sid = self.be.spawn("n", "/tmp", auth="login:" + rec["id"])
+        s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
+        self.be._options(s, dict)
+        self.assertEqual(s._launched_login, rec["id"])
+        self.be._note_auth_source(s, "apiKeyHelper")
+        self.assertEqual(s.auth_login_live, rec["id"])
+        reg = sb.read_reg(self.be.state_dir, sid)
+        self.assertEqual((reg.get("launchedLogin"), reg.get("authLoginLive")), (rec["id"], rec["id"]), "persisted with the evidence")
+        # a hosted re-attach after a kernel restart replays no init: the fresh object restores both
+        s_re = sb.SdkSession(self.be, reg)
+        self.assertEqual((s_re._launched_login, s_re.auth_login_live), (rec["id"], rec["id"]))
+        # the login goes unavailable, then a reconnect for a model change relaunches on the fall: the old evidence goes
+        lg.mark_refused(self.be.state_dir, rec["id"], "refused")
+        self.be._options(s, dict)
+        self.assertEqual(s._launched_login, "", "fell to the key")
+        self.assertIsNone(s.auth_login_live, "no evidence from this process yet")
+        self.assertIsNone(s.snapshot()["authLoginLive"])
+        reg = sb.read_reg(self.be.state_dir, sid)
+        self.assertEqual((reg.get("launchedLogin"), reg.get("authLoginLive")), ("", None))
+        # so a revoked KEY's auth error on this session refuses nothing (the feed's gate reads the evidence)
+        row = {"authLogin": rec["id"], "authLabel": "Work", "authLoginLive": s.snapshot()["authLoginLive"]}
+        self.assertEqual(km._login_refusal_label(row, {"authErr": True, "text": "invalid x-api-key"}), "")
+        # and a reply served on the fallback clears nothing
+        import types
+        s._ah_note_assistant(types.SimpleNamespace(model="claude-opus-5", message_id="m3", parent_tool_use_id=None, error=None))
+        self.assertEqual(lg.read_record(self.be.state_dir, rec["id"])["refused"], "refused")
+        # a wrong landing's evidence is persisted too ("" = another credential answered)
+        lg.clear_refused(self.be.state_dir, rec["id"])
+        self.be._options(s, dict)
+        s.request_reconnect = lambda defer=True: None
+        self.be._note_auth_source(s, "none")
+        self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("authLoginLive"), "")
+        self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("launchedLogin"), "")
+
+    def test_the_once_flag_resets_on_a_new_pick_and_on_a_helper_answered_init(self):
+        rec = _rec(self.be.state_dir, "Work")
+        recon = []
+        self.be._log = lambda m, problem=False: None
+        sid = self.be.spawn("n", "/tmp", auth="login:" + rec["id"])
+        s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
+        self.be.sessions[sid] = s
+        s.request_reconnect = lambda defer=True: recon.append(1)
+        self.be._options(s, dict)
+        self.be._note_auth_source(s, "none")          # the wrong landing: the one reconnect
+        self.assertTrue(s._wrong_landing_reconnected)
+        self.assertEqual(len(recon), 1)
+        # the user fixes the command and picks the login again: the fall may be taken again
+        lg.clear_refused(self.be.state_dir, rec["id"])
+        self.assertTrue(self.be.set_auth(sid, "login:" + rec["id"]))
+        self.assertFalse(s._wrong_landing_reconnected)
+        n0 = len(recon)
+        self.be._options(s, dict)
+        self.assertEqual(s._launched_login, rec["id"])
+        self.be._note_auth_source(s, "none")
+        self.assertEqual(len(recon), n0 + 1, "the documented fall is taken again after a new pick")
+        # a helper-answered init resets it as well
+        lg.clear_refused(self.be.state_dir, rec["id"])
+        self.be._options(s, dict)
+        self.be._note_auth_source(s, "apiKeyHelper")
+        self.assertFalse(s._wrong_landing_reconnected)
 
     def test_the_seed_skip_names_a_dead_remembered_stored_login(self):
         rec = _rec(self.be.state_dir, "Work")

@@ -5162,11 +5162,17 @@ class SdkSession:
         #   the other auth (a stale login, a key found via apiKeyHelper) is flagged loudly instead
         #   of silently billing the wrong account
         self._launched_unkeyed_pick = False  # an explicit API-key pick that launched with NOTHING injected
-        self._launched_login = ""            # the stored login whose helper the last launch carried (T346), "" = the machine's own
-        self.auth_login_live = None          # which stored login the CLI actually signed in with, from the init's evidence (T346):
-        #   None until an init lands, the record id when its helper answered, "" when the CLI fell back to the machine's own
         #   because romp holds no key source (_options): Claude Code's own credential — its apiKeyHelper
         #   or its login — is what pays, said once per process in the log
+        # The stored login whose helper the last launch carried (T346; "" = the machine's own), and which stored
+        # login the CLI actually signed in with, from the init's evidence: None until an init lands, the record id
+        # when its helper answered, "" when the CLI signed in with another credential. Both PERSISTED on the reg row
+        # (launchedLogin, authLoginLive: the apiKeyAuth pattern) and restored here, so a hosted re-attach mid-turn,
+        # which replays no init, keeps the feed's refusal gate, the served-reply clear and the spend rows on the
+        # credential that answered; every fresh launch (_options) resets both before its init lands (review 2026-09-11).
+        self._launched_login = str(reg.get("launchedLogin") or "")
+        _all = reg.get("authLoginLive")
+        self.auth_login_live = _all if isinstance(_all, str) else None
         self._pick_fell_said = ""    # the pick whose fall to the other side _options has said for THIS
         self._pick_unknown_said = ""     # the 'cannot tell, launching with the pick as is' row: once per session and pick
         #   session (once per session, not per reconnect; the user 2026-09-08)
@@ -10782,6 +10788,20 @@ class SdkBackend:
             except Exception as ex:
                 self._log("spend record failed: %s" % ex)
 
+
+    def _persist_login_evidence(self, sess, **fields) -> None:
+        """Write the launch's login (launchedLogin) and the init's evidence (authLoginLive) onto the session's reg
+        row, the apiKeyAuth pattern: a hosted re-attach after a kernel restart replays no init, so without the row
+        the feed's refusal gate and the served-reply clear would run on nothing (review 2026-09-11). A session with
+        no reg row (a test double) writes nothing."""
+        try:
+            if _reg_path(self.state_dir, sess.sid).exists():
+                self._update_reg(sess.sid, **fields)
+        except Exception as e:
+            try:
+                self._log("auth (%s): could not persist the login evidence: %s" % (getattr(sess, "name", "?"), e))
+            except Exception:
+                pass   # a backend double without a log: the launch goes on
     def _note_auth_source(self, sess, source) -> None:
         """An init message named HOW its CLI authenticates — a PER-SESSION fact, not a backend one (the
         user 2026-08-08): with a real ANTHROPIC_API_KEY in the service env, only the sessions whose
@@ -10816,6 +10836,8 @@ class SdkBackend:
             if _word == "apikeyhelper":
                 source = "none"
                 sess.auth_login_live = _ll
+                sess._wrong_landing_reconnected = False   # the helper answers again: a later wrong landing may take the fall
+                self._persist_login_evidence(sess, authLoginLive=_ll)
             else:
                 # ANY other word means the helper did not answer and the CLI signed in with something else: absent
                 # or 'none' is the machine's own login from its credentials file; '/login managed key', 'user',
@@ -10832,6 +10854,7 @@ class SdkBackend:
                 why = "the token command did not answer and the CLI signed in with %s instead" % used
                 _logins.mark_refused(self.state_dir, _ll, why)
                 sess._launched_login = ""       # the evidence: this process does not bill the stored login
+                self._persist_login_evidence(sess, launchedLogin="", authLoginLive="")
                 # The reconnect relaunches onto the documented fall, read AFTER the refusal is recorded: the key when
                 # a helper is configured, else the machine's own login. With NOTHING to fall to the relaunch would
                 # carry the same failing helper, land wrong again and reconnect again, forever (review 2026-09-11:
@@ -11514,7 +11537,13 @@ class SdkBackend:
         else:
             kw["env"] = dict(kw["env"], **helper_fast_org_env(self._log, sess.cwd))
         sess._launched_keyed = launch_keyed
-        sess._launched_login = login_id          # the stored login this launch actually carried ("" = the machine's own)
+        # the stored login this launch actually carried ("" = the machine's own), and NO evidence yet from this process:
+        # a relaunch that stops carrying the helper (the login went unavailable, then a model or effort reconnect) must
+        # not keep the old init's word, or a revoked KEY's auth error would refuse the stored login and a reply served
+        # on the fallback would clear a real refusal (review 2026-09-11). Persisted for a hosted re-attach (__init__).
+        sess._launched_login = login_id
+        sess.auth_login_live = None
+        self._persist_login_evidence(sess, launchedLogin=login_id, authLoginLive=None)
         sess._launched_unkeyed_pick = side == "key" and not launch_keyed
         if self.session_hosts_on():
             # under a host, a hook the kernel cannot answer in time (a restart in progress) is answered by the
@@ -13662,6 +13691,7 @@ class SdkBackend:
             s.auth = side
             s.auth_login = login_id
             s._auth_pending = side
+            s._wrong_landing_reconnected = False   # a new pick may take the documented fall again (review 2026-09-11)
             s.auth_live = ""   # the last init's report predates this switch — the Billing row shows
             #   the plain intent (no "CLI reports" parenthetical) until the next init re-confirms
             s.request_reconnect()

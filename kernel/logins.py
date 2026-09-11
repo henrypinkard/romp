@@ -33,24 +33,51 @@ ID_RE = re.compile(r"^[0-9a-f]{12}$")
 # or with a section op://<vault>/<item>/<section>/<field> (`romp login add --op <ref>` writes `op read` for it)
 OP_REF_RE = re.compile(r"^op://[^/\r\n\t]+/[^/\r\n\t]+/[^/\r\n\t]+(?:/[^/\r\n\t]+)?$")   # item titles may carry spaces
 TOKEN_CMD_MAX = 500                 # one shell line: the command the helper runs to print the token
-# A credential's SHAPE inside a command's text: a setup-token's prefix, or a run of forty or more token characters
-# not inside a path (a key pasted in place of a command that reads one), dots included so a JWT-shaped bearer (three
-# runs joined by dots) reads as one run. Such a command would ride /bin/sh's argv on every refresh, readable to every
-# process of the same user through ps, so it is refused at add time. A forty-digit HEX run is also a gpg key
-# fingerprint: one inside a gpg command, or right after --recipient/-r, passes (review 2026-09-11).
-CREDENTIAL_SHAPE_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}|(?<![A-Za-z0-9_/.\-])[A-Za-z0-9_.\-]{40,}(?![A-Za-z0-9_/.\-])")
+# A credential's SHAPE inside a command's text, an ADD-TIME rule only (a stored record is never re-read against it:
+# the rule may tighten later, and a record's sessions must not fall off their login for it): a setup-token's prefix;
+# a plain run of forty or more token characters outside a path (a key pasted in place of a command that reads one);
+# or a JWT-shaped bearer, three dot-joined base64url segments of sixteen or more characters each carrying a digit or
+# a capital. Dotted NAMES (a secret manager's key path, a host, a file name) are not credentials: a dot splits a run
+# into segments judged one by one (review 2026-09-11). Such a command would ride /bin/sh's argv on every refresh,
+# readable to every process of the same user through ps. A forty-digit HEX segment is also a gpg key fingerprint:
+# one inside a gpg command, or right after --recipient/-r, passes.
+SETUP_TOKEN_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}")
+TOKEN_RUN_RE = re.compile(r"(?<![A-Za-z0-9_/.\-])[A-Za-z0-9_.\-]+(?![A-Za-z0-9_/.\-])")
 HEX_RUN_RE = re.compile(r"^[0-9A-Fa-f]{40}$")
 GPG_CMD_RE = re.compile(r"(?:^|[\s;&|(`$])gpg2?(?:\s|$)")
 RECIPIENT_RE = re.compile(r"(?:--recipient|-r)(?:\s+|=)$")
+CREDENTIAL_RUN_LEN = 40
+JWT_SEGMENT_LEN = 16
+
+
+def _jwt_shaped(run: str) -> bool:
+    segs = run.split(".")
+    return len(segs) == 3 and all(len(seg) >= JWT_SEGMENT_LEN and re.search(r"[A-Z0-9]", seg) for seg in segs)
 
 
 def credential_shaped(cmd: str) -> bool:
-    """Whether `cmd` carries a credential-shaped run (CREDENTIAL_SHAPE_RE), a gpg fingerprint excepted."""
-    for m in CREDENTIAL_SHAPE_RE.finditer(cmd):
-        if HEX_RUN_RE.match(m.group(0)) and (GPG_CMD_RE.search(cmd) or RECIPIENT_RE.search(cmd[:m.start()])):
-            continue
+    """Whether `cmd` carries a credential-shaped run: a setup-token prefix, a JWT-shaped dotted run, or a plain
+    segment of CREDENTIAL_RUN_LEN token characters (a gpg fingerprint excepted). Dotted names pass."""
+    if SETUP_TOKEN_RE.search(cmd):
         return True
+    for m in TOKEN_RUN_RE.finditer(cmd):
+        run = m.group(0)
+        if "." in run and _jwt_shaped(run):
+            return True
+        for seg in run.split("."):
+            if len(seg) < CREDENTIAL_RUN_LEN:
+                continue
+            if HEX_RUN_RE.match(seg) and (GPG_CMD_RE.search(cmd) or RECIPIENT_RE.search(cmd[:m.start()])):
+                continue
+            return True
     return False
+
+
+def has_token_cmd(rec) -> bool:
+    """Whether a stored record carries a token command at all: presence, the only read-time rule. The shape check
+    (token_cmd_error) is applied at add time and never to a stored record (review 2026-09-11: a rule that tightened
+    read an existing record as 'no token command recorded' and its sessions fell off the login)."""
+    return isinstance(rec, dict) and bool(str(rec.get("tokenCmd") or "").strip())
 
 
 def token_cmd_error(cmd) -> str:
@@ -64,9 +91,9 @@ def token_cmd_error(cmd) -> str:
         return "the token command must be one line with no control characters"
     if credential_shaped(cmd):
         # said at the moment the value has already reached the shell's history and this command's argument list
-        return ("the command text looks like it carries the credential itself; a value typed on a command line is "
-                "already exposed (the shell's history, the command's argument list), so rotate it, then keep the new "
-                "token in a store and have the command read it (--op <reference>, or --cmd 'cat <private file>')")
+        return ("the command text looks like it carries the credential itself (a token-shaped run); if it does, that "
+                "value is already exposed (the shell's history, the command's argument list): rotate it, then keep the "
+                "new token in a store and have the command read it (--op <reference>, or --cmd 'cat <private file>')")
     return ""
 
 
@@ -175,7 +202,7 @@ def write_record(state_dir, rec: dict) -> None:
 def _with_state(rec: dict, now: float) -> dict:
     """The record plus its derived, unstored facts: hasCmd, expiresAt, expiresSoon, expired."""
     out = dict(rec)
-    out["hasCmd"] = not token_cmd_error(rec.get("tokenCmd"))
+    out["hasCmd"] = has_token_cmd(rec)
     added = rec.get("addedAt")
     if isinstance(added, (int, float)) and added > 0:
         out["expiresAt"] = int(added + TOKEN_LIFE_S)
@@ -254,7 +281,7 @@ def why_unavailable(rec, now=None) -> str:
         isinstance(added, (int, float)) and added > 0 and now >= added + TOKEN_LIFE_S)
     if expired:
         return "the %s login's token is a year old and has expired; add it again" % label
-    has_cmd = rec.get("hasCmd") if "hasCmd" in rec else not token_cmd_error(rec.get("tokenCmd"))
+    has_cmd = rec.get("hasCmd") if "hasCmd" in rec else has_token_cmd(rec)
     if not has_cmd:
         return "no token command is recorded for the %s login; add it again" % label
     return ""

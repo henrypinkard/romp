@@ -487,19 +487,25 @@ with neither, a relaunch would carry the same failing helper and land wrong
 again, so the session stays where it landed, flagged. The API-health bucket and
 the spend rows follow the credential that actually answered, never the pick,
 and an API auth error marks a stored login refused only on a session whose
-launch carried that login's helper and whose CLI used it. A served reply on
+launch carried that login's helper and whose CLI used it. That evidence is
+per process: a relaunch that no longer carries the helper (the login went
+unavailable, then a model or effort change) starts with none, and it is kept
+on the session's registry row so a session re-attached after a kernel restart
+keeps it through the turn. A served reply on
 a session whose helper did answer is the deciding event the other way and
 clears the refusal; a judge call never clears one (its envelope does not say
 which login answered), and the judges of a session on a refused login take the
 same fallback, said once in the kernel log. The helper bounds the command at fifteen seconds (the kernel's own helper
 bound; `ROMP_LOGIN_HELPER_TIMEOUT_S` overrides it). A command whose text
-carries a credential-shaped run (a setup-token's prefix, or forty or more
-token characters outside a path, dots included) is refused at add time: it
-would ride the shell's argument list on every refresh, readable to every
-process of the same user, and the refusal says the value typed there is
-already exposed through the shell's history and should be rotated. A
-forty-digit hex run inside a `gpg` command, or right after `--recipient`, is a
-key fingerprint and passes.
+carries a credential-shaped run (a setup-token's prefix, forty or more token
+characters outside a path, or a JWT-shaped bearer of three dot-joined
+segments) is refused at add time: it would ride the shell's argument list on
+every refresh, readable to every process of the same user, and the refusal
+says a value typed there is already exposed through the shell's history and
+should be rotated. Dotted names pass (a secret manager's key path, a host, a
+file), a forty-digit hex run inside a `gpg` command or right after
+`--recipient` is a key fingerprint and passes, and the rule is applied at add
+time only: a stored record is never re-read against it.
 
 A machine or session with no stored login works exactly as today: the ordinary
 Claude Code login and the API key path are untouched, and the stored logins
