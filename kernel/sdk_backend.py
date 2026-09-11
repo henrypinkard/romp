@@ -5159,6 +5159,8 @@ class SdkSession:
         #   of silently billing the wrong account
         self._launched_unkeyed_pick = False  # an explicit API-key pick that launched with NOTHING injected
         self._launched_login = ""            # the stored login whose helper the last launch carried (T346), "" = the machine's own
+        self.auth_login_live = None          # which stored login the CLI actually signed in with, from the init's evidence (T346):
+        #   None until an init lands, the record id when its helper answered, "" when the CLI fell back to the machine's own
         #   because romp holds no key source (_options): Claude Code's own credential — its apiKeyHelper
         #   or its login — is what pays, said once per process in the log
         self._pick_fell_said = ""    # the pick whose fall to the other side _options has said for THIS
@@ -7025,6 +7027,16 @@ class SdkSession:
         m = str(getattr(msg, "model", None) or "")
         if "claude" not in m.lower():
             return   # injected / synthetic assistant records are not API responses
+        # a served reply on a STORED login (T346) is the deciding event that clears its refusal: the record was
+        # marked refused on an auth error or an unused helper, and this response proves the login works again
+        # (once per session; the registry write is idempotent)
+        _lv = getattr(self, "auth_login_live", None)
+        if _lv and not getattr(self, "_login_cleared", False):
+            self._login_cleared = True
+            try:
+                _logins.clear_refused(self.backend.state_dir, _lv)
+            except Exception:
+                pass
         try:
             ah.note_ok(time.time(), auth=getattr(self, "auth_label", "unknown") or "unknown",
                        family=model_family(m), sid=self.sid,
@@ -8511,6 +8523,9 @@ class SdkSession:
                 # "" for the machine's own (the kernel fills the machine's own label into the status push)
                 "authLogin": getattr(self, "auth_login", ""),
                 "authLabel": self.backend.login_display(getattr(self, "auth_login", "")),
+                # the init's EVIDENCE of which login answered (T346): the record id when the stored login's helper did,
+                # "" when the CLI fell back to the machine's own login, absent until an init lands
+                "authLoginLive": getattr(self, "auth_login_live", None),
                 "authLive": self.auth_live,   # what the CLI's init actually reported ("" until one
                 #   lands) — the Billing row says so when it disagrees with the launch intent above
                 #   (a key found via apiKeyHelper bills the key while `auth` still reads login)
@@ -10731,10 +10746,27 @@ class SdkBackend:
         The mismatch check compares against ROMP_EXPECTED_AUTH when the box declares one
         (_expected_auth) and the session carries no explicit per-session pick — a pick outranks
         the declaration — else against _launched_keyed as before; see the comment at the check."""
-        if getattr(sess, "_launched_login", "") and str(source or "").strip() == "apiKeyHelper":
-            # a STORED login rides the per-session apiKeyHelper (T346), so the CLI names the helper as its source
-            # while the account billed is that login's subscription: the landing reads as the login's
-            source = "none"
+        _ll = getattr(sess, "_launched_login", "") or ""
+        if _ll:
+            # A launch billed to a STORED login (T346) carried that login's helper. The init's source word is the
+            # EVIDENCE of what the CLI did with it, never the pick: 'apiKeyHelper' means the helper answered and the
+            # account billed is that login's subscription (the landing reads as the login's; auth_login_live names
+            # it); the source ABSENT or 'none' means the CLI never used the helper (the token command failed, or was
+            # skipped) and signed in with the MACHINE'S OWN login from its credentials file, the wrong account: said
+            # loudly, shown on the Billing row (authLoginLive ""), and the record marked refused so every menu greys
+            # it until the deciding event the other way, a served reply on that login (_ah_note_ok clears it).
+            _word = str(source or "").strip().lower()
+            if _word == "apikeyhelper":
+                source = "none"
+                sess.auth_login_live = _ll
+            elif not _word or _word == "none":
+                sess.auth_login_live = ""
+                why = "the token command did not answer and the CLI signed in with the machine's own login instead"
+                self._log("auth (%s): the %s login's helper was not used: %s"
+                          % (sess.name, self.login_display(_ll), why), problem=True)
+                _logins.mark_refused(self.state_dir, _ll, why)
+            else:
+                sess.auth_login_live = ""       # a key source: the contradiction below rings as for any login pick
         keyed = bool(source) and str(source).strip().lower() != "none"
         # The /api-health bucket label, resolved here — once per init, from the init's own source word
         # and what THIS session was launched with — and cached on the session (api_health_auth_label).
@@ -11377,7 +11409,9 @@ class SdkBackend:
             # files or environment, and the machine's own login tokens are NOT restored into this launch (a
             # bearer outranks the helper in the CLI's precedence and would bill the machine's account). The
             # door rules stand: env_request_error still refuses credential names from any client payload and
-            # the strip above still drops them from a stored session env.
+            # the strip above still drops them from a stored session env. ANTHROPIC_API_KEY, which outranks the
+            # helper too, cannot ride the child either: this overlay cannot unset an inherited variable, and the
+            # kernel's own environment never carries the name (check_boot_environment refuses to start with it).
             kw["env"] = dict(kw["env"])
         elif login or (side != "key" and not keyed_box):
             # The login tokens claimed at boot ride every launch that bills the login: a login pick, and an

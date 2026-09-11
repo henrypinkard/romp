@@ -20,7 +20,14 @@ const FEED = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.ts"), "utf8"
 test("the status and the availability reply carry WHICH login, typed", () => {
   assert.match(RENDER, /interface AuthLogin \{ id\?: string; value\?: string; label\?: string; machine\?: boolean; available\?: boolean; why\?: string; expiresSoon\?: boolean \}/);
   assert.match(RENDER, /interface AuthAvail \{ login\?: boolean; key\?: boolean; loginWhy\?: string; keyWhy\?: string; acct\?: string; default\?: string; logins\?: AuthLogin\[\] \}/);
-  assert.match(RENDER, /authAcct\?: string; authLogin\?: string; authLabel\?: string; ctx\?: string;/);
+  assert.match(RENDER, /authAcct\?: string; authLogin\?: string; authLabel\?: string; authLoginLive\?: string \| null; ctx\?: string;/);
+});
+
+test("a stored login the CLI did not use is said on the hover and the sub-line, from the init's evidence", () => {
+  // authLoginLive "" = the CLI signed in with the machine's own login instead of the stored one's helper (the
+  // kernel's _note_auth_source reads the init's source word); absent before an init, the record id when it answered
+  assert.match(RENDER, /: \(s\.status\.auth === "login" && s\.status\.authLogin && s\.status\.authLoginLive === ""\)\s*\n\s*\? `⚠ Login \(\$\{loginName\(s\.status\)\}\) picked, but the CLI signed in with the machine's own login: this session bills that`/);
+  assert.match(RENDER, /: \(st\.auth === "login" && st\.authLogin && st\.authLoginLive === ""\)\s*\n\s*\? "⚠ CLI used the machine's login"/);
 });
 
 test("the tab menu's Billing submenu lists every login plus the key, the current one by WHICH login", () => {

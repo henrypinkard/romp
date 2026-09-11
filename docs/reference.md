@@ -445,13 +445,38 @@ tokens are stripped from such a launch, since a bearer in the environment
 outranks the helper. This helper road rests on one fact the user verifies on a
 machine with a login (the devbox has none): a request the CLI authenticates
 with a setup-token through the helper is accepted and billed to the
-subscription, not refused as a bad API key and not billed as API dollars.
-Should that check fail, the fallback is the environment road: the launch runs
+subscription, not refused as a bad API key and not billed as API dollars. That
+check runs in a plain terminal outside any recorded session or agent
+transcript: minting a setup-token prints it, and a token in a transcript is a
+compromised token (the gear flow of the second change removes the handling).
+Should the check fail, the fallback is the environment road: the launch runs
 the token command itself and puts the token in that one session's process
 environment as `CLAUDE_CODE_OAUTH_TOKEN`, exactly where the machine's own
 login tokens ride today, readable by processes of the same user as those are.
-Either way a failing token command is loud: the session's card names the login
-and the record is marked refused; no launch quietly bills another account.
+
+The command runs the way the kernel runs the box's own key helper: under a
+whitelisted environment (`PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`,
+`LC_ALL`, `TERM`, `CLAUDE_CONFIG_DIR` and the `LC_*` and `XDG_*` names), never
+the kernel's whole environment, whose serve token is full control of every
+session; with its standard input closed; and with its standard error
+discarded, since a secret manager's diagnostics can quote the value it read
+and the CLI's standard error is kept in the session's registry row and the
+kernel log. Anything the tool needs beyond that, the command provides itself:
+on a headless machine `op read` needs a 1Password service-account token or a
+signin session, so the command is `. ~/.config/op/env && op read --no-newline
+'<reference>'` with that private file (mode 0600) holding it, while a desktop's
+1Password app session serves as is. The login records themselves are written
+at mode 0600 in a 0700 directory.
+
+A failing command is loud, never a quiet fall onto another account. The
+session's first request fails with an auth error the card names by the login's
+label. When the CLI never used the helper and signed in with the machine's own
+login from its credentials file instead, the init's own report is the evidence
+(its source word), the tab hover reads `picked, but the CLI signed in with the
+machine's own login`, the submenu's sub-line `CLI used the machine's login`,
+the problem ring says so, and the record is marked refused so every menu greys
+it with that reason. A served reply on the login is the deciding event the
+other way and clears the refusal.
 
 A machine or session with no stored login works exactly as today: the ordinary
 Claude Code login and the API key path are untouched, and the stored logins

@@ -104,6 +104,15 @@ class Registry(unittest.TestCase):
         self.assertEqual(lg.kind_word("free"), "")
         self.assertEqual(lg.kind_word(None), "")
 
+    def test_records_are_private_files_in_a_private_directory(self):
+        import stat
+        rec = _rec(self.state, "Work")
+        self.assertEqual(stat.S_IMODE(os.stat(lg.record_path(self.state, rec["id"])).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(lg.logins_dir(self.state)).st_mode), 0o700)
+        os.chmod(lg.record_path(self.state, rec["id"]), 0o644)
+        lg.mark_refused(self.state, rec["id"], "x")
+        self.assertEqual(stat.S_IMODE(os.stat(lg.record_path(self.state, rec["id"])).st_mode), 0o600, "a rewrite tightens a loosened record")
+
     def test_records_read_back_sorted_with_derived_state(self):
         a = _rec(self.state, "Personal", addedAt=1_700_000_000)
         b = _rec(self.state, "Work", addedAt=1_700_000_100, email="user@example.com", org="Acme", kind="enterprise")
@@ -213,6 +222,25 @@ class TheHelperScript(unittest.TestCase):
         p = self._run(nocmd["id"], str(self.state))
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("names no token command", p.stderr)
+
+    def test_the_command_runs_under_a_whitelisted_environment_with_its_stderr_discarded(self):
+        # the command sees PATH/HOME and the XDG names, never the kernel's serve token or a stray variable; whatever it
+        # writes on stderr goes nowhere (a secret manager's diagnostics can quote the value it read)
+        probe = Path(tempfile.mkdtemp()) / "seen.json"
+        code = 'import json,os,sys; json.dump(dict(os.environ), open(sys.argv[1], "w")); sys.stderr.write("secret-manager diagnostic quoting NOISE"); print("tok-out")'
+        rec = _rec(self.state, "Env", tokenCmd="python3 -c '%s' %s" % (code, probe))
+        env = dict(self.env, ROMP_SERVE_TOKEN="serve-token-value", STRAY_VAR="stray", XDG_CONFIG_HOME="/x/config", LC_TIME="C")
+        import subprocess
+        p = subprocess.run([os.path.join(BIN, "romp-login-helper"), rec["id"], str(self.state)], capture_output=True, text=True, env=env)
+        self.assertEqual((p.returncode, p.stdout.strip(), p.stderr), (0, "tok-out", ""), "stdout is the command's, stderr is empty")
+        seen = json.loads(probe.read_text())
+        self.assertNotIn("ROMP_SERVE_TOKEN", seen)
+        self.assertNotIn("STRAY_VAR", seen)
+        for k in ("PATH", "HOME"):
+            self.assertIn(k, seen, k)
+        self.assertEqual((seen.get("XDG_CONFIG_HOME"), seen.get("LC_TIME")), ("/x/config", "C"), "the XDG and LC names pass")
+        self.assertTrue(set(seen) <= {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "CLAUDE_CONFIG_DIR", "PWD", "SHLVL", "_", "OLDPWD"}
+                        | {k for k in seen if k.startswith(("LC_", "XDG_"))}, sorted(seen))
 
     def test_any_command_serves_not_only_1password(self):
         # a token kept in a private file, read by a plain command: romp assumes nothing about the store
@@ -500,7 +528,12 @@ class StoredLoginPick(_Backend):
         self.assertEqual(st.get("apiKeyHelper"), lg.helper_command(rec["id"], self.be.state_dir))
         self.assertIn("romp-login-helper %s" % rec["id"], st["apiKeyHelper"])
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kw["env"], "the machine's token stays out of a stored-login launch")
+        # ANTHROPIC_API_KEY outranks the helper in the CLI's precedence, and the launch's overlay cannot unset an
+        # inherited variable: the guarantee is the kernel's own environment, which the boot check refuses to run with
+        # while that name is set (credentials.check_boot_environment, RETIRED_VARS), so no child inherits it
         self.assertNotIn("ANTHROPIC_API_KEY", kw["env"])
+        self.assertIn("ANTHROPIC_API_KEY", sb._cred.RETIRED_VARS)
+        self.assertIn("RETIRED_VARS", inspect.getsource(sb._cred.check_boot_environment))
         self.assertEqual(s._launched_login, rec["id"])
         self.assertFalse(s._launched_keyed)
         # the machine's own login launch is exactly as before: the helper disabled, the token restored
@@ -543,6 +576,37 @@ class StoredLoginPick(_Backend):
         self.be._options(s2, dict)
         self.be._note_auth_source(s2, "apiKeyHelper")
         self.assertEqual(s2.auth_live, "key")
+
+    def test_a_landing_without_the_helper_is_loud_refused_and_cleared_by_a_served_reply(self):
+        rec = _rec(self.be.state_dir, "Work")
+        logs = []
+        self.be._log = lambda m, problem=False: logs.append((m, problem))
+        # two sessions launched on the stored login while it stands: the CLI's init is the EVIDENCE of what each did
+        s = self._sess(1, auth="login", authLogin=rec["id"])
+        s2 = self._sess(2, auth="login", authLogin=rec["id"])
+        self.be._options(s, dict)
+        self.be._options(s2, dict)
+        self.assertEqual((s._launched_login, s2._launched_login), (rec["id"], rec["id"]))
+        self.assertIsNone(s.auth_login_live, "no evidence before an init")
+        self.assertIsNone(s.snapshot()["authLoginLive"])
+        # the first CLI reports NO key source: it never used the helper and signed in with the machine's own login
+        self.be._note_auth_source(s, "none")
+        self.assertEqual(s.auth_login_live, "")
+        self.assertEqual(s.snapshot()["authLoginLive"], "")
+        self.assertTrue(any("helper was not used" in m and p for m, p in logs), logs)
+        self.assertIn("the token command did not answer", lg.read_record(self.be.state_dir, rec["id"])["refused"])
+        self.assertIn("was refused", self.be.auth_unavailable_why("login", rec["id"]), "every menu greys it")
+        # the second CLI's helper DID answer: a served reply there is the deciding event that clears the refusal
+        self.be._note_auth_source(s2, "apiKeyHelper")
+        self.assertEqual(s2.auth_login_live, rec["id"])
+        import types
+        s2._ah_note_assistant(types.SimpleNamespace(model="claude-opus-5", message_id="m1", parent_tool_use_id=None, error=None))
+        self.assertNotIn("refused", lg.read_record(self.be.state_dir, rec["id"]))
+        self.assertEqual(self.be.auth_unavailable_why("login", rec["id"]), "")
+        # …but a reply on the session that fell back to the machine's login clears nothing (it is not that login's)
+        lg.mark_refused(self.be.state_dir, rec["id"], "again")
+        s._ah_note_assistant(types.SimpleNamespace(model="claude-opus-5", message_id="m2", parent_tool_use_id=None, error=None))
+        self.assertEqual(lg.read_record(self.be.state_dir, rec["id"])["refused"], "again")
 
     def test_the_seed_skip_names_a_dead_remembered_stored_login(self):
         rec = _rec(self.be.state_dir, "Work")
@@ -777,6 +841,9 @@ class Judges(unittest.TestCase):
             w = b["windows"]["900"] if "900" in b["windows"] else list(b["windows"].values())[-1]
             self.assertEqual((w["requests"], w["gaveUp"]), (2, 1))
             self.assertIn("key:helper", labels, "a key call files under the helper's bucket, unchanged")
+            lg.mark_refused(d, self.rec["id"], "refused once")
+            km._judge_api_health_note("ok", "login:" + self.rec["id"], "claude-opus-5", "", SID)
+            self.assertNotIn("refused", lg.read_record(d, self.rec["id"]), "a served judge call clears the refusal")
         finally:
             km._sdk = saved
             jd._API_HEALTH_NOTE_FN = None

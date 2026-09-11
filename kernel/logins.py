@@ -137,10 +137,16 @@ def write_record(state_dir, rec: dict) -> None:
         raise ValueError("a login record needs a 12-hex id")
     d = logins_dir(state_dir)
     d.mkdir(parents=True, exist_ok=True)
+    # 0700 / 0600, the serve-token treatment: the record holds no token, but a user may type a literal into a
+    # token command, and a default-umask file is world-readable on a shared host
+    os.chmod(d, 0o700)
     p = record_path(state_dir, lid)
     tmp = p.with_name("%s.%d.%s.tmp" % (p.name, os.getpid(), secrets.token_hex(4)))
-    tmp.write_text(json.dumps(rec, sort_keys=True), encoding="utf-8")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(rec, sort_keys=True))
     os.replace(tmp, p)
+    os.chmod(p, 0o600)   # a pre-existing record keeps its mode through the rename: tighten it too
 
 
 def _with_state(rec: dict, now: float) -> dict:

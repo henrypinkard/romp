@@ -17000,6 +17000,7 @@ class Sessions:
                                 # display label, "" for the machine's own
                                 "authLogin": st.get("authLogin", ""),
                                 "authLabel": st.get("authLabel", ""),
+                                "authLoginLive": st.get("authLoginLive"),   # the init's evidence of which login answered
                                 # the explicit pick this box cannot bill ("login"|"key"|""): the launch
                                 # fell to the other side, the Billing menu says so (2026-09-08)
                                 "authPickUnavailable": st.get("authPickUnavailable", ""),
@@ -33184,6 +33185,9 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # its display label, else "" and the machine's own login as email · organisation · kind
                   "authLogin": tm.get("authLogin", ""),
                   "authLabel": tm.get("authLabel", "") or _claude_login_display(),
+                  # the init's EVIDENCE of which login answered a stored-login launch (T346): the record id when its
+                  # helper did, "" when the CLI signed in with the machine's own login instead, absent before an init
+                  "authLoginLive": tm.get("authLoginLive"),
                   "authPending": bool(tm.get("authPending")),   # an /auth reconnect applying → badge dots
                   "modelPending": _model_pending_now(sid, tm),   # switching-dots on the model badge until the pick lands, from EITHER surface (the user 2026-07-03)
                   "effortPending": bool(tm.get("effortPending")),   # switching-dots on the effort badge while the /effort reconnect applies (SDK-only; the user 2026-07-06)
@@ -36397,6 +36401,8 @@ def _judge_api_health_note(kind, auth, model, msg, fsid):
     sid = str(fsid or "judges")
     if kind == "ok":
         ah.note_ok(now, auth=label, family=fam, sid=sid, message_id=None)
+        if lid:
+            lg.clear_refused(be.state_dir, lid)     # a served judge call on the stored login is the deciding event too
         return
     st = _judge_err_status(msg)
     low = str(msg or "").lower()
@@ -53090,7 +53096,7 @@ class Handler(BaseHTTPRequestHandler):
                 # The stored Claude logins (T346): labels, organisations, dates and states for the gear's
                 # Billing block and `romp login list`, plus the machine's own login as the surfaces name it.
                 # AUTHED like /api-health (the plain _authorize): the rows name accounts. No token ever rides
-                # here (a row's hasToken is a stat of the token file).
+                # here (a row's hasCmd says a token command is recorded; the command itself never rides either).
                 return self._send(200, json.dumps({"ok": True, "logins": _login_rows(),
                                                    "machine": {"label": _claude_login_display(),
                                                                "acct": _claude_account_label(),
@@ -55283,7 +55289,7 @@ class Handler(BaseHTTPRequestHandler):
         elif msg and msg.get("type") == "loginCancel":
             _login_cancel()
         elif msg and msg.get("type") == "loginRemove" and msg.get("id"):
-            # the gear's Billing block forgets a stored login (T346): the record and its token file both go
+            # the gear's Billing block forgets a stored login (T346): the record goes; the token stays wherever the user keeps it
             if not lg.remove(jd.STATE, str(msg["id"])):
                 client["send"](json.dumps({"type": "warn", "text": "No stored login with that id; it may already be gone."}))
             _push_soon()
