@@ -230,6 +230,7 @@ const sends = (p, slot) => (((p || {}).sends || {}).full || {})[slot]?.count || 
 await page.goto(cfg.url);
 await waitTabs("f-chat", [cfg.sidA, cfg.sidB, cfg.sidC]);
 await waitBootGone();
+const board = (await tabsIn("f-chat")).length;   // the board: the status frames a skeleton column receives are one per OTHER tab
 if ((await activeIn("f-chat")) !== cfg.sidA) { await clickTab("f-chat", cfg.sidA); await waitActive("f-chat", cfg.sidA); }
 out.col1Before = await activeIn("f-chat");
 
@@ -274,7 +275,12 @@ const perfAtPaint = await page.evaluate(() => window.__obs.perfAtPaint ? window.
 out.s1.col2Active = await activeIn("f-chat-2"); out.s1.col1After = await activeIn("f-chat");
 out.s1.col2Tabs = await tabsIn("f-chat-2"); out.s1.col1Tabs = await tabsIn("f-chat");
 out.s1.obs = await page.evaluate(() => { const { perfAtPaint, ...rest } = window.__obs; return rest; });
-out.s1.fullChatDelta = sends(perfAtPaint, "chat") - sends(perf0, "chat"); out.s1.statusDelta = sends(perfAtPaint, "status") - sends(perf0, "status");
+out.s1.fullChatDelta = sends(perfAtPaint, "chat") - sends(perf0, "chat");   // read AT the paint: a later read could count the page's idle prefetch
+// the statuses trail the one full on a slow runner (strip, the full, then a status per other tab, in the ready arm's push):
+// wait for the kernel's counter to reach the board, bounded, instead of reading it at the paint
+const needStatus = sends(perf0, "status") + board - 1;
+const perfSettled = await page.waitForFunction(async (need) => { const p = await fetch("/perf").then((r) => r.json()); const c = ((((p || {}).sends || {}).full || {}).status || {}).count || 0; return c >= need ? p : false; }, needStatus, { timeout: T }).then((h) => h.jsonValue()).catch(() => null);
+out.s1.statusDelta = sends(perfSettled || perfAtPaint, "status") - sends(perf0, "status");
 out.s1.col2Asks = col2Asks.slice();
 out.s1.targetB = await targetOf(cfg.sidB); out.s1.targetA = await targetOf(cfg.sidA); out.s1.targetX = await targetOf(cfg.sidX);
 
