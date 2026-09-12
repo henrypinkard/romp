@@ -9866,7 +9866,19 @@ def _prime_leaf_folds(leaf):
             fn(leaf); primed = True
         except Exception:
             pass
+    if whole:                                 # T377 (reader two): the transcript's ledger and wake folds run at an echo settle and
+        for fn, cache in _GENERIC_LEAF_FOLDS():   #  on a wake, so a live leaf whose document lacked them was refolded WHOLE at every
+            try:                              #  boot's first call (13 of 24 live documents on the devbox, about 0.7 GB per boot).
+                fn(leaf); primed = True       #  Over the whole entry in hand they are advanced at every settle like the five (a
+            except Exception:                 #  current cursor is a stat; a lagging one steps records in hand, so the write
+                pass                          #  carries it inside the lag bound); over a tail entry they are left to their callers
     return primed
+
+
+def _GENERIC_LEAF_FOLDS():
+    """The transcript folds beside the leaf's five that a settle primes over a whole-resident entry (T377): the CLI queue
+    ledger and the undelivered wake tail, with their cursor dicts."""
+    return ((_pending_ledger, _queued_parse_cache), (_undelivered_wake_tail, _wake_tail_cache))
 
 
 def _LEAF_FOLDS():

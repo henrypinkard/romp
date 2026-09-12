@@ -765,6 +765,8 @@ _CKPT_V = 1
 _CKPT_DIR_FN = None               # () -> Path of the checkpoint directory; None = checkpoints off
 _CKPT_STATS = {"restored": 0, "writes": 0, "swept": 0, "skippedFolds": 0, "fallbacks": {}, "restoredFolds": {}, "droppedRestores": 0,
                "oversizeFolds": {}, "coldFolds": {}, "coldWrites": {},
+               "refolds": {},         # per fold name: {"count", "bytes"} of whole refolds that READ (a fold with no cursor and nothing to
+#                                       restore over a tail entry reads the file whole; T377 named the boot's whole reads this way)
                "converge": {"passes": 0, "writes": 0, "bytes": 0, "heals": 0, "healBytes": 0, "primed": 0, "deferred": 0,
                             "failed": 0, "unhealed": 0, "docReadBytes": 0, "quiescent": 0, "skipped": 0,
                             "dropWrites": 0, "dropDeferred": 0, "viaDrop": 0}}   # T360, T361, T362
@@ -1549,6 +1551,7 @@ def checkpoint_stats():
         out = dict(_CKPT_STATS); out["fallbacks"] = dict(_CKPT_STATS["fallbacks"]); out["restoredFolds"] = dict(_CKPT_STATS["restoredFolds"])
         out["oversizeFolds"] = dict(_CKPT_STATS["oversizeFolds"]); out["coldFolds"] = dict(_CKPT_STATS["coldFolds"])
         out["coldWrites"] = dict(_CKPT_STATS["coldWrites"]); out["converge"] = dict(_CKPT_STATS["converge"])
+        out["refolds"] = {k: dict(v) for k, v in _CKPT_STATS["refolds"].items()}
     d = _ckpt_dir()
     with _READ_BYTES_LOCK:
         out["documentBytes"] = sum(n for p_, n in _READ_BYTES.items() if d is not None and p_.startswith(str(d) + os.sep))
@@ -1792,6 +1795,8 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
     Lives here (moved from the kernel, 2026-09-03) so the judge's readers can fold too — the
     background-task pairing below is shared by both."""
     key = str(path)
+    with _READ_BYTES_LOCK:
+        r0 = _READ_BYTES.get(key, 0)                      # what this call reads of the file shows under refolds (T377)
     if ckpt is None:
         ckpt = _FOLD_NAME_OF.get(id(cache))               # a cache named once (name_fold_cache)
     if ckpt is not None:
@@ -1862,9 +1867,15 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
             total = len(recs)
         state, start, kind = init(), 0, "refold"
         if ckpt is not None:
+            with _READ_BYTES_LOCK:
+                got = _READ_BYTES.get(key, 0) - r0
             with _CKPT_LOCK:
                 _COLD_FOLDS.discard((key, ckpt))          # every record stepped: the state is complete again
                 _COLD_REASONS.pop((key, ckpt), None); _COLD_OVER_KB.pop((key, ckpt), None)
+                if got > 0:                               # a refold that read (the whole file, over a tail entry or from zero): named
+                    rf = _CKPT_STATS["refolds"].setdefault(ckpt, {"count": 0, "bytes": 0})   #  and weighed per fold on /perf (T377).
+                    rf["count"] += 1; rf["bytes"] += got   #  Diagnostic: the delta is over the path's process-wide counter, so another
+        #                                                    thread's read of the same file inside this call lands in it
     for r in recs[start:]:
         if isinstance(r, dict):
             state = step(state, r)
