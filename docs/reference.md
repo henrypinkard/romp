@@ -1557,7 +1557,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `fallbacks` per reason (`version`, `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
-  `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`),
+  `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`;
+  `offsets` is a reader entry holding fewer records than the tree read, or
+  more under another generation: an entry that merely grew since the
+  settle's parse lends the prefix the tree read, so a busy session's
+  document is written between its appends),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
   a cut), `hydratedBy` (those bytes per calling function), and `converge`: the
   pass's writes of idle leaves' documents from the boot's own parse

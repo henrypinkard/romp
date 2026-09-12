@@ -1595,6 +1595,14 @@ def _scan_jsonl_bytes(data, base_offset, offsets=None):
     return records, base_offset + end + 1
 
 
+def _entry_gen(path):
+    """The reader entry's generation for `path`, None with no entry: what a writer compares its adapter's source key against
+    before trusting the entry's offsets for records the adapter read (T396)."""
+    with _JSONL_CACHE_LOCK:
+        ent = _JSONL_CACHE.get(str(path))
+    return ent[6] if ent is not None and len(ent) > 6 else None
+
+
 def record_offsets(path, base):
     """[(byte offset, byte length)] of the reader entry's held records for `path`, record `base` first (the entry's
     base): the assembly checkpoint's record locations. None when the reader holds no entry or its base is later."""
@@ -5157,8 +5165,17 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 return skip("stat")
             pre_n = max(0, min(len(recs), cut_seq - first_seq[fp]))   # records of this file before the cut
             offs = record_offsets(fp, 0)
-            if offs is None or len(offs) != len(recs):
+            # The reader's entry may hold MORE records than the tree's adapter read: a live leaf grows between the settle's
+            # parse and this write (the CLI appends while the settle runs), and the reader extends its entry by a new list
+            # whose prefix is the very records the adapter holds, under the same generation. The document's pre-cut part
+            # is that prefix, so the prefix's offsets stand; a shorter entry, or one under another generation (a rewrite,
+            # a refold from zero), does not (T396: a continuously active 120 MB session never got a document while its
+            # kernel lived, since every settle's write met an entry one record longer than its tree, and every boot read
+            # it whole through whichever reader came first).
+            src_gen = (getattr(ad, "_src_keys", {}) or {}).get(fp, (None,))[0]
+            if offs is None or len(offs) < len(recs) or (len(offs) > len(recs) and src_gen != _entry_gen(fp)):
                 return skip("offsets")
+            offs = offs[:len(recs)]
             file_offs[fp] = offs
             pre_uuids = [r.get("uuid") for r in recs[:pre_n] if r.get("uuid")]
             f = {"path": fp, "size": st_.st_size, "mtime": st_.st_mtime, "pre": pre_n, "n": len(recs),
