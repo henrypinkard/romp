@@ -44305,7 +44305,7 @@ def _slice_allowed(fp, sid):
         return None, "not a kind the preview shows"
     if _slice_kind(fp) != kind:
         return None, "a link dressed as another kind"
-    if not _slice_confined(real, sid):
+    if not _slice_confined(real, sid) and not _glossary_owned(real):   # the glossaries folder is the user's own wherever the config dir points (T375)
         return None, "outside the session's folder and your home"
     try:
         size = os.path.getsize(real)
@@ -44378,6 +44378,18 @@ def _slice_headings(text):
     return out
 
 
+def _glossary_owned(real):
+    """Whether `real` (a real path) is one of the user's own glossary files (a markdown file directly under the glossaries
+    folder, _glossary_dir). The content belt does not apply there (T375): a glossary's every section already reaches the page
+    whole through the index frame and the /glossary route, so a credential-shaped EXAMPLE line in a coinage's definition
+    would refuse the slice of a file the page holds anyway, and the term's hover would fall to the text card."""
+    try:
+        d = os.path.realpath(str(_glossary_dir()))
+    except Exception:
+        return False
+    return os.path.dirname(real) == d and real.endswith(".md")
+
+
 def _slice_load(fp):
     """The text and heading index of `fp` from the cache, keyed on (real path, mtime_ns), read on a miss. Returns
     (entry, hit, why): why is "" on success, else the refusal ("not text", "too large to show", "looks like a secret":
@@ -44404,7 +44416,7 @@ def _slice_load(fp):
     text = _decode_text(raw)
     if text is None:
         return None, False, "not text"
-    if _looks_secret(text):
+    if _looks_secret(text) and not _glossary_owned(fp):
         return None, False, "looks like a secret"
     e = {"text": text, "headings": _slice_headings(text) if _slice_kind(fp) == "markdown" else [],
          "size": len(raw), "mtime_ns": st.st_mtime_ns}
@@ -44509,9 +44521,9 @@ def _slice_body(fp, sid, anchor):
         body.update(kind=None, allowed=False, why=why)           # the content belt, or a size or read refusal
         return 403, body, "application/json"
     text, found, heading, truncated = _slice_of(entry, anchor)
-    if _looks_secret(text):
+    if _looks_secret(text) and not _glossary_owned(os.path.realpath(fp)):
         # the belt over the SERVED slice: the load scanned the file's first 64 KB, and an anchored section can lie past
-        # that mark (the review)
+        # that mark (the review); the user's glossary files are outside the belt at both ends (T375)
         body.update(kind=None, allowed=False, why="looks like a secret")
         return 403, body, "application/json"
     # the heading INDEX stays on the kernel's side: the client reads the slice and the one heading it named, and an

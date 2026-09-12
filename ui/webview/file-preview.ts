@@ -12,18 +12,17 @@ export const PREVIEW_DWELL_MS = 350;   // a hover shorter than this is a pass-th
 export const PREVIEW_GRACE_MS = 150;   // leaving the link toward the card must not close it on the way
 
 /** The kinds a preview shows. `text` is the text-only card (a path the popover may not fetch: outside the session's
- *  folder and the user's home, unverified, a secrets-shaped name, not a kind it renders, over the caps). `term` is
- *  stage 2's glossary entry, filled by the lab team's lookup through the same shape. */
-export type PreviewKind = "markdown" | "section" | "image" | "code" | "pdf" | "text" | "term";
+ *  folder and the user's home, unverified, a secrets-shaped name, not a kind it renders, over the caps). A glossary
+ *  term previews as the glossary file's `section` (T375), no kind of its own. */
+export type PreviewKind = "markdown" | "section" | "image" | "code" | "pdf" | "text";
 
 /** THE content contract (docs/reference.md, "The file preview popover"): one shape, whoever fills it. */
 export interface PreviewContent {
   kind: PreviewKind;
-  title: string;                       // the file's name, or the term
-  subtitle?: string;                   // "#slug" for a section, the source path for a term
+  title: string;                       // the file's name
+  subtitle?: string;                   // "#slug" for a section
   body: { markdown?: string; html?: string; text?: string; url?: string; lang?: string };
   note?: string;                       // one line the card says above the body (a missing anchor, why a path is text-only)
-  open?: { label: string; path: string; frag?: string };   // a control to a fuller view; the FILE cards carry none (T369: the link itself opens the file, the user 2026-09-12), the glossary's term card keeps its own
 }
 
 /** `path#slug` → the path and the anchor; a `#` inside a file name is not an anchor unless what follows reads as a
