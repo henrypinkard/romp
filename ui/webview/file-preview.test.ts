@@ -36,24 +36,25 @@ test("the routes: the slice with its anchor and session, the bytes route for med
 
 test("contentFor fills the one shape per kind; a missing anchor falls back to the head with a one-line note", () => {
   const md = contentFor("docs/g.md", "", "markdown", "s", { title: "g.md", text: "# G\nbody", found: true, allowed: true });
-  assert.deepEqual(md, { kind: "markdown", title: "g.md", subtitle: undefined, body: { markdown: "# G\nbody" }, note: undefined, open: { label: "open", path: "docs/g.md", frag: undefined } });
+  assert.deepEqual(md, { kind: "markdown", title: "g.md", subtitle: undefined, body: { markdown: "# G\nbody" }, note: undefined });
   const sec = contentFor("docs/g.md", "fold", "markdown", "s", { title: "g.md", text: "## Fold\nabout folds", found: true, allowed: true });
-  assert.equal(sec.kind, "section"); assert.equal(sec.subtitle, "#fold"); assert.equal(sec.open!.frag, "fold");
+  assert.equal(sec.kind, "section"); assert.equal(sec.subtitle, "#fold");
+  assert.equal(sec.open, undefined, "no open control on a file card: the link itself opens the file at the section (T369)");
   const miss = contentFor("docs/g.md", "nope", "markdown", "s", { title: "g.md", text: "# G\nhead", found: false, allowed: true });
   assert.equal(miss.kind, "markdown"); assert.equal(miss.subtitle, undefined);
-  assert.equal(miss.note, 'no section "nope" in this file; its head instead'); assert.equal(miss.open!.frag, "nope", "open still tries the anchor the link named");
+  assert.equal(miss.note, 'no section "nope" in this file; its head instead'); assert.equal(miss.open, undefined);
   const cut = contentFor("docs/g.md", "", "markdown", "s", { title: "g.md", text: "…", found: true, truncated: true, allowed: true });
-  assert.equal(cut.note, "the head of the file; open for the rest");
+  assert.equal(cut.note, "the head of the file; the link opens the rest");
   const code = contentFor("src/app.py", "", "code", "s", { title: "app.py", text: "print(1)", allowed: true });
   assert.deepEqual(code.body, { text: "print(1)", lang: "python" }); assert.equal(code.kind, "code");
   const img = contentFor("plots/a.png", "", "image", "s", null);
-  assert.deepEqual(img, { kind: "image", title: "a.png", body: { url: "/file?path=plots%2Fa.png&sid=s" }, open: { label: "open", path: "plots/a.png", frag: undefined } });
+  assert.deepEqual(img, { kind: "image", title: "a.png", body: { url: "/file?path=plots%2Fa.png&sid=s" } });
   const pdf = contentFor("r.pdf", "", "pdf", null, null);
   assert.equal(pdf.kind, "pdf"); assert.equal(pdf.subtitle, "first page"); assert.equal(pdf.body.url, "/file?path=r.pdf");
   const refused = contentFor("x.md", "", "markdown", "s", { allowed: false, why: "a secrets-shaped name" });
   assert.equal(refused.kind, "text"); assert.equal(refused.note, "a secrets-shaped name"); assert.equal(refused.body.text, "x.md");
   const t = textOnlyContent("/etc/hosts", "", "outside");
-  assert.deepEqual(t, { kind: "text", title: "hosts", subtitle: undefined, body: { text: "/etc/hosts" }, note: "outside", open: { label: "open", path: "/etc/hosts", frag: undefined } });
+  assert.deepEqual(t, { kind: "text", title: "hosts", subtitle: undefined, body: { text: "/etc/hosts" }, note: "outside" });
 });
 
 // a fake clock: timers fire in order when advanced

@@ -173,9 +173,9 @@ await page.focus(sel("docs/guide.md", null)); await page.waitForTimeout(150); ou
 await page.waitForFunction(() => { const p = document.getElementById("file-preview-pop"); return !!p && getComputedStyle(p).display !== "none" && !!p.querySelector(".fp-body"); }, null, { timeout: 5000 });
 out.focusCard = await card();
 await page.keyboard.press("Escape"); await page.waitForTimeout(100); out.escapeHidden = !(await shown());
-// "open" on the section card lands the viewer scrolled to the heading
+// the LINK opens the viewer scrolled to the heading it names (the card carries no open control, T369); the card was up
 await hoverCard("docs/guide.md", "fold-rules");
-await page.click(CARD + " .fp-open");
+await page.click(sel("docs/guide.md", "fold-rules"));
 await page.waitForSelector("#romp-fileview", { timeout: 10000 });
 await page.waitForFunction(() => !!document.querySelector('#romp-fileview [id="md-fold-rules"]'), null, { timeout: 10000 });   // the viewer's heading ids wear md- (file-view.ts)
 await page.waitForTimeout(400);
@@ -336,7 +336,7 @@ class ServedFilePreview(unittest.TestCase):
                 self.assertGreaterEqual(h["ms"], 300, "%s/%s: the card came up only after the dwell: %r ms" % (theme, name, h["ms"]))
                 self.assertIsNotNone(h["card"], "%s/%s: the card is up" % (theme, name))
                 self.assertEqual(h["card"]["theme"], theme)
-                self.assertTrue(h["card"]["hasOpen"], "%s/%s: the way to the full file" % (theme, name))
+                self.assertFalse(h["card"]["hasOpen"], "%s/%s: a file card carries no open control; the link opens the file (T369)" % (theme, name))
                 self.assertGreaterEqual(h["card"]["box"]["w"], 300); self.assertGreaterEqual(h["card"]["box"]["h"], 120)
                 self.assertFalse(t[name + "Hidden"], "%s/%s: leaving closes the card after the grace" % (theme, name))
             head, sec, miss = t["head"]["card"], t["section"]["card"], t["missing"]["card"]
@@ -393,7 +393,7 @@ class ServedFilePreview(unittest.TestCase):
                 json.dump(latency, f)
         self.assertFalse(r["focusEarly"]); self.assertIsNotNone(r["focusCard"]); self.assertEqual(r["focusCard"]["title"], "guide.md")
         self.assertTrue(r["escapeHidden"], "Escape closes the card")
-        # "open" lands the viewer on the section
+        # the link lands the viewer on the section it names, and the card closes
         # the link attributes: the kind on the previewable links, the why on the refused ones (the next report reads it off the DOM)
         by = {(l["path"], l["frag"]): l for l in r["links"]}
         bare_link, leaky_link = by[("docs/notes/rollup-notes.md", None)], by[("docs/notes/leaky-notes.md", None)]
