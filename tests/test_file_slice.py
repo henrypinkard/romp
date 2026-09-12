@@ -329,6 +329,27 @@ class Allowed(unittest.TestCase):
         self.assertEqual(km._slice_warm_why(os.path.join(self.cwd, "docs", "nonesuch.md")), "not a file")
 
 
+    def test_the_users_glossary_files_are_outside_the_content_belt(self):
+        # T375: a coinage's definition may show a credential-shaped EXAMPLE line; the glossary already reaches the page
+        # whole through the index frame and the /glossary route, so the belt refusing its slice would only turn every
+        # term's hover into the text card. The same line in a project notes file is still refused.
+        from unittest import mock
+        example = "api" + "_key" + " = " + "Q" * 24
+        section = "## keytoken\n\nAn invented noun whose definition shows an example line.\n\n- example: " + example + "\n"
+        cfg = os.path.join(self.lab, "cfg"); os.makedirs(os.path.join(cfg, "glossaries"))
+        gl = os.path.join(cfg, "glossaries", "web.md"); Path(gl).write_text("## Not coinages\n\n- none\n\n" + section)
+        notes = self.w("proj/docs/notes.md", "# Notes\n\n" + section)
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg}):
+            km._SLICE_CACHE.clear()
+            self.assertTrue(km._glossary_owned(os.path.realpath(gl))); self.assertFalse(km._glossary_owned(os.path.realpath(notes)))
+            e, _hit, why = km._slice_load(gl)
+            self.assertEqual(why, ""); self.assertIn("keytoken", e["text"]); self.assertEqual(e["headings"][-1]["slug"], "keytoken", "the section is indexed like any heading")
+            self.assertEqual(km._slice_warm_why(gl), "", "the glossary's section previews whole, example line and all")
+            self.assertEqual(km._slice_allowed(gl, SID), ("markdown", ""), "…and the folder is confined as the user's own wherever the config dir points (here outside the session folder and the home)")
+            self.assertEqual(km._slice_load(notes)[2], "looks like a secret", "the belt still holds for a notes file")
+            self.assertEqual(km._slice_warm_why(notes), "looks like a secret")
+
+
 class Perf(unittest.TestCase):
     def test_the_slice_counters_ride_the_perf_snapshot(self):
         before = dict(km._PERF_STATS.snapshot()["fileSlice"])

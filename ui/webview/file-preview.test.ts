@@ -39,10 +39,10 @@ test("contentFor fills the one shape per kind; a missing anchor falls back to th
   assert.deepEqual(md, { kind: "markdown", title: "g.md", subtitle: undefined, body: { markdown: "# G\nbody" }, note: undefined });
   const sec = contentFor("docs/g.md", "fold", "markdown", "s", { title: "g.md", text: "## Fold\nabout folds", found: true, allowed: true });
   assert.equal(sec.kind, "section"); assert.equal(sec.subtitle, "#fold");
-  assert.equal(sec.open, undefined, "no open control on a file card: the link itself opens the file at the section (T369)");
+  assert.ok(!("open" in sec), "no open control on a file card: the link itself opens the file at the section (T369); the contract carries no such field since T375");
   const miss = contentFor("docs/g.md", "nope", "markdown", "s", { title: "g.md", text: "# G\nhead", found: false, allowed: true });
   assert.equal(miss.kind, "markdown"); assert.equal(miss.subtitle, undefined);
-  assert.equal(miss.note, 'no section "nope" in this file; its head instead'); assert.equal(miss.open, undefined);
+  assert.equal(miss.note, 'no section "nope" in this file; its head instead'); assert.ok(!("open" in miss));
   const cut = contentFor("docs/g.md", "", "markdown", "s", { title: "g.md", text: "…", found: true, truncated: true, allowed: true });
   assert.equal(cut.note, "the head of the file; the link opens the rest");
   const code = contentFor("src/app.py", "", "code", "s", { title: "app.py", text: "print(1)", allowed: true });

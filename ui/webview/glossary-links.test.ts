@@ -5,10 +5,11 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { pluralForms, linkForms, skipForms, buildMatcher, scanTerms, noLinkZones, seenFromLinked, termContent, TERM_SKIP_SELECTOR, type GlossaryIndex, type GlossaryEntry } from "./glossary-links";
+import { pluralForms, linkForms, skipForms, buildMatcher, scanTerms, noLinkZones, seenFromLinked, TERM_SKIP_SELECTOR, type GlossaryIndex, type GlossaryEntry } from "./glossary-links";
 
 const FIX = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "..", "tests", "fixtures", "glossary_grammar.json"), "utf8"));
 const IX: GlossaryIndex = { group: "notes-api", path: "~/.claude/glossaries/notes-api.md", skip: FIX.expect.skip, terms: FIX.expect.terms };
+const GL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "glossary-links.ts"), "utf8");
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
@@ -52,29 +53,25 @@ test("the matcher: longest form first, whole word, case-insensitive, Unicode-bou
   assert.deepEqual(scanTerms(t2, m, new Set()).map((s) => s.start), [4, t2.lastIndexOf("tessel")], "only the two prose occurrences");
 });
 
-test("the term card fills the popover's contract from the index, no fetch; a retired term says so first; the cut is a note", () => {
-  const tessel = IX.terms[0] as GlossaryEntry;
-  const c = termContent(tessel, IX);
-  assert.equal(c.kind, "term"); assert.equal(c.title, "tessel");
-  assert.equal(c.subtitle, "unconfirmed · registered 2026-09-11 by web · notes-api");
-  assert.match(c.body.markdown!, /^The fixes from a review/); assert.match(c.body.markdown!, /\*plain words:\* the fixes from a review/); assert.match(c.body.markdown!, /\*scope:\* notes-api team mail/);
-  assert.deepEqual(c.open, { label: "Open glossary", path: IX.path, frag: "tessel" });
-  const spar = termContent(IX.terms[2] as GlossaryEntry, IX);
-  assert.match(spar.body.markdown!, /^\*Retired: say the plain phrase\.\*/);
-  assert.equal(termContent(tessel, { ...IX, truncated: 3 }).note, "3 entries are not linked (the index was cut)", "an older kernel's frame: the sum alone");
-  assert.equal(termContent(tessel, { ...IX, truncated: 3, cutBytes: 3, cutHeadings: 0 }).note, "3 entries beyond the index's byte cap are not linked");
-  assert.equal(termContent(tessel, { ...IX, truncated: 2, cutBytes: 0, cutHeadings: 2 }).note, "2 sections past the heading ceiling are not linked", "a heading cut is named as one, never blamed on the byte cap");
-  assert.equal(termContent(tessel, { ...IX, truncated: 5, cutBytes: 3, cutHeadings: 2 }).note, "3 entries beyond the index's byte cap are not linked; 2 sections past the heading ceiling are not linked");
-  assert.equal(termContent(tessel, IX).note, undefined);
+test("a linked term is a path link to the glossary's section and nothing more: no card of its own, the ordinary link dress (T375)", () => {
+  assert.ok(!GL.includes("termContent"), "the term card builder is gone from the module");
+  assert.ok(!RENDER.includes("if (a.dataset.term)"), "showFilePreview has no term branch: the term rides the file-link road");
+  assert.ok(!RENDER.includes("termContent("), "…and nothing fills a card from the index");
+  assert.match(RENDER, /s\.dataset\.path = m\.index\.path; s\.dataset\.frag = e\.slug;\s*\n\s*s\.dataset\.preview = "markdown";/, "the span carries the glossary path, the slug as the section and the kind the kernel judged");
+  assert.ok(!/s\.title = e\.plainWords/.test(RENDER), "no native title beside the hover card: one mechanism");
   assert.match(TERM_SKIP_SELECTOR, /code, pre, a, \.file-uri-link, h1, h2, h3, h4, h5, h6, \.katex, svg, \.term-link, \.cmt-pop, \.file-preview-pop/);
+  // the dress: a link like any link (the user 2026-09-12): the link colour token, a solid underline, the pointer
+  assert.match(CSS, /\.term-link \{ color: var\(--link\); text-decoration: underline solid; cursor: pointer; \}/);
+  assert.ok(!/\.term-link[^\n]*dotted/.test(CSS) && !/\.term-link[^\n]*cursor: help/.test(CSS), "no dotted underline, no help cursor");
+  assert.ok(!/\.term-link\.term-retired \{ opacity/.test(CSS), "no distinct dress for a retired term either: only the link marks a term");
+  assert.ok(!CSS.includes(".fp-term") && !CSS.includes(".fp-open"), "the card-only styling and the open control's rules are gone");
 });
 
 test("the wiring: the frame per session, the matcher per index, links at the two chat grammars and the mail body, the card on the popover, the click to the viewer", () => {
   assert.match(RENDER, /else if \(m\.type === "glossary" && typeof m\.id === "string"\) \{[\s\S]{0,300}?glossaries\.set\(m\.id, m as GlossaryIndex\);\s*\n\s*relinkTerms\(m\.id\);/);
   assert.equal((RENDER.match(/\blinkTerms\((full|bubble|body)\)/g) || []).length, 6, "the nudge, continue and tagged-template bubbles' full text, the user bubble, the assistant body, the mail body (the review's low: the two bubbles never linked)");
   assert.match(RENDER, /linkifyFileUris\(body, undefined, ev\.spacePaths, ev\.pathLinks, ev\.pathPins, ev\.pathPreview, ev\.pathPreviewWhy\);[^\n]*\n\s*linkTerms\(body\);/, "after the path links, so a path token is never split by a term");
-  assert.match(RENDER, /s\.dataset\.path = m\.index\.path; s\.dataset\.frag = e\.slug;[\s\S]{0,200}?armFilePreview\(s\);/, "a term span is a path link's counterpart: the same hover road");
-  assert.match(RENDER, /if \(a\.dataset\.term\) \{[\s\S]{0,600}?renderFilePreview\(p, termContent\(e, ix\), a\.dataset\.gsid \|\| activeId\);/, "the card from the index, no fetch");
+  assert.match(RENDER, /s\.dataset\.path = m\.index\.path; s\.dataset\.frag = e\.slug;[\s\S]{0,200}?armFilePreview\(s\);/, "a term span IS a path link: the same hover road (the section at the slug through the slice route)");
   assert.match(RENDER, /closest\?\.\("span\.term-link"\)[\s\S]{0,300}?openPath\(s\.dataset\.path \|\| "", s\.dataset\.gsid \|\| activeId, e, s\.dataset\.frag \|\| null\);/, "a click opens the glossary at the heading");
   assert.match(RENDER, /function relinkTerms\(sid: string\): void \{[\s\S]{0,700}?querySelectorAll\("span\.term-link"\)/, "a new index unwraps and re-links the view");
   assert.match(RENDER, /querySelectorAll\("\[data-term-root\]"\)\)\) linkTerms\(root as HTMLElement, sid\);/, "…exactly the marked roots, never every .md (the review's medium)");
@@ -82,7 +79,7 @@ test("the wiring: the frame per session, the matcher per index, links at the two
   assert.doesNotMatch(RENDER, /querySelectorAll\("\.md"\)\)\) linkTerms/, "no relink over every .md");
   assert.equal((RENDER.match(/const full = el\("div", "nudge-full md"\);\s*\n\s*full\.innerHTML = md\(ev\.md\);\s*\n\s*linkTerms\(full\);/g) || []).length, 2,
                "the Continue-send and tagged-template bubbles link at render too (the review's low: built as nudge-full md with no linkTerms, they never linked)");
-  assert.match(CSS, /\.term-link \{ text-decoration: underline dotted;/); assert.match(CSS, /\.term-link\.term-retired \{ opacity: 0\.6; \}/);
+  assert.match(CSS, /\.term-link \{ color: var\(--link\); text-decoration: underline solid; cursor: pointer; \}/, "the ordinary link dress (T375; the dress test above says the rest)");
   // the kernel: the frame on the pusher's cycle beside the comments frame, on its own slot; the route; the byte cap and its /perf note
   assert.match(KERNEL, /gfr = _glossary_frame\(s\["sid"\]\)[\s\S]{0,400}?_send_client\(c, \("glossary", s\["sid"\]\), gfr\)/);
   assert.match(KERNEL, /if p\.startswith\("\/glossary\/"\):[\s\S]{0,300}?_glossary_lookup\(\(q\.get\("sid"\) or \[None\]\)\[0\], unquote\(p\[len\("\/glossary\/"\):\]\)\)/, "the route sits in the GET router beside the file route");

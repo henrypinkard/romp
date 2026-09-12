@@ -170,3 +170,9 @@ test("a sent card that has not landed wears the pending send's own provisional d
   assert.doesNotMatch(CSS, /\.queued-bubble[^\n{]*\{[^}]*\bopacity:/, "no queued-bubble rule sets an opacity: the fade and its lifts are the ink");
   assert.match(CSS, /\.queued-bubble\.cancelable \{ position: relative; padding-right: 30px; transition: color \.1s, border-color \.1s, background \.1s; \}/, "the transition names what changes");
 });
+
+test("the postal card's head carries no tooltip restating its kind badge (the user 2026-09-12)", () => {
+  // the badge already says coordination, delegation or question; a hover that repeated it was one more thing to read
+  assert.match(RENDER, /cls: "turn-postal-service postal-service-" \+ ev\.direction \}\);/, "the notice spec ends at the class: no tip");
+  assert.ok(!RENDER.includes('"interaction type: "'), "the restating sentence is gone");
+});

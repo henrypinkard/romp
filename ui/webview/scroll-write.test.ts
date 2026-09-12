@@ -29,6 +29,10 @@ test("a scroll event within a pixel of the last programmatic write is its echo; 
   assert.equal(classifyScroll(1200.5, 1200), "write-echo", "sub-pixel rounding");
   assert.equal(classifyScroll(1230, 1200), "gesture");
   assert.equal(classifyScroll(1200, null), "gesture", "no write pending: the user did it");
+  // the marker is one-shot (verifier low, T366 round two): set only by a write that MOVED the view, consumed by the first
+  // event after it whatever that event was, so a gesture that lands within a pixel of an old write's target is a gesture
+  assert.match(RENDER, /const after = content\.scrollTop;\s*\n\s*if \(after !== before\) lastScrollWriteAfter = after;/, "a write that did not move owes no echo");
+  assert.match(RENDER, /const cls = classifyScroll\(c\.scrollTop, lastScrollWriteAfter\);[\s\S]{0,400}?\n\s*lastScrollWriteAfter = null;/, "the first event after the write consumes the marker, echo or not");
 });
 
 test("the row names the writer and carries before/after/delta/stick, gesture:false", () => {
@@ -41,7 +45,7 @@ test("the row names the writer and carries before/after/delta/stick, gesture:fal
 
 test("render.ts: one helper writes #content.scrollTop, files the row only when the view moved, and no raw write remains", () => {
   assert.match(RENDER, /import \{ ScrollDiagBudget, classifyScroll, scrollWriteRow, tailChangeRow, tailLabel, spacerRow, readScrollDiagCap, summarizeTailMutations, tailMutRow, unitChangeRow, unitChanges, boxChanges, boxLabel, BOX_FROM_TAIL \} from "\.\/scroll-write";/);
-  assert.match(RENDER, /function writeScroll\(content: HTMLElement, top: number, writer: string, stick = false\): void \{\s*\n\s*const before = content\.scrollTop;\s*\n\s*content\.scrollTop = top;\s*\n\s*const after = content\.scrollTop;\s*\n\s*lastScrollWriteAfter = after;\s*\n\s*lastKnownSh = content\.scrollHeight;\s*\n\s*if \(after !== before\) scrollDiagRow\("scrollwrite", scrollWriteRow\(activeId \|\| "", writer, before, after, stick, content\.scrollHeight, content\.clientHeight\)\);/);
+  assert.match(RENDER, /function writeScroll\(content: HTMLElement, top: number, writer: string, stick = false\): void \{\s*\n\s*const before = content\.scrollTop;\s*\n\s*content\.scrollTop = top;\s*\n\s*const after = content\.scrollTop;\s*\n\s*if \(after !== before\) lastScrollWriteAfter = after;[^\n]*\n\s*lastKnownSh = content\.scrollHeight;\s*\n\s*if \(after !== before\) scrollDiagRow\("scrollwrite", scrollWriteRow\(activeId \|\| "", writer, before, after, stick, content\.scrollHeight, content\.clientHeight\)\);/);
   // the breadcrumb rides the existing clientDiag path, capped, with one capped row at the cap
   assert.match(RENDER, /\{ type: "clientDiag", surface: "chat", what: kind \+ "-capped", data: \{ sid: activeId \|\| "", perMinute: scrollDiagCap \} \}/);   // the cap the page runs with (T262j: configurable)
   assert.match(RENDER, /\{ type: "clientDiag", surface: "chat", what: kind, data \}/);
@@ -55,5 +59,5 @@ test("render.ts: one helper writes #content.scrollTop, files the row only when t
   const raw = RENDER.split("\n").filter((l) => /\b(content|c)\.scrollTop (=|\+=|-=) /.test(l) && !/writeScroll|const |let /.test(l));
   assert.deepEqual(raw.map((l) => l.trim()), ["content.scrollTop = top;"], "the only assignment is the helper's own");
   // the gesture marker: a write's echo is consumed, anything else files a gesture row
-  assert.match(RENDER, /const cls = classifyScroll\(c\.scrollTop, lastScrollWriteAfter\);\s*\n\s*const gv = activeId \? views\.get\(activeId\) : null;\s*\n\s*if \(gv\) gv\.gestureScroll = cls === "gesture";[^\n]*\n\s*if \(cls === "write-echo"\) lastScrollWriteAfter = null;\s*\n\s*else scrollDiagRow\("scrollgesture", \{ sid: activeId \|\| "", top: c\.scrollTop, gesture: true, sh: c\.scrollHeight, ch: c\.clientHeight \}\);/, "the scroll nobody's code asked for is the user's; a write's echo is consumed, never filed (the classification is read once and marks the view for the edge check, T366)");
+  assert.match(RENDER, /const cls = classifyScroll\(c\.scrollTop, lastScrollWriteAfter\);\s*\n\s*const gv = activeId \? views\.get\(activeId\) : null;\s*\n\s*if \(gv\) gv\.gestureScroll = cls === "gesture";[^\n]*\n\s*lastScrollWriteAfter = null;[^\n]*\n\s*if \(cls !== "write-echo"\) scrollDiagRow\("scrollgesture", \{ sid: activeId \|\| "", top: c\.scrollTop, gesture: true, sh: c\.scrollHeight, ch: c\.clientHeight \}\);/, "the scroll nobody's code asked for is the user's; a write's echo is consumed, never filed (the classification is read once and marks the view for the edge check, T366)");
 });

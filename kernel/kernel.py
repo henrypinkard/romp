@@ -9955,32 +9955,36 @@ def _converge_checkpoints(now):
             em.converge_stat("deferred", len(cands) - i)   # gated on candidates PROCESSED, not documents written: a first
             break                                          #  candidate that writes nothing must not lift the budget (review)
         quiescent = p in leaves and em.file_quiescent(p)
-        if quiescent and not em.entry_whole_resident(p):   # T361 (the live loop): a leaf unchanged past the reader's quiescence
-            em.converge_stat("quiescent"); _converge_skip(p)   #  window loses its whole entry right after a fold steps it, so a heal
-            continue                                       #  or a prime here would READ it whole every cycle and the write would
+        if quiescent and (not em.entry_whole_resident(p) or not em.checkpoint_drop_writes_on()):
+            em.converge_stat("quiescent"); _converge_skip(p)   # T361 (the live loop): a leaf unchanged past the reader's quiescence
+            continue                                       #  window loses its whole entry right after a fold steps it, so a heal
+        #                                                    or a prime here would READ it whole every cycle and the write would
         #                                                    find no entry. With the boot's own whole read still resident (T362
-        #                                                    follow-up) the heal and the prime step records in hand, no read, and
-        #                                                    the prime's last fold (the agent-launch state, the one that drops
-        #                                                    quiescent leaves) writes the document from that read at its drop and
-        #                                                    pops the entry: the idle leaf converges once, and with its entry gone
-        #                                                    it is refused here on any later cycle, never read again by the pass
+        #                                                    follow-up) and the drop write on, the heal and the prime step records
+        #                                                    in hand, no read, the quiescence drops they meet are held, and one
+        #                                                    payment after writes the document from that read at the drop and pops
+        #                                                    the entry when a fold stepped records (a restore at the witness leaves
+        #                                                    it resident): the idle leaf converges once and leaves the candidate set;
+        #                                                    with the drop write off there is nothing to gain, so it is refused and
+        #                                                    the boot's read kept
         cold = [k for k, r in em.cold_fold_reasons(p).items() if r == "cold"]
-        if p in leaves:
-            before = _read_bytes_of(p)
-            healed = _heal_cold_folds(p)                   # drops every tail-only cursor, reruns the five leaf folds
-            if healed:
-                got = _read_bytes_of(p) - before
-                em.converge_stat("heals", len(healed)); em.converge_stat("healBytes", got); em.checkpoint_cycle_charge(got)
-            unhealed = [k for k in cold if k not in healed]
-            if em.entry_whole_resident(p) and _prime_leaf_folds(p):
-                em.converge_stat("primed")
-        else:
-            unhealed = em.drop_cold_cursors(p)
-        if quiescent and not em.checkpoint_path_needs_write(p):   # the launch fold's drop wrote the document from the boot's read
-            em.converge_stat("viaDrop")                    #  (converge.dropWrites, charged to this cycle's take; the entry popped, or
-            continue                                       #  kept after a restore at the witness): no write of the pass's own
+        with em.hold_quiescent_drops():                    # a heal whose last fold is the launch fold would otherwise pop the entry
+            if p in leaves:                                #  mid-heal, before the prime ran (review, low 2)
+                before = _read_bytes_of(p)
+                healed = _heal_cold_folds(p)               # drops every tail-only cursor, reruns the five leaf folds
+                if healed:
+                    got = _read_bytes_of(p) - before
+                    em.converge_stat("heals", len(healed)); em.converge_stat("healBytes", got); em.checkpoint_cycle_charge(got)
+                unhealed = [k for k in cold if k not in healed]
+                if em.entry_whole_resident(p) and _prime_leaf_folds(p):
+                    em.converge_stat("primed")
+            else:
+                unhealed = em.drop_cold_cursors(p)
         if unhealed:                                       # a fold the heal cannot rerun here (not one of the leaf's five): its
             em.converge_stat("unhealed", len(unhealed))    #  cursor and cold mark are dropped, the write leaves it out, its next
+        if em.pay_held_drops().get(p) and quiescent:       # the held drop wrote the document from the boot's read (converge.dropWrites,
+            em.converge_stat("viaDrop")                    #  charged to this cycle's take): no write of the pass's own; a write that
+            continue                                       #  did not happen (deferred, failed) falls to the pass's own below
         try:                                               # the write reads the document on disk for its carry: that read is the
             pre = em._ckpt_file(p).stat().st_size          #  pass's I/O too, so it counts against the budget (review, round 3)
         except (OSError, AttributeError):
@@ -44387,7 +44391,7 @@ def _slice_allowed(fp, sid):
         return None, "not a kind the preview shows"
     if _slice_kind(fp) != kind:
         return None, "a link dressed as another kind"
-    if not _slice_confined(real, sid):
+    if not _slice_confined(real, sid) and not _glossary_owned(real):   # the glossaries folder is the user's own wherever the config dir points (T375)
         return None, "outside the session's folder and your home"
     try:
         size = os.path.getsize(real)
@@ -44460,6 +44464,18 @@ def _slice_headings(text):
     return out
 
 
+def _glossary_owned(real):
+    """Whether `real` (a real path) is one of the user's own glossary files (a markdown file directly under the glossaries
+    folder, _glossary_dir). The content belt does not apply there (T375): a glossary's every section already reaches the page
+    whole through the index frame and the /glossary route, so a credential-shaped EXAMPLE line in a coinage's definition
+    would refuse the slice of a file the page holds anyway, and the term's hover would fall to the text card."""
+    try:
+        d = os.path.realpath(str(_glossary_dir()))
+    except Exception:
+        return False
+    return os.path.dirname(real) == d and real.endswith(".md")
+
+
 def _slice_load(fp):
     """The text and heading index of `fp` from the cache, keyed on (real path, mtime_ns), read on a miss. Returns
     (entry, hit, why): why is "" on success, else the refusal ("not text", "too large to show", "looks like a secret":
@@ -44486,7 +44502,7 @@ def _slice_load(fp):
     text = _decode_text(raw)
     if text is None:
         return None, False, "not text"
-    if _looks_secret(text):
+    if _looks_secret(text) and not _glossary_owned(fp):
         return None, False, "looks like a secret"
     e = {"text": text, "headings": _slice_headings(text) if _slice_kind(fp) == "markdown" else [],
          "size": len(raw), "mtime_ns": st.st_mtime_ns}
@@ -44591,9 +44607,9 @@ def _slice_body(fp, sid, anchor):
         body.update(kind=None, allowed=False, why=why)           # the content belt, or a size or read refusal
         return 403, body, "application/json"
     text, found, heading, truncated = _slice_of(entry, anchor)
-    if _looks_secret(text):
+    if _looks_secret(text) and not _glossary_owned(os.path.realpath(fp)):
         # the belt over the SERVED slice: the load scanned the file's first 64 KB, and an anchored section can lie past
-        # that mark (the review)
+        # that mark (the review); the user's glossary files are outside the belt at both ends (T375)
         body.update(kind=None, allowed=False, why="looks like a secret")
         return 403, body, "application/json"
     # the heading INDEX stays on the kernel's side: the client reads the slice and the one heading it named, and an

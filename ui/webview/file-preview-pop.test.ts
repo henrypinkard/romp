@@ -97,7 +97,7 @@ test("open carries the section anchor to the viewer through both routes, and the
   assert.match(RENDER, /function openPath\(path: string, sid\?: string \| null, ev\?: MouseEvent \| null, frag\?: string \| null\): void \{/);
   assert.match(RENDER, /window\.parent\.postMessage\(\{ romp: "viewFile", path, sid: to, pane: "pane", frag: frag \|\| null,/, "the pane route names the section");
   assert.match(RENDER, /\} : undefined, frag \|\| null\);/, "…and so does the overlay route");
-  assert.match(RENDER, /openPath\(path, sid, e, frag \|\| null\); \}\);/, "the card's open button hands the anchor over");
+  assert.ok(!RENDER.includes('"fp-open"'), "no card carries an open control (T369 for the file cards, T375 for the last one): the link's own click hands the anchor over, pinned above");
   assert.match(FILEVIEW, /relay\?: \(path: string, sid: string \| null, frag: string \| null\) => void, frag\?: string \| null\): void \{/);
   assert.match(FILEVIEW, /openFileView\(path, sid, \{ frag: frag \?\? null \}\);/);
   assert.match(FILES, /function openHere\(path: string, sid: string \| null, identity: FileViewIdentity \| null, frag: string \| null = null\): void \{/);

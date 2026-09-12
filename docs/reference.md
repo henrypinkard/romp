@@ -1042,11 +1042,13 @@ is bounded: over it the oldest owed drop is paid by its pop alone, and an owed
 file since deleted has its entry popped when the cycle pays. A leaf unchanged for longer than the reader keeps a quiescent
 file's whole entry (two minutes) is refused by the pass and counted under
 `quiescent`: its heal would read the file whole every cycle and the write
-would find no entry; the one exception is a leaf whose whole entry from the
-boot's own read is still resident, which the pass heals and primes in memory
-so that the launch fold's quiescence drop writes the document from that read
-and pops the entry (`viaDrop`), once, after which the leaf is refused like any
-other;
+would find no entry; the one exception, with the drop write on, is a leaf
+whose whole entry from the boot's own read is still resident: the pass heals
+and primes it in memory with its quiescence drops held, then pays them once,
+so the launch fold's drop writes the document from that read (`viaDrop`, counted
+only for a write that happened) and pops the entry when a fold stepped records
+(a restore at the witness leaves it resident), after which the converged leaf
+simply leaves the candidate set;
 a path the pass refused or whose write produced nothing is skipped until its
 file changes under the reader (`skipped` counts each such hold once, per file
 state, and the check reads the reader's own entry rather than stat the file
@@ -1478,7 +1480,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `quiescent` for leaves refused as quiescent, `skipped` for candidates held
   off until their file changes, once per hold, `dropWrites` and `dropDeferred`
   for the documents written at the reader's quiescence drop and the drops
-  deferred a cycle for the shared budget), `coldWrites` (per fold name, writes that kept such a tail-only state
+  deferred a cycle for the shared budget, `viaDrop` for the resident quiescent
+  leaves the pass primed and the drop wrote), `coldWrites` (per fold name, writes that kept such a tail-only state
   out of the document so no later kernel restores it as complete), `droppedRestores` (a
   restore lost to a read that replaced the entry under it; the reader
   serializes reads per path, so this should stay at zero), `documentBytes`
@@ -1876,8 +1879,9 @@ the same card:
 
 Stage 1 fills it from the slice route (`markdown`, `section`, `code`) and the
 bytes route (`image` at its natural size capped to the card, `pdf` as its first
-page), or with the text-only card; stage 2 fills it with the `term` kind from the
-glossary index below, no fetch. A previewed document renders on the
+page), or with the text-only card; a glossary term (below) is a path link to the
+glossary file's section and previews as one, through the same slice route. A
+previewed document renders on the
 sanitizer's inert DOM and is stripped of every remote load there, before its
 nodes join the page: an image's `src` or `srcset`, a picture's sources, a video's
 poster or source, an audio, an SVG image, in any spelling the URL parser
@@ -1897,7 +1901,11 @@ anchor}` that fills the `term` kind of the same card.
 
 ## The glossary
 
-A team's coinages, linked where they are written. One file per romp tag group,
+A team's coinages, linked where they are written. A linked term is an ordinary
+link to the glossary file's section (the link colour, a solid underline, the
+pointer): hovering it shows that section through the file preview, exactly as
+hovering any file link with a section does, and clicking it opens the glossary
+in the viewer at the heading; there is no term card of its own. One file per romp tag group,
 `~/.claude/glossaries/<group>.md` (under `CLAUDE_CONFIG_DIR` when set), in the
 grammar of that folder's README: an opening `## Not coinages` list of words never
 linked (each bullet's bold lead, or the text before its colon, read as words), then

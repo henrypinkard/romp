@@ -847,6 +847,8 @@ _CKPT_CYCLE = {"cap": _ckpt_cycle_default_cap(), "spent": 0}   # the cycle in pr
 _DROP_OWED = {}                   # path -> when its quiescence drop was deferred for the cycle's budget (T362): paid at the next
 #                                   cycle's start with the room it has, oldest first, or by the next fold over the file
 _DROP_OWED_MAX = 4096             # over it the OLDEST owed entry is popped unwritten (its memory released), never the table cleared
+_DROP_HOLD = threading.local()    # the converge pass holds this thread's quiescence drops while it heals and primes a leaf, then pays
+#                                   them once (T362 follow-up review, low 2): {path: pop} of the drops held, or absent
 _CKPT_LOCK = threading.Lock()
 _CKPT_PENDING = {}                # path -> {"count": N, "gen": g, "folds": {name: {"count", "state"}}} restores not yet taken
 _CKPT_SEQ = {}                    # path -> the seq of the last checkpoint read or written for it
@@ -1195,15 +1197,6 @@ def _path_needs_write(key, ent, at_drop=False):
     return False
 
 
-def checkpoint_path_needs_write(path):
-    """The one rule asked from outside for the reader's current entry of `path` (the converge pass, after priming a quiescent
-    leaf: did the launch fold's drop already write everything?): False with no entry."""
-    key = str(path)
-    with _JSONL_CACHE_LOCK:
-        ent = _JSONL_CACHE.get(key)
-    return ent is not None and _path_needs_write(key, ent)
-
-
 def checkpoint_cycle_begin(cap):
     """The pusher's cycle begins: the checkpoint byte budget `cap` (documents written and read, leaves read for a heal) is
     whole again; the converge pass and the quiescence drop's writes charge it (T362). A cap of 0 (the pass off, or a zero
@@ -1235,6 +1228,36 @@ def _pop_owed_entry(key):
         if w:
             _RECORD_CACHE_STATS["dropped"] += 1
             _RECORD_CACHE_STATS["droppedBytes"] += w
+
+
+class hold_quiescent_drops:
+    """`with hold_quiescent_drops():` on this thread a quiescent-drop fold neither writes nor pops at its end; the drop is held
+    (with whether it would have popped) for pay_held_drops, so a pass that heals and primes a leaf over its resident entry
+    writes the document ONCE, after every fold is current, and pops once (a heal whose last fold was the launch fold popped the
+    entry mid-heal before, and the folds never called stayed out of the document)."""
+    def __enter__(self):
+        _DROP_HOLD.held = {}
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            _DROP_HOLD.held = None                        # a raise inside the block: nothing stays held on this thread (an unpaid
+        return False                                      #  hold would hold every later drop here; the entries fall to the reader's LRU)
+
+
+def pay_held_drops():
+    """Pay the drops held on this thread (see hold_quiescent_drops): {path: True when its document was written}. Each is paid
+    as the fold would have (the write when the rule says so, the pop when a fold stepped records), against the cycle's budget."""
+    held = getattr(_DROP_HOLD, "held", None)
+    _DROP_HOLD.held = None
+    out = {}
+    for key, pop in (held or {}).items():
+        with _JSONL_CACHE_LOCK:
+            ent = _JSONL_CACHE.get(key)
+        if ent is None:
+            continue
+        out[key] = bool(_drop_quiescent_entry(key, ent, pop=pop))
+    return out
 
 
 def checkpoint_pay_owed_drops():
@@ -1865,12 +1888,17 @@ def _drop_quiescent_entry(key, ent, pop=True):
     once a fold has stepped them: the fold's cursor (and its checkpoint) stands, the file's bytes leave memory. Only the
     very entry this fold read is dropped (another thread's newer entry is left alone); a file still changing keeps its
     records, since its next append would otherwise re-read it whole. Without `pop` (a fold that stepped nothing: a hit or
-    a restore at the witness) only the T362 write below runs and the entry stays, as it always has on that path."""
+    a restore at the witness) only the T362 write below runs and the entry stays, as it always has on that path. Returns
+    True when the document was written here."""
     try:
         if time.time() - float(ent[0]) < _DROP_AFTER_QUIESCENT_S:
-            return
+            return False
     except Exception:
-        return
+        return False
+    held = getattr(_DROP_HOLD, "held", None)
+    if held is not None:                                  # the converge pass is healing and priming this leaf on this thread: held,
+        held[key] = held.get(key, False) or pop           #  paid once after (pay_held_drops), with the pop if any fold stepped
+        return False
     with _CKPT_LOCK:
         if key in _DROP_OWED:                             # a drop deferred for the budget is taken at the next fold over the file
             _DROP_OWED.pop(key, None); pop = True         #  (whichever path that fold takes) or at the next cycle's start
@@ -1885,6 +1913,7 @@ def _drop_quiescent_entry(key, ent, pop=True):
         needs = checkpoint_drop_writes_on() and _path_needs_write(key, ent, at_drop=True)   # off (a cap of 0): the pop alone
     except Exception:
         needs = False
+    wrote = False
     if needs:
         cp = _ckpt_file(key)
         try:
@@ -1904,22 +1933,24 @@ def _drop_quiescent_entry(key, ent, pop=True):
                         _DROP_OWED.pop(oldest, None)
             if oldest is not None:
                 _pop_owed_entry(oldest)                   # outside _CKPT_LOCK: the reader's lock alone
-            return
+            return False
         if checkpoint_write(key):
             try:
                 written = cp.stat().st_size if cp is not None else 0
             except OSError:
                 written = 0
             checkpoint_cycle_charge(written - est)       # the true-up: what was written against the estimate taken above
+            wrote = True
             with _CKPT_LOCK:
                 _CKPT_STATS["converge"]["dropWrites"] += 1
     if not pop:
-        return
+        return wrote
     with _JSONL_CACHE_LOCK:
         if _JSONL_CACHE.get(key) is ent:
             w = _cache_pop_locked(key)
             _RECORD_CACHE_STATS["dropped"] += 1
             _RECORD_CACHE_STATS["droppedBytes"] += w
+    return wrote
 
 
 _UNPINNED = object()
