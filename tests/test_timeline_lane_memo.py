@@ -544,6 +544,7 @@ class LaneMemoBase(unittest.TestCase):
         self._saved_backend = km.Sessions.backend_for
         self._saved_file_key = km.jd._file_key
         km._lanes_memo.clear(); _zero(km._lanes_stats)
+        km._lane_prefix_memo.clear()                 # the prefix memo (2026-09-12) holds turn keys that repeat across tests
         km._sdk = lambda: None
         km._run_judging = lambda t0, alive, semantic: [dict(m) for m in semantic]
         self.now = int(time.time())
@@ -563,6 +564,7 @@ class LaneMemoBase(unittest.TestCase):
         km.jd._file_key = self._saved_file_key
         km.jd._SHARED_OFF[0] = False
         km._lanes_memo.clear(); _zero(km._lanes_stats)
+        km._lane_prefix_memo.clear()                 # the prefix memo (2026-09-12) holds turn keys that repeat across tests
         km._dead_lane_memo.clear(); km._downtime[:] = []
         km.jd._rebind_state(self._saved_state)
         km.jd.PROJECTS = self._saved_proj
