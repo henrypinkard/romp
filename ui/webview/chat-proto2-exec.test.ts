@@ -10,7 +10,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { mergeWindow, keyOf, fullFrameMerges, windowDetached, afterMore } from "./chat-window";
+import { mergeWindow, keyOf, fullFrameMerges, windowDetached, afterMore, livePausedText } from "./chat-window";
 
 const requireCjs = createRequire(__filename);
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
@@ -49,9 +49,10 @@ function liftPaused(sessions: Map<string, any>, activeId: string | null) {
     sessions, activeId, document, window: { innerHeight: 800 },
     liveSession: (id: string | null) => (id ? sessions.get(id) : undefined),
     el: (_tag: string, cls: string) => { const e = fakeEl(); e.className = cls; return e; },
-    livePausedEl: null,
+    livePausedEl: null, livePausedTxt: null,
+    livePausedText, clockOf: (t: number) => "clock-" + t,   // the real sentence rule; a stand-in clock (T366)
   };
-  const js = liftBetween("function updateLivePaused(): void {", "function reattachLive(sid: string): void {");
+  const js = liftBetween("function updateLivePaused(): void {", "function reattachLive(sid: string, force = false): void {");
   const api = liftWith(js, scope, ["updateLivePaused"]);
   return { api, scope, body };
 }

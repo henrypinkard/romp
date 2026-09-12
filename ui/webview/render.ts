@@ -21,7 +21,7 @@ import { applyTheme } from "./theme";
 import { installPostalWash } from "./postal-wash";   // the incoming postal card's tint lightness, measured from the page (T337c)
 import { applyDenseChrome } from "./dense-chrome";
 import { SessionViews, viewVisible, viewsKey, revealIn, viewTagUnion, viewTags, type TagUnion, type SessionTag } from "./session-views";
-import { prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore, reattachKeys } from "./chat-window";   // the uuid-anchored wire (T323 stage 4b)
+import { prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore, reattachKeys, windowLanding, olderRequestAllowed, livePausedText } from "./chat-window";   // the uuid-anchored wire (T323 stage 4b)
 import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./subagent-wait";   // the viewer's wait bound and its stall (T355)
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
@@ -333,7 +333,7 @@ interface BgTasks { count: number; tasks: BgTask[]; }
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; detached?: boolean; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; detached?: boolean; detachNav?: { t: number | null } | null; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo; }
 // A SUBAGENT VIEWER pseudo-session (plans/subagent-transcripts.md): a read-only tab whose events are one
 // agent's own transcript, fed by {type:"subagent"} frames. Client-only — the kernel never lists it in
 // tabOrder (reconcileTabOrder keeps a known, never-kernel-seen id), so it lives exactly as long as the
@@ -1308,7 +1308,7 @@ let landTrail: string[] = [];
 // count is NOT len − winStart + spacer: a unit may own more than one node (the day
 // divider that opens a new day precedes its turn), so anything mapping DOM back to
 // units reads data-unit off the node rather than counting children.
-interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
+interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; edgeTop?: number; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
 const views = new Map<string, View>();
 
 // Pending pickers (AskUserQuestion / tool-permission) keyed by session id. These
@@ -13213,9 +13213,13 @@ function virtualizeToViewport(): void {
   const topH = topEl ? topEl.offsetHeight : 0;
   const renderedBottom = botEl ? botEl.getBoundingClientRect().top - cRectTop + content.scrollTop : content.scrollHeight;
   const st = content.scrollTop, vh = content.clientHeight;
+  // the gesture's direction (T366): an older-history ask needs an upward or unchanged move; a reader heading DOWN never
+  // asks, whatever the spacer estimate says about the top band (chat-window.ts olderRequestAllowed)
+  const upward = olderRequestAllowed(v.edgeTop, st);
+  v.edgeTop = st;
   // At the top of the RESIDENT events with older history still on the server → fetch the previous chunk
   // (loadOlder → chatHead). winStart 0 ⇒ no top spacer left to expand into; topH is 0 so this is "near 0".
-  if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx) { requestOlder(activeId, v, content); return; }
+  if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx && upward) { requestOlder(activeId, v, content); return; }
   // At the bottom of a DETACHED proto-2 window (an older window with more after it) → the next page (loadNewer → chatMore)
   if (s.detached && (v.winEnd ?? total) >= total && st + vh > renderedBottom - edgePx) { requestNewer(activeId); return; }
   const nearTopEdge = (v.winStart ?? 0) > 0 && st < topH + edgePx;
@@ -16976,9 +16980,20 @@ function olderOnServer(s: Session): boolean {
 }
 // A deep-link anchor past the resident run: ONE round trip for a window around it (chatWindow), instead of the
 // index wire's fetch-older-until-resident loop. False when nothing can be asked (an index session, a request in flight).
+// sid -> the window was asked by a NAVIGATION (a card, a notch, a deep link, a seek, a reload's restore of the reader's
+// saved place: every anchor landing but one), not by the keep-offset RE-LAND of the reader's own row across a rebuild
+// (pendingAnchorKeepY set), the one ask that exists only to keep their row on screen and must never move them off the
+// live run (T366: a window landing mid-flick detached a reader; a navigation's window may, a re-land's never)
+const pendingWindowNav = new Map<string, { nav: boolean; t: number | null }>();   // …and the navigation's time when its frame carried one (the strip names it)
 function requestAround(sid: string, uuid: string): boolean {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || loadingOlder.has(sid)) return false;
+  const nav = pendingAnchorKeepY == null;
+  pendingWindowNav.set(sid, { nav, t: nav ? (pendingAnchorT ?? null) : null });
+  // every window ask leaves a diagnostic row (T366: the rows of the report had the reply's landing but nothing said
+  // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked
+  const cAsk = document.getElementById("content");
+  vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "windowask", data: { sid, nav, kind: pendingAnchorKind ?? null, intent: pendingAnchorIntent ?? null, keep: pendingAnchorKeepY != null, trail: landTrail.slice(-4), detached: !!s.detached, atBottom: !!cAsk && atBottom(cAsk) } });
   pendingOlderAnchor.set(sid, uuid);
   pendingOlderKeepY.delete(sid);
   loadingOlder.add(sid);
@@ -17010,18 +17025,35 @@ function chatWindow(msg: any) {
   stripOptimistic(s);
   const heldLast = s.lastUuid, wasDetached = !!s.detached;
   const r = mergeWindow(s.events as { uuid?: string }[], msg.events as { uuid?: string }[]);
-  s.events = r.events as ChatEvent[];
-  s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
-  s.lastUuid = keyOf(s.events[s.events.length - 1] as { uuid?: string; key?: string } | undefined) ?? null;
+  const newLast = keyOf(r.events[r.events.length - 1] as { uuid?: string; key?: string } | undefined) ?? null;
   // detached only when the merged run's newest event is not the live tail the page held: a window that overlaps the
   // resident tail merges into one contiguous run through it and stays attached (review find G; the kernel says so
   // too, `connected`); a client detached BEFORE the window stays so on the merge clause (round 2, item 2)
-  s.detached = windowDetached(!!msg.moreAfter, !!msg.connected, wasDetached, r.mode, heldLast, s.lastUuid);
+  const detached = windowDetached(!!msg.moreAfter, !!msg.connected, wasDetached, r.mode, heldLast, newLast);
+  // …but a detaching window that lands on the active view of a run that was ATTACHED, asked by no navigation of the
+  // reader's own (the re-land of their row after a rebuild), never takes them off it (T366, the user 2026-09-12: the
+  // paused strip mid-flick toward the bottom): the window is not adopted, and the kernel, whose base for this client
+  // moved to the window, is asked to re-base it on the tail (a full frame that merges into the held run)
+  const ask = pendingWindowNav.get(msg.id) ?? null;
+  const landing = windowLanding(detached, msg.id === activeId && !wasDetached, ask?.nav ?? false);
+  pendingWindowNav.delete(msg.id);
+  if (landing === "reattach") {
+    reconcileOptimistic(s);
+    if (msg.id === activeId) { if (pendingAnchor === anchorUuid) { pendingAnchor = null; pendingAnchorKeepY = null; } anchorPendingOlder = false; landTrail.push("window-not-adopted"); }
+    reattachLive(msg.id, true);
+    updateLivePaused();
+    return;
+  }
+  s.events = r.events as ChatEvent[];
+  s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
+  s.lastUuid = newLast;
+  s.detached = detached;
+  s.detachNav = detached && ask?.nav ? { t: ask.t } : null;   // the strip names a navigation's detach (T366); read only while detached
   if (msg.moreBefore === false) s.headKnown = true;
   s.headTotal = s.headKnown && !s.detached ? s.events.length : null;   // a count only when the whole is resident
   reconcileOptimistic(s);
   const v = views.get(msg.id);
-  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.stale = true; }
+  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.stale = true; }
   if (msg.id !== activeId) return;
   const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
   if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
@@ -17073,6 +17105,7 @@ function chatMore(msg: any) {
 // returns too. The return is a full frame (needFull "reattach"): upsert merges it into the held run when they
 // overlap, so the pages the reader walked stay resident.
 let livePausedEl: HTMLElement | null = null;
+let livePausedTxt: HTMLElement | null = null;   // the strip's sentence, re-said on every evaluation (T366)
 function updateLivePaused(): void {
   const s = activeId ? liveSession(activeId) : null;
   const on = !!(s && s.proto === 2 && s.detached);
@@ -17080,19 +17113,22 @@ function updateLivePaused(): void {
   if (!livePausedEl) {
     livePausedEl = el("div", "live-paused");
     livePausedEl.id = "live-paused";
-    const txt = el("span", "live-paused-text"); txt.textContent = "Live updates are paused while you read older history.";
+    livePausedTxt = el("span", "live-paused-text");
     const btn = document.createElement("button"); btn.className = "live-paused-btn"; btn.type = "button"; btn.textContent = "Return to live";
     btn.onclick = () => { if (activeId) reattachLive(activeId); };
-    livePausedEl.appendChild(txt); livePausedEl.appendChild(btn);
+    livePausedEl.appendChild(livePausedTxt); livePausedEl.appendChild(btn);
     document.body.appendChild(livePausedEl);
   }
+  // the sentence names a navigation's detach (a card or lane click with the message's time) and keeps the plain one
+  // otherwise (T366): a jump landing mid-scroll must not read as the scroll pausing the page
+  if (livePausedTxt) livePausedTxt.textContent = livePausedText(!!s.detachNav, s.detachNav ? s.detachNav.t : null, clockOf);
   livePausedEl.hidden = false;
   const c = document.getElementById("content");
   if (c) livePausedEl.style.bottom = (Math.max(0, window.innerHeight - c.getBoundingClientRect().bottom) + 40) + "px";
 }
-function reattachLive(sid: string): void {
+function reattachLive(sid: string, force = false): void {
   const s = sessions.get(sid);
-  if (!s || s.proto !== 2 || !s.detached) return;
+  if (!s || s.proto !== 2 || (!s.detached && !force)) return;   // force: a window the client did not adopt moved the KERNEL's base for it (T366)
   vscodeApi?.postMessage({ type: "reattachKeys", id: sid, keys: reattachKeys(s.events as { uuid?: string; key?: string }[]) });   // the run as held, for the kernel's shared clause
   requestFullSession(sid, "reattach");   // the kernel's full tail frame re-bases this client; upsert merges it into the held run
 }

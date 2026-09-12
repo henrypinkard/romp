@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { applyTailAfter, prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore, reattachKeys, REATTACH_KEYS } from "./chat-window";
+import { applyTailAfter, prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore, reattachKeys, REATTACH_KEYS, windowLanding, olderRequestAllowed, livePausedText } from "./chat-window";
 
 const ev = (u: string) => ({ uuid: u, kind: "user", md: u });
 const run = (...u: string[]) => u.map(ev);
@@ -75,6 +75,51 @@ test("after a chatMore: detached while more follows; at the tail the count is th
   assert.deepEqual(afterMore(false, false, 40), { detached: false, headTotal: null });
 });
 
+test("a detaching window lands on an attached active reader only when their own navigation asked for it (T366)", () => {
+  assert.equal(windowLanding(false, true, false), "attach", "a verdict that does not detach lands as is");
+  assert.equal(windowLanding(false, false, true), "attach");
+  assert.equal(windowLanding(true, true, false), "reattach", "attached, on screen, nobody navigated: the window is not adopted");
+  assert.equal(windowLanding(true, true, true), "detach", "the reader clicked a card, a notch or a deep link: the window lands");
+  assert.equal(windowLanding(true, false, false), "detach", "a run already detached, or a view not on screen, takes the window");
+  assert.equal(windowLanding(true, false, true), "detach");
+});
+
+test("the paused strip names a navigation's detach, with the opened message's clock when the frame carried its time (T366)", () => {
+  const clock = (t: number) => "at-" + t;
+  assert.equal(livePausedText(false, null, clock), "Live updates are paused while you read older history.", "no navigation behind the detach: the plain sentence");
+  assert.equal(livePausedText(false, 1700000000, clock), "Live updates are paused while you read older history.", "a time without a navigation is not a click");
+  assert.equal(livePausedText(true, 1700000000, clock), "Showing the message from at-1700000000 you opened; live updates are paused.");
+  assert.equal(livePausedText(true, null, clock), "Showing the message you opened; live updates are paused.", "a navigation whose frame carried no time");
+  const strip = RENDER.slice(RENDER.indexOf("function updateLivePaused(): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function updateLivePaused(): void {")));
+  assert.ok(strip.includes("livePausedTxt.textContent = livePausedText(!!s.detachNav, s.detachNav ? s.detachNav.t : null, clockOf);"), "the strip re-says its sentence on every evaluation from the session's detach");
+  assert.ok(strip.indexOf("livePausedTxt.textContent = livePausedText(") > strip.indexOf("document.body.appendChild(livePausedEl);"), "…after the one-time build, so a later detach changes the words");
+  const win = RENDER.slice(RENDER.indexOf("function chatWindow(msg: any) {"), RENDER.indexOf("function chatMore(msg: any) {"));
+  assert.ok(win.includes("s.detachNav = detached && ask?.nav ? { t: ask.t } : null;"), "a landed window records whether a navigation detached, and its time");
+  assert.ok(RENDER.includes("pendingWindowNav.set(sid, { nav, t: nav ? (pendingAnchorT ?? null) : null });"), "the ask carries the navigation's time to the reply");
+});
+
+test("an older-history ask needs an upward or unchanged move; a downward gesture never asks (T366)", () => {
+  assert.equal(olderRequestAllowed(undefined, 120), true, "no previous top: a fresh or rebuilt view may ask");
+  assert.equal(olderRequestAllowed(null, 0), true);
+  assert.equal(olderRequestAllowed(500, 120), true, "moving up");
+  assert.equal(olderRequestAllowed(120, 120), true, "unchanged (a resize, a relayout)");
+  assert.equal(olderRequestAllowed(120, 121), false, "moving down, by any amount");
+  assert.equal(olderRequestAllowed(0, 3000), false, "a flick down from the very top");
+});
+
+test("render.ts asks for older history only on an upward move, marks each window ask with whether a navigation made it, and files the ask (T366)", () => {
+  const virt = RENDER.slice(RENDER.indexOf("function virtualizeToViewport()"), RENDER.indexOf("\n}\n", RENDER.indexOf("function virtualizeToViewport()")));
+  assert.ok(virt.includes("const upward = olderRequestAllowed(v.edgeTop, st);"), "the direction is read from the view's last edge-check top");
+  assert.ok(virt.indexOf("const upward = olderRequestAllowed(v.edgeTop, st);") < virt.indexOf("v.edgeTop = st;"), "…before the top is remembered for the next check");
+  assert.ok(virt.includes("st < topH + edgePx && upward) { requestOlder(activeId, v, content); return; }"), "the older ask is gated on the direction, not only the estimate's band");
+  assert.ok(RENDER.includes("edgeTop?: number;"), "the view remembers the top the last edge check saw");
+  assert.ok(RENDER.includes("v.unitTotal = undefined; v.edgeTop = undefined; v.stale = true; }"), "a window rebuild forgets it: the first check after a rebuild may ask");
+  const around = RENDER.slice(RENDER.indexOf("function requestAround(sid: string, uuid: string): boolean {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function requestAround(sid: string, uuid: string): boolean {")));
+  assert.ok(around.includes("const nav = pendingAnchorKeepY == null;") && around.includes("pendingWindowNav.set(sid, { nav,"), "a window ask records whether a navigation made it: every anchor landing but the keep-offset re-land of the reader's own row");
+  assert.ok(around.includes('what: "windowask"'), "…and files a diagnostic row: the report's rows had the landing but not the ask");
+  assert.ok(around.indexOf("pendingWindowNav.set(sid, { nav,") < around.indexOf('type: "loadAround"'), "the mark is set before the ask goes out");
+});
+
 test("render.ts wires the three rules, tracks the pending needFull reason, hides the paused strip on a frame and a tab switch, and lands orphan notes by record uuid", () => {
   const upsert = RENDER.slice(RENDER.indexOf("function upsert(msg: any) {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function upsert(msg: any) {")));
   assert.ok(upsert.includes("fullFrameMerges(fullWhy)"), "upsert merges by the pending reason");
@@ -84,7 +129,11 @@ test("render.ts wires the three rules, tracks the pending needFull reason, hides
   assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "needFull", id, why \}\);\n  pendingFullWhy\.set\(id, why\);/, "requestFullSession records the reason with the ask");
   assert.match(RENDER, /window\.addEventListener\("romp:wsup", \(\) => pendingFullWhy\.clear\(\)\);/, "…and a new socket forgets the reasons with the asks");
   const win = RENDER.slice(RENDER.indexOf("function chatWindow(msg: any) {"), RENDER.indexOf("function chatMore(msg: any) {"));
-  assert.ok(win.includes("s.detached = windowDetached(!!msg.moreAfter, !!msg.connected, wasDetached, r.mode, heldLast, s.lastUuid);"), "chatWindow decides through the rule, with the state before the merge");
+  assert.ok(win.includes("const detached = windowDetached(!!msg.moreAfter, !!msg.connected, wasDetached, r.mode, heldLast, newLast);"), "chatWindow decides through the rule, with the state before the merge");
+  assert.ok(win.includes("const landing = windowLanding(detached, msg.id === activeId && !wasDetached, ask?.nav ?? false);"), "…and the landing rule decides whether the verdict is adopted (T366)");
+  assert.ok(win.indexOf("const landing = windowLanding(") < win.indexOf("s.events = r.events as ChatEvent[];"), "the landing is decided BEFORE the window's events replace the run");
+  assert.ok(win.includes('if (landing === "reattach") {') && win.includes("reattachLive(msg.id, true);"), "a window not adopted re-bases the kernel on the tail at once");
+  assert.ok(win.indexOf('if (landing === "reattach") {') < win.indexOf("s.detached = detached;"), "…and returns before the detached flag is set: no strip");
   assert.ok(win.includes("window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));"), "a window runs the edge check once it painted");
   assert.ok(RENDER.includes("if (cur && cur.detached && c && c.scrollHeight <= c.clientHeight + 1) { requestNewer(sid); return; }"), "a detached run that does not overflow asks for its next page directly");
   const more = RENDER.slice(RENDER.indexOf("function chatMore(msg: any) {"), RENDER.indexOf("let livePausedEl"));
@@ -105,7 +154,7 @@ test("the re-attach ask carries the run's newest keys, bounded, and render.ts po
   const keys = reattachKeys(long);
   assert.equal(keys.length, REATTACH_KEYS); assert.equal(keys[0], "k40"); assert.equal(keys[keys.length - 1], "k" + (REATTACH_KEYS + 39));
   assert.deepEqual(reattachKeys([ev("a"), { uuid: "a", key: "a#2", kind: "tool" }, { kind: "todo" }]), ["a", "a#2"], "keys, not uuids; a keyless card is skipped");
-  const fn = RENDER.slice(RENDER.indexOf("function reattachLive(sid: string): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function reattachLive(sid: string): void {")));
+  const fn = RENDER.slice(RENDER.indexOf("function reattachLive(sid: string, force = false): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function reattachLive(sid: string, force = false): void {")));
   assert.ok(fn.indexOf('type: "reattachKeys", id: sid, keys: reattachKeys(') > 0 && fn.indexOf('type: "reattachKeys"') < fn.indexOf('requestFullSession(sid, "reattach")'), "the keys go out before the ask");
 });
 
