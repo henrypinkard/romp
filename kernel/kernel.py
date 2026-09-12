@@ -36892,6 +36892,12 @@ def _feed_session_entry(s, ctx):
     # Read from the live row (the key's `row` component) and the api error (`transcript`): nothing unkeyed.
     _auth_login_lbl = _login_refusal_label(tm or {}, aerr)
     if _auth_login_lbl:
+        # Inside the memo body this mark runs once per KEY change, not per build (the feed team's read of the merge,
+        # 2026-09-12): enough, because the refusal is a fact of the api error record, whose identity is in the key
+        # (the transcript component), and the write is idempotent. The one divergence from the inline body it
+        # replaced: a login removed and added again while the SAME api error record still stands is not re-marked
+        # until this session's inputs move (a retry writes a new record), where the inline body re-marked it from the
+        # stale error on every build. Read as better, not as a gap.
         lg.mark_refused(jd.STATE, str((tm or {})["authLogin"]), aerr.get("text") or "the API refused this login")
     api_top = None
     if aerr:
