@@ -1006,7 +1006,11 @@ that never settles again; the pass is bounded per cycle (`ROMP_CKPT_CONVERGE_MS`
 default 150 ms of wall, and `ROMP_CKPT_CONVERGE_MB`, default 8 MB of documents
 written plus leaf bytes read for a heal), heals a legacy bare cursor under the
 same budget, and never rewrites a document that already carries every fold
-that ran. An idle session's leaf, which no settle reaches and the pass must
+that ran. The settle's own write primes the transcript's queue-ledger and
+wake-tail folds beside the leaf's five when the leaf's whole entry is resident,
+once per read, so a live leaf whose document lacked them is no longer refolded
+whole at every boot's first echo settle or wake (`refolds` names any that still
+are). An idle session's leaf, which no settle reaches and the pass must
 refuse, converges at the reader's quiescence drop instead: when a fold that
 drops quiescent files ends over a file unchanged for two minutes, its document
 is written from the entry in memory (the boot's own read, whichever fold made
@@ -1459,7 +1463,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   frame marks a cycle busy).
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
-  `swept` (checkpoints of vanished files removed at boot), `skippedFolds`
+  `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
+  name, whole refolds that read the file: a fold with no cursor and nothing to
+  restore over a tail entry, with count and bytes), `skippedFolds`
   (fold states the codec could not encode), `oversizeFolds` (per fold name,
   states over the cap: the document keeps that fold's cursor without its
   state, with the state's KB as the reason, and the next kernel starts the fold
