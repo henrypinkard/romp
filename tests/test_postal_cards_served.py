@@ -35,8 +35,12 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 sys.path.insert(0, ROOT)
-from kernel.palette import PALETTES   # noqa: E402  every colour the gear offers (a pure table: nothing read at import)
+from kernel.palette import PALETTES   # noqa: E402  every colour the gear offers (a pure table; the preamble above is the state-isolation ratchet's rule for any kernel import)
 import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment: a list of names, never a copy of the runner's
 
 WEB = "aaaaaaaa-1111-2222-3333-444444444444"
