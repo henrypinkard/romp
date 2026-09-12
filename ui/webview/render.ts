@@ -49,7 +49,8 @@ import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionR
          followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, TABGROUPS_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
-import { tabStateClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
+import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
+import { composeTabWidgets, tabCtxGauge, tabHotkey } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry
 import { titleWithKey, chordOf, effectiveChord, loadOverrides } from "./keybindings";
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
@@ -362,6 +363,15 @@ if ((window as any).__rompShowStrip) {
 initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
   (m) => vscodeApi?.postMessage(m));
 installSettingsSync();   // a gear save in ANOTHER VS Code pane lands here via the host
+// Open the settings gear on a NAMED tab (T379: the tab-widgets glyph opens the Tabs tab): the same openSettings message
+// every opener posts, with the tab named. Through the shell when this pane sits in one (the kernel's __rompOpenSettings
+// relays it into the settings iframe, tab and all); else to this window, whose own gear (the VS Code chat's, mounted
+// above) listens for it.
+function openSettingsOn(tab: string): void {
+  const m = { romp: "openSettings", tab };
+  if (inRompShell()) { try { window.parent.postMessage(m, "*"); } catch { /* no shell to ask */ } return; }
+  window.postMessage(m, "*");
+}
 
 let settings: RompSettings = loadSettings();   // global webview settings (compact mode, …) — see settings.ts
 // (compact mode's expanded tool/notice runs are keyed in openFolds — "tg:<uuid>" / "ng:<uuid>" — the ONE fold
@@ -6153,7 +6163,7 @@ function sectionHeadOf(node: HTMLElement): HTMLElement | null {
 // the stale pre-outage session it holds underneath. `s.status` may be EMPTY (a skeleton before its first
 // status frame lands): no state → the gray "unknown" ring, the honest "listed, state not yet known". Returns
 // the state so the caller can finish its own chrome (the ✕ title, the gauge).
-function applyTabStatus(tab: HTMLElement, s: { status: Partial<Status> }): ChipState | undefined {
+function applyTabStatus(tab: HTMLElement, s: { id?: string; status: Partial<Status> }): ChipState | undefined {
   const st = s.status.state;
   // the state class — working gold, an on-YOU block alarm-red dashed vs a transient API error's
   // amber auto-retry, awaiting, compacting, closed — is tab-state.ts's rule, shared with the
@@ -6171,10 +6181,10 @@ function applyTabStatus(tab: HTMLElement, s: { status: Partial<Status> }): ChipS
   // that added or removed a row and slid the transcript under the reader by a row's height (tabDotClass).
   // Each pip explains itself on hover, the same titles the feed's DOT_TIP speaks (the user 2026-07-22; tab-state.ts
   // tabDotTitle, beside the class rule); the hidden slot and the compacting bar say nothing.
-  const dotCls = tabDotClass(st);
-  if (dotCls) tab.appendChild(el("span", dotCls));
-  const dotTip = dotCls ? tabDotTitle(st) : null;
-  if (dotTip) (tab.lastElementChild as HTMLElement).title = dotTip;
+  // The slot is a WIDGET now (T379, the user 2026-09-12): the dot widget's render is tab-state.ts's rule (tabDotClass,
+  // tabDotTitle), composed here with every other before-the-name widget the user keeps on (tab-widgets.ts, the one
+  // module the strip and the gear's live demos draw from); off in the gear, no slot at all.
+  composeTabWidgets(tab, "before", s.id || "", s.status, settings.tabWidgets);
   // compacting → a tiny animated compaction bar before the name (the tab gets no outline for this state,
   // so the bar IS the cue). A teal fill whose right edge slides left and loops — the same "compression"
   // motion as the statusline ctx-scan bar (.ctx-compress), miniaturised. Replaces the static ⇲ glyph the
@@ -6275,11 +6285,11 @@ function makeSkeletonTab(id: string): HTMLElement {
   }
   if (id === peekId) tab.classList.add("tab-peek");
   const status = skeletonTabs.status.get(id) as Status | undefined;
-  applyTabStatus(tab, { status: status ?? {} });   // no status yet → the unknown ring, never a pre-outage state
+  applyTabStatus(tab, { id, status: status ?? {} });   // no status yet → the unknown ring, never a pre-outage state
   const label = el("span", "tab-label");
   label.replaceChildren(...hostNameNodes(name, id));
   tab.appendChild(label);
-  if (status) appendTabCtxGauge(tab, { status });
+  if (status) appendTabAfterWidgets(tab, { id, status });
   tab.title = "Not loaded yet — click to load";
   const closeBtn = el("span", "tab-close");
   closeBtn.textContent = "×";
@@ -6301,18 +6311,13 @@ function makeSkeletonTab(id: string): HTMLElement {
 // Drawn AFTER the label by both callers, so the ✕ keeps the tab's right edge. (Defined below makeSkeletonTab
 // on purpose: tab-ctx-gauge.test.ts orders the file's FIRST label append before its first gauge append,
 // and tabs-first.test.ts wants nothing between makePlaceholderTab and renderTabs but the placeholder.)
-function appendTabCtxGauge(tab: HTMLElement, s: { status: Partial<Status> }): void {
-  const st = s.status.state;
-  // Slim vertical context gauge right of the name (the user 2026-08-08): the statusline battery's
-  // fill % + colormap colour, rotated upright and with no % text — so "this session is filling up"
-  // reads at a glance across the whole strip. Skipped while compacting (the compacting bar owns that
-  // moment, and the % is about to be wrong) and on dead tabs. gear → Chat picks WHEN it shows:
-  // only once ≥50% full (the default — a gauge on every quiet tab is clutter; it appears when it
-  // has news), always, or never (the user 2026-08-08 v2, replacing the on/off toggle).
-  if (settings.tabCtx !== "never" && s.status.ctx && st !== "compacting" && st !== "closed") {
-    const pct = Math.max(0, Math.min(100, parseInt(s.status.ctx, 10) || 0));
-    if (settings.tabCtx === "always" || pct >= 50) tab.appendChild(tabCtxGauge(s.status.ctx, pickTone(s.status.ctxColor, s.status.ctxTone)));
-  }
+function appendTabAfterWidgets(tab: HTMLElement, s: { id?: string; status: Partial<Status> }): void {
+  // The after-the-name WIDGETS (T379, the user 2026-09-12): the slim vertical context gauge (the user 2026-08-08: the
+  // statusline battery's fill % + colormap colour, rotated upright, no % text, so "this session is filling up" reads at
+  // a glance across the strip; from half full by default, or always, the gear's Tabs tab picks; skipped while
+  // compacting and on dead tabs) and the hot-key keycap (when one is assigned), composed from the registry in the
+  // configured order. Drawn AFTER the label by both callers, so the ✕ keeps the tab's right edge.
+  composeTabWidgets(tab, "after", s.id || "", s.status, settings.tabWidgets);
 }
 
 // A loading PLACEHOLDER tab (the user 2026-06-26): name + identity color from the kernel's tabOrder push,
@@ -6382,23 +6387,9 @@ function syncNoSessionsPlaceholder(visibleCount: number, totalCount = 0, heldCou
   content.appendChild(ph);
 }
 
-// The tab strip's vertical context gauge: fill height = context-used %, coloured by the SAME
-// server-computed global-colormap RGB the statusline battery / timeline use (setCtxBar), with the
-// same traffic-light fallback for an older kernel that doesn't ship ctxColor. Passive — a click
-// falls through to the tab's own select; the statusline battery keeps the click-to-/compact.
-function tabCtxGauge(ctxStr: string, ctxColor?: number[]): HTMLElement {
-  const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));
-  const g = el("span", "tab-ctx");
-  const fill = el("span", "tab-ctx-fill");
-  fill.style.height = pct + "%";
-  fill.style.background = (ctxColor && ctxColor.length === 3) ? `rgb(${ctxColor.join(",")})`
-    : ctxFallbackColor(pct);   // theme-aware pair (ctx-color.ts): classic keeps main's 60/85 verbatim.
-  // FILLS wear the tone as-is in every theme — readableRgb is for TEXT (re-encoding the warn amber
-  // fill made it a muddy brown on light; the user 2026-08-31, off the live preview)
-  g.appendChild(fill);
-  g.title = `context ${pct}% used`;
-  return g;
-}
+// The tab strip's vertical context gauge (tabCtxGauge) lives in tab-widgets.ts since T379: the context bar is a
+// widget the strip and the gear's live demo draw through the same builder (imported above; the tag overview's
+// rows keep calling it from here).
 
 // A hairline under EVERY row of tabs (T134, the user 2026-08-27, overturning the survey's
 // one-outer-line design — their call, flagged when it shipped: with three rows and a short third,
@@ -6559,7 +6550,7 @@ function renderTabs() {
   // input missing here is a repaint that never happens.
   const stripSig = JSON.stringify([
     activeId, peekId, ids, visibleIds, activeId ? tabInView(activeId) : null, plan.items,
-    settings.tabCtx, settings.stripGroupRows, settings.theme, settings.colormap, titleWithKey("Open a session", "session.new"),
+    settings.tabCtx, settings.stripGroupRows, settings.theme, settings.colormap, settings.tabWidgets, titleWithKey("Open a session", "session.new"),   // tabWidgets: which widgets a tab carries, their order and options (T379)
     surfaceLens(effViews(), "chat"), unions,
     snapView,   // the section whose view the pane shows (makeGroupHead: the header's mark and its way-back act)
     visibleIds.map((id) => {
@@ -6567,12 +6558,12 @@ function renderTabs() {
       if (renderKind(skeletonTabs, id, !!s) === "skeleton") {                                              // makeSkeletonTab's reads:
         const m = tabMeta.get(id), kst = skeletonTabs.status.get(id) as Status | undefined;               // the kernel's list + its
         return ["k", m?.name || s?.name, (m?.color || s?.color)?.bg, (m?.color || s?.color)?.fg, id === peekId,   // status frames, never the
-                kst?.state, kst && tabStateClass(kst), !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note];   // stale session's status
+                kst?.state, kst && tabStateClass(kst), !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379)
       }
       if (!s) { const m = tabMeta.get(id); return ["p", m?.name, m?.color?.bg, m?.color?.fg, down, note]; }   // makePlaceholderTab's reads
       const st = s.status;
       return [s.name, s.color?.bg, s.color?.fg, st.state, tabStateClass(st), !!st.faded,
-              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note];
+              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints
     }),
   ]);
   const mslotEl = document.getElementById("mtag-slot");
@@ -6666,7 +6657,7 @@ function renderTabs() {
       tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); label.classList.add("name-faded"); });
     }
     tab.appendChild(label);
-    appendTabCtxGauge(tab, s);   // the context gauge, shared with the skeleton tab (2026-09-07)
+    appendTabAfterWidgets(tab, s);   // the context gauge and the hot-key keycap, the after-the-name widgets (T379), shared with the skeleton tab (2026-09-07)
     // Rich hover tooltip (custom DOM — a native title can't colour/bold): backend in its own colour, the
     // full dir path, and mode/model/effort/context each on a line (the user 2026-06-23). See showTabTip.
     if (!s.sub) {   // the rich tip reads a real session's dir/branch/model; a viewer has none of them
@@ -6691,6 +6682,7 @@ function renderTabs() {
     close.dataset.id = id;
     if (dead) close.dataset.dead = "1";
     tab.appendChild(close);
+    composeTabWidgets(tab, "corner", id, s.status, settings.tabWidgets);   // the corner slot (T379): a contributed badge, absolutely placed, takes no width
     // double-click a tab to show/hide the ledger overview — same as the strip's caret
     tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleLedgerCollapsed(); });
     // right-click → context menu; "Rename" edits the title in place (not for a viewer: nothing to rename/hide/end)
@@ -6735,6 +6727,22 @@ function renderTabs() {
   const tagChipsHost = el("span", "tab-tagchips");
   tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
   tagBox.appendChild(tagChipsHost);
+  // THE TAB-WIDGETS GEAR (T379, the user 2026-09-12): one glyph at the strip's right end, inside the tag box so it
+  // takes no extra height, opening the settings on its Tabs tab (the widget rows). The ask rides the openSettings
+  // message every opener uses, with the tab named: to the shell when this pane sits in one (the kernel's
+  // __rompOpenSettings relays it into the settings iframe), else to this window (the VS Code chat hosts its own
+  // gear). A standalone /chat with neither has no gear to open, so it shows no glyph (an honest absence, never a
+  // dead control). Built once per strip paint like the tag button beside it; the click is its own, click-safe
+  // because the strip is rebuilt only when its signature changes.
+  if ((window as any).__rompShowStrip || inRompShell()) {
+    const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
+    gear.type = "button";
+    gear.title = "Tab widgets…";
+    gear.setAttribute("aria-label", "Tab widgets");
+    gear.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("tabs"); });
+    tagBox.appendChild(gear);
+  }
   bar.appendChild(tagBox);
   {
     const v = effViews();

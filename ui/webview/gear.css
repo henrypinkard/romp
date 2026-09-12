@@ -216,3 +216,43 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 /* the Open log button's unread count (T290): the red the bar's triangle wore when something was unread —
    a STATUS colour (the accent/status split), so it is the same literal on every surface */
 .rs-log-n { color: #ff6b6b; font-weight: 600; }
+
+/* THE TABS (T379, the user 2026-09-12): the settings grouped by surface, seven pills under the title in the menu vocabulary
+   (menu tokens, the accent wash on the current one); one pane shows at a time ([hidden] restored against the flex rules) */
+#rsettings .rs-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 10px; padding-bottom: 10px; border-bottom: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12)); }
+#rsettings .rs-tab { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
+  background: transparent; color: var(--fg, #ccc); cursor: pointer; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
+#rsettings .rs-tab:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff); }
+#rsettings .rs-tab.on { color: var(--accent, #9cd2ff); border-color: var(--accent, #9cd2ff); background: var(--accent-wash, rgba(156, 210, 255, 0.12)); font-weight: 600; }
+#rsettings .rs-pane[hidden] { display: none; }
+#rsettings .rs-hint { color: var(--text-muted, #9aa0a6); font-size: 12px; margin: 4px 0 6px; }
+/* a WIDGET ROW: the live demo (a miniature tab), the name and its one-line description, the sliding switch, the options */
+#rsettings .rs-widget { display: grid; grid-template-columns: 96px 1fr auto auto; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--menu-border, rgba(255, 255, 255, 0.08)); }
+#rsettings .rs-widget:last-child { border-bottom: 0; }
+#rsettings .rs-widget-demo { display: inline-flex; align-items: center; justify-content: center; height: 30px; border-radius: 6px;
+  background: var(--bg, #1e1e1e); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.1)); }
+#rsettings .rs-widget-off .rs-widget-demo { opacity: 0.45; }
+#rsettings .rs-widget-name b { display: block; color: var(--text-bright, #e8eaed); font-weight: 600; }
+#rsettings .rs-widget-name span { color: var(--text-muted, #9aa0a6); font-size: 12px; }
+/* the SLIDING TOGGLE (the user's pick over a plain checkbox, 2026-09-12): a pill with a knob; on wears the accent */
+#rsettings .rs-switch { width: 34px; height: 18px; border-radius: 999px; border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.14)); background: transparent;
+  position: relative; cursor: pointer; padding: 0; flex: 0 0 auto; transition: background 0.12s ease, border-color 0.12s ease; }
+#rsettings .rs-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-muted, #9aa0a6); transition: left 0.12s ease, background 0.12s ease; }
+#rsettings .rs-switch.on { background: var(--accent, #9cd2ff); border-color: var(--accent, #9cd2ff); }
+#rsettings .rs-switch.on::after { left: 18px; background: var(--accent-fg, #0c1a2e); }
+#rsettings .rs-widget-opts { display: inline-flex; gap: 6px; min-width: 0; }
+#rsettings .rs-widget-opt { display: inline-block; min-width: 140px; }
+/* the demo's miniature tab wears the STRIP's vocabulary (styles.css .tab, .tab-dot, .tab-ctx, .tab-key), in this sheet's
+   fallbacks: the gear's hosts load feed.css and gear.css, not the chat's sheet */
+#rsettings .rs-widget-demo .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg, #ccc); position: relative; }
+#rsettings .rs-widget-demo .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg, #e0b020); }
+#rsettings .rs-widget-demo .tab-dot.await { background: var(--st-awaitbg-bg, #54B204); }
+#rsettings .rs-widget-demo .tab-dot.none { visibility: hidden; }
+#rsettings .rs-widget-demo .tab-dot.idle { background: var(--text-muted, #9aa0a6); opacity: 0.45; }
+#rsettings .rs-widget-demo .tab-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
+#rsettings .rs-widget-demo .tab-dot.opening { background: var(--accent, #9cd2ff); }
+#rsettings .rs-widget-demo .tab-ctx { flex: 0 0 auto; position: relative; width: 4px; height: 13px; border-radius: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.13); }
+#rsettings .rs-widget-demo .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
+#rsettings .rs-widget-demo .tab-key { flex: 0 0 auto; font: 600 9.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 2px 4px; border-radius: 3px;
+  background: rgba(127, 127, 127, 0.18); color: var(--text-muted, #9aa0a6); letter-spacing: 0.02em; }
+#rsettings .rs-widget-demo .tab-corner { position: absolute; top: 0; right: 0; width: 11px; height: 11px; }
