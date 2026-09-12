@@ -36254,6 +36254,8 @@ def _feed_memo_forget(alive_sids):
             _FEED_MEMO_STATS["bytes"] -= _feed_memo.pop(k)[2]
         _FEED_MEMO_STATS["evict"] += len(gone)
         _FEED_MEMO_STATS["entries"] = len(_feed_memo)
+    for k in [k for k in _SUBAGENT_DIRS_MEMO if k not in alive_sids]:   # the key's walk memo leaves with the session
+        _SUBAGENT_DIRS_MEMO.pop(k, None)
     return len(gone)
 
 
@@ -36286,24 +36288,29 @@ def _feed_peer_facts(p, cleared_by_sid):
             host, _remote_name_of(host, p) if r else None)
 
 
-_SUBAGENT_DIRS_MEMO = {}                         # subagents root → (its directories, their identities): the walk, memoized
+_SUBAGENT_DIRS_MEMO = {}                         # sid → (subagents root, its directories, their identities): the walk,
+#                                                  memoized per living session and dropped with its memo entry (_feed_memo_forget)
 
 
-def _subagent_dirs_ident(d):
+def _subagent_dirs_ident(sid, d):
     """(the directories under the subagents root `d`, their identities), the walk memoized: an unchanged tree costs
     one stat per known directory, not an os.walk per session per build (the T368 review's profile: the walk was a
     third of the memo key's cost). Sound because a directory added or removed under `d` moves its PARENT's mtime,
     and every parent is a known directory, so the known identities standing means the tree stands; any of them
     moving (a sidecar landing, a directory appearing or vanishing, the root itself) re-walks. A root that does not
-    exist is the tree [d] with identity None, and its appearance re-walks the same way."""
-    hit = _SUBAGENT_DIRS_MEMO.get(d)
-    if hit is not None:
-        idents = tuple(_chat_ident(x) for x in hit[0])
-        if idents == hit[1]:
-            return hit
+    exist is the tree [d] with identity None, and its appearance re-walks the same way. Keyed by the session so
+    _feed_memo_forget drops a departed session's entry with its memo entry; a session whose transcript (and so
+    whose root) moved re-walks. A sidecar REWRITTEN in place under its own name moves no directory's mtime, so
+    neither this memo nor _subagent_meta_map's own cache sees it (pre-existing, shared with that cache; the CLI
+    writes a sidecar once, at the agent's spawn)."""
+    hit = _SUBAGENT_DIRS_MEMO.get(sid)
+    if hit is not None and hit[0] == d:
+        idents = tuple(_chat_ident(x) for x in hit[1])
+        if idents == hit[2]:
+            return hit[1], idents
     dirs = tuple(_subagent_dirs(d) or [d])
     idents = tuple(_chat_ident(x) for x in dirs)
-    _SUBAGENT_DIRS_MEMO[d] = (dirs, idents)
+    _SUBAGENT_DIRS_MEMO[sid] = (d, dirs, idents)
     return dirs, idents
 
 
@@ -36343,24 +36350,34 @@ def _postal_maps_indexed():
     return last_any, last_ask, last_await, returned, names, by_party
 
 
+def _cleared_by_sid(cleared):
+    """The clear set indexed by owning session: id → the text before its LAST colon (a node id is <sid>:gN, and a
+    composite session key such as host:name keeps its own colon), so `by[sid]` is exactly the tuple the per-session
+    filter `i.startswith(sid + ":")` returned, sorted; an id with no colon belongs to no session (the filter matched
+    it for none) and is not indexed. Built once per build (_feed_board_facts), read per session and per peer
+    (tests/test_feed_session_memo.py pins the equivalence over every id shape)."""
+    by = {}
+    for i in cleared:
+        if ":" in i:
+            by.setdefault(i.rpartition(":")[0], []).append(i)
+    return {k: tuple(sorted(v)) for k, v in by.items()}
+
+
 def _feed_board_facts(ctx, now):
     """The board-wide inputs of every session's key, taken ONCE per build into ctx (the same value for every
     session: one stat each, not one per living session): the clear set indexed by session, the postal maps indexed
-    by party, the nudge records' identities, usage.json's identity and
-    whether a login-account window sits at its cap with its reset ahead (the `offer` crossing), the key on hand,
+    by party, the nudge records' identities, usage.json's identity and the login-account window sitting at its cap
+    with its reset ahead as (window, resetsAt) or None (the `offer` component's payload), the key on hand,
     the host-suspension spans, the debug mode and its rows' identity. Taken before any session's derivation, so
     every session's read follows its stat (stat-then-read)."""
     b = ctx.get("board")
     if b is None:
         dbg = bool(jd._debug_mode())
-        by_sid = {}
-        for i in ctx["cleared"]:                    # the clear set indexed by the id's session prefix, once per build
-            by_sid.setdefault(i.partition(":")[0], []).append(i)
-        b = {"cleared_by_sid": {k: tuple(sorted(v)) for k, v in by_sid.items()},
+        b = {"cleared_by_sid": _cleared_by_sid(ctx["cleared"]),   # the clear set indexed by owning session, once per build
              "postal": _postal_maps_indexed(),
              "nudge": (_chat_ident(jd.STATE / "auto-nudge.json"), _chat_ident(jd.STATE / "nudge-events.jsonl")),
              "usage_ident": _chat_ident(jd.STATE / "usage.json"),
-             "cap_open": _usage_cap_open(now) is not None,
+             "cap_open": (lambda w: (w["window"], w["resetsAt"]) if w else None)(_usage_cap_open(now)),
              "auth": _auth_key_present(),
              "downtime": (len(_downtime), _downtime[-1] if _downtime else None),
              "debug": (dbg, _chat_ident(jd.ERRORS) if dbg else None)}
@@ -36389,9 +36406,13 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         _bg_live_norm's transcript rung, _bg_owner_tops/_bg_service_descs/_awaiting_task_descs → _bg_placed_tops →
         _parse), the placeholders' _parse (_provisional_card, _blocked_placeholder, _awaiting_card),
         _pure_delegation_top's dictated-prompt read, _open_turn_progress's hydrate, _last_plain_user_turn_t.
-      parse: `_parse_cached(path) is not None`, the warm bit. A cold kernel derives without the parse (no dots, no
-        anchors, the cold-parse summary fallback) and _warm_fleet_bg then fills the cache with NO file change; the
-        bit flipping is what re-derives the session warm.
+      parse: (`_parse_cached(path) is not None`, the last turn's end). The warm bit: a cold kernel derives without
+        the parse (no dots, no anchors, the cold-parse summary fallback) and _warm_fleet_bg then fills the cache
+        with NO file change, and the bit flipping is what re-derives the session warm. The end: the one value in a
+        parse that is not a function of its files (em.parse_session reads the clock for the trailing idle span's
+        end alone, synthesize_idle), so a parse re-run at a later clock with no file change (an evicted parse warmed
+        again) differs there and nowhere else; keying on it re-derives once per re-parse and makes the parse's
+        identity exact without a clock in the key (T368 review round two).
       cut: the SDK backend's pending_cut(sid), a chat DELETE rollback that changes the parse with no file change.
       states: (_chat_ident(STATE/states/<fsid>.jsonl), _chat_ident(STATE/states/<anchor>.jsonl)). The parse key's
         states file, the machine cuts (_interrupt_suppresses_nudge → _last_machine_cut), _session_retrying's
@@ -36435,13 +36456,16 @@ def _feed_session_key(s, tm, ctx, prev_entry):
       hide: _session_flag(fsid, "hideFromFeed"). The session yields no entry while set.
       watch: json of _watch_awaiting(fsid) (the in-memory watches for this sid). An awaiting source.
       subagents: _chat_ident of the transcript's subagents directory and every directory under it (the walk memoized
-        on those identities, _subagent_dirs_ident). _subagent_meta_map.
+        on those identities, _subagent_dirs_ident). _subagent_meta_map. A sidecar rewritten in place under its own
+        name moves no directory's mtime and is invisible here as it is to the map's own cache (pre-existing).
       usage: _chat_ident(STATE/usage.json) when the previous entry recorded reading it (an api error's cap offer,
         _cap_switch_offer), else None. A deps component.
-      offer: whether a login-account usage window sits at its cap with its reset still ahead of the build's clock
-        (_usage_cap_open(now) is not None), when the previous entry recorded reading usage.json, else None. The
-        billing-switch offer's own clock crossing (resets_at passing ends the mint, _cap_switch_offer) as the
-        boolean it decides, the way `interrupting` and `closer` are. A deps component.
+      offer: the login-account usage window sitting at its cap with its reset still ahead of the build's clock, as
+        (window, resetsAt) from _usage_cap_open(now), or None; taken when the previous entry recorded reading
+        usage.json, else None. The billing-switch offer's own clock crossing (resets_at passing ends the mint,
+        _cap_switch_offer) as the payload the card renders, not a boolean: with two windows capped, the earlier
+        reset passing moves the offer to the later window and its time, which a boolean would not see (T368 review
+        round two). A deps component.
       auth: _auth_key_present(). The cap offer's key-on-hand leg.
       downtime: (len(_downtime), its last span). _session_working's host-suspension read (_suspended_after).
       debug: (jd._debug_mode(), _chat_ident(STATE/judge-errors.jsonl) when on). dbg_rows → _card_warn_rows.
@@ -36482,7 +36506,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
                           if k.startswith(fsid + ":")))
     jauth = tuple(sorted((ctx["jauth_map"].get(fsid) or {}).items(), key=str)) or None
     jactive = fsid in ctx["jactive"]
-    subagents = _subagent_dirs_ident(str(_subagents_dir(path)))[1] if path else None
+    subagents = _subagent_dirs_ident(fsid, str(_subagents_dir(path)))[1] if path else None
     reads_usage = bool(((prev_entry or {}).get("reads") or {}).get("usage"))   # the entry read usage.json (the cap offer)
     usage = board["usage_ident"] if reads_usage else None
     offer = board["cap_open"] if reads_usage else None
@@ -36529,7 +36553,8 @@ def _feed_session_key(s, tm, ctx, prev_entry):
              st is None and not hide)                # a hidden session's skipped read is not a fault
     bg = (tuple((r.get("tid"), r.get("desc"), r.get("t"), r.get("type"), r.get("deadline"), r.get("agentId"))
                 for r in _bg_live_norm(fsid, path)) if (ps is not None and path) else None)
-    return (transcript, ps is not None, cut, states, names, captions, store, anchors, reg, cl, row, ask, live_rev,
+    parse = (ps is not None, (ps["turns"][-1].get("end") if ps and ps.get("turns") else None))   # the warm bit + the parse's own edge
+    return (transcript, parse, cut, states, names, captions, store, anchors, reg, cl, row, ask, live_rev,
             bg, wait, postal, stalls, nudge, jauth, jactive, hide, watch, subagents, usage, offer, auth, downtime,
             debug, interrupting, closer, peers)
 

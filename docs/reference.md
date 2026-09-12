@@ -1531,8 +1531,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   derivation stands (the transcript, states, names, captions, store, journal
   and archive by identity; the live row, the wait graph, the stall and nudge
   records, the session's own rows of the postal log, the watches and the
-  background tasks by value; the interrupt, settle-gap and billing-offer
-  booleans the clock decides; the peers the cards read), so a rebuild
+  background tasks by value; the interrupt and settle-gap booleans the
+  clock decides and the billing offer's open window as the card renders it;
+  the peers the cards read), so a rebuild
   re-derives only the sessions whose inputs moved. The sections that span
   sessions (the serving-fold join, the parked handoffs, the quarantine cards,
   the bell pass, the working and awaiting dot lists, the unreadable-state
@@ -1553,9 +1554,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   to one re-derives every session. The clock is not a component of the key:
   a card's clock-derived fields either leave the memoized entry and are
   stamped per build (the age tint, a placeholder's time), or enter the key
-  as the boolean the clock decides (the interrupt window, the settle gap,
-  the billing offer's window), so a served card shows what a rebuilt one
-  would.
+  as the value the clock decides (the interrupt window and the settle gap
+  as booleans, the billing offer's open window and its reset as the card
+  renders them, a parse's trailing idle edge), so a served card shows what a
+  rebuilt one would.
 - `sends`: `full`, `delta`, `deduped`, each a map from slot name (`chat`,
   `feed`, `bars`, `taborder`, ...) to `count` and `bytes`. A deduplicated frame
   was built and compared, then not sent.

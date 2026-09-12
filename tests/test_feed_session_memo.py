@@ -462,6 +462,8 @@ class TheBoundAndTheDepartures(_Board):
         self.assertEqual(set(km._feed_memo), {WEB, API})
         self.assertEqual(rep["bytes"], sum(e[2] for e in km._feed_memo.values()))
         self.assertNotIn(TESTS + ":g1", self._cards(f))
+        self.assertEqual(set(km._SUBAGENT_DIRS_MEMO) & set(SIDS), {WEB, API},
+                         "the key's subagent-walk memo drops the departed session with its entry (round two, low 1)")
 
     def test_the_perf_snapshot_carries_the_memo_beside_the_feed_builds_counters(self):
         self._build()
@@ -499,6 +501,22 @@ class TheRebuildWalksOnlyWhatMoved(_Board):
         n_moved, feed = self._walked(self._build)
         self.assertEqual(n_moved, 1, "one store moved: that session's tree alone is walked again")
         self.assertEqual(self._cards(feed)[API + ":g1"]["column"], "completed", "and its card wears the verdict")
+
+
+class TheClearedIndexMatchesTheFilter(unittest.TestCase):
+    """The per-build clear index (_cleared_by_sid) must hand each session exactly what the per-session filter
+    `i.startswith(sid + ":")` returned, for every id shape the ledger can hold: a node id <sid>:gN, a composite
+    session key with its own colon (host:name:gN, a peer wait key), an id with no colon, and an id of another kind
+    (parked:<msgId>). Round two, low 3: an index on the FIRST colon gave a composite session nothing. The sessions
+    asked are the shapes a session id takes (a uuid, a host:name key, none, an unknown one); a session id is never
+    the bare host half of a composite key, the one prefix the filter would have matched and the index does not."""
+
+    def test_every_shape_indexes_where_the_filter_found_it(self):
+        ids = {WEB + ":g1", WEB + ":g2", API + ":g1", "TESTHOST:api:g3", "TESTHOST:api:g1", "parked:m-1789", "bare-id"}
+        by = km._cleared_by_sid(ids)
+        for sid in (WEB, API, TESTS, "TESTHOST:api", "parked", "bare-id", "", "nobody"):
+            want = tuple(sorted(i for i in ids if i.startswith(sid + ":")))
+            self.assertEqual(by.get(sid, ()), want, "session %r" % sid)
 
 
 class TheClockDecidedBooleansAreComponents(_Board):
@@ -547,6 +565,31 @@ class TheClockDecidedBooleansAreComponents(_Board):
             self.assertEqual(d["derived"], 0, "closed stays closed: a hit")
             self.assertNotIn("capOffer", self._cards(f)[WEB + ":g1"]["blocked"])
 
+    def test_two_capped_windows_the_earlier_reset_passing_moves_the_offer_to_the_later_window(self):
+        """Round two's shape: both windows at their cap, the five-hour one resetting first. The five-hour reset
+        passing leaves a login window capped (the seven-day one), so a boolean would stand and a served card would
+        keep naming a reset already in the past; the component is the payload the card renders, so the crossing
+        moves the key and the rebuilt card names the seven-day window and its reset."""
+        base = max(NOW, int(time.time()))
+        r5, r7 = base + 600, base + 4000
+        self._cap_death(WEB, r5)
+        (jd.STATE / "usage.json").write_text(json.dumps({"five_hour": {"pct": 100, "resets_at": r5},
+                                                         "seven_day": {"pct": 100, "resets_at": r7}}))
+        with mock.patch.object(km, "_auth_key_present", lambda: True), \
+                mock.patch.object(km, "_live_map", lambda: self.live):
+            d, f = self._delta(self._build)
+            self.assertEqual(self._cards(f)[WEB + ":g1"]["blocked"].get("capOffer"), {"resetsAt": r5, "window": "five_hour"})
+            d, f = self._delta(lambda: self._build(r5 + 1))
+            self.assertEqual((d["derived"], d["miss_by"]), (1, {"offer": 1}),
+                             "the five-hour reset passed with the seven-day window still capped: web re-derives: %r" % d)
+            self.assertEqual(self._cards(f)[WEB + ":g1"]["blocked"].get("capOffer"), {"resetsAt": r7, "window": "seven_day"},
+                             "the rebuilt card names the window still capped and ITS reset, never the passed one")
+            d, f = self._delta(lambda: self._build(r5 + 2))
+            self.assertEqual(d["derived"], 0, "and holds: a hit")
+            d, f = self._delta(lambda: self._build(r7 + 1))
+            self.assertEqual((d["derived"], d["miss_by"]), (1, {"offer": 1}), "the seven-day reset passing closes it: %r" % d)
+            self.assertNotIn("capOffer", self._cards(f)[WEB + ":g1"]["blocked"])
+
     def test_the_offer_is_keyed_only_for_the_session_that_read_usage(self):
         self._cap_death(WEB, max(NOW, int(time.time())) + 600)
         with mock.patch.object(km, "_auth_key_present", lambda: True), \
@@ -555,7 +598,8 @@ class TheClockDecidedBooleansAreComponents(_Board):
             k_web = km._feed_memo_get(WEB)[0]
             k_api = km._feed_memo_get(API)[0]
             at = km._FEED_MEMO_LABELS.index("offer")
-            self.assertIs(k_web[at], True, "web read usage.json: its key carries the window's state")
+            self.assertEqual(k_web[at], ("five_hour", max(NOW, int(time.time())) + 600),
+                             "web read usage.json: its key carries the open window and its reset")
             self.assertIsNone(k_api[at], "api did not: the crossing is no input of its card")
 
 
