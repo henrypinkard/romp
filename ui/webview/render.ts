@@ -6921,6 +6921,36 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
   return span;
 }
 
+// The Billing flyout's ENTRY LIST (T387): one function for the session's picks and the machine-default submenu, so the
+// two menus can never list different billings. Each entry: its label (Login named by the machine's account when known,
+// the key plainly "API key", no fragment of it anywhere), the setAuth value, and why it is greyed here (a side this box
+// cannot bill, the kernel's reason) or "". When stored logins arrive (the several-logins branch) this is the function
+// that grows, and the default submenu lists them with the picks.
+function billingChoices(st: Status, avail: AuthAvail): Array<{ label: string; value: string; why: string }> {
+  return [{ label: st.authAcct ? `Login (${st.authAcct})` : "Login", value: "login", why: avail.login ? "" : (avail.loginWhy || "no Claude login signed in on this machine") },
+          { label: "API key", value: "key", why: avail.key ? "" : (avail.keyWhy || "no apiKeyHelper configured") }];
+}
+// A flyout placed beside its row (the Billing flyout and its nested default submenu, T387; the side rule the Tags flyout
+// and the model-version submenus follow): PREFER right; fall LEFT when the right edge would clip and the left has room;
+// with room on neither side (a narrow window) drop BELOW the row when it fits there, else ABOVE the row's top, and only
+// when neither fits clamp inside the viewport, never over the row while a place beside or beyond it exists (the T380
+// review: at 560 px it covered its menu and ran 33 px out; at 560 by 420 the clamp pulled the drop-below back over the
+// row). .ctx-menu is position: fixed, so the coordinates are viewport-space. The flyout is in the document already.
+function placeFlyBeside(anchor: HTMLElement, fly: HTMLElement): void {
+  const ir = anchor.getBoundingClientRect();
+  const sr = fly.getBoundingClientRect();
+  let left: number, top: number = ir.top;
+  if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
+  else if (ir.left - 2 - sr.width >= 8) left = Math.round(ir.left) - sr.width - 2;
+  else {
+    left = Math.max(8, Math.min(Math.round(ir.left), window.innerWidth - sr.width - 8));
+    if (ir.bottom + 2 + sr.height <= window.innerHeight - 4) top = ir.bottom + 2;
+    else if (ir.top - 2 - sr.height >= 0) top = ir.top - 2 - sr.height;
+    else top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4));
+  }
+  fly.style.left = left + "px";
+  fly.style.top = Math.max(0, Math.min(top, window.innerHeight - sr.height - 4)) + "px";
+}
 // The tab menu's ONE flyout gesture (T163 for Tags, the user 2026-08-28; T380 for Billing, the user
 // 2026-09-12): a hover of HOVER_INTENT_MS over the row opens the flyout (the feed's intent debounce:
 // enough to skip a graze, never a wait), a click opens it at once (byClick: a click may focus an input,
@@ -7332,12 +7362,14 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // fragment of it anywhere. A pick posts the same setAuth the badge used (the session reconnects to
   // apply, so the sub-line says "applying…" while st.authPending rides the status). An older kernel
   // sends no authAvail: its authBoth keeps the old both-or-nothing gate. The flyout opens on HOVER as
-  // the Tags flyout does, and on click (T380, the user 2026-09-12: one gesture, wireFlyout), and below
-  // the session's choices carries "Default for <machine>": the same choices as a radio group, the
-  // current default marked (authAvail.default, the owning kernel's seed, so a remote session's flyout
-  // shows ITS host's default), a pick posting setAuth with scope "machine", which writes the seed every
-  // NEW session and every session with no pick of its own launches on and touches no session that
-  // carries its own pick; the group's note says exactly that.
+  // the Tags flyout does, and on click (T380, the user 2026-09-12: one gesture, wireFlyout). Below the
+  // session's choices, behind a rule, ONE entry, "Set default billing" (T387, the user 2026-09-12), opens a
+  // further submenu holding exactly the same entries with the machine's default check-marked
+  // (authAvail.default, the owning kernel's seed, so a remote session's flyout shows ITS host's default);
+  // a click there posts setAuth with scope "machine", which writes the seed every NEW session and every
+  // session with no pick of its own launches on and touches no session that carries its own pick. The
+  // rule and the entry appear only when there is more than one billing to choose from here. No sub-line
+  // under anything: the entries say what they are.
   const st = s ? s.status : null;
   if (st && st.auth && (st.authAvail || st.authBoth)) {
     const avail: AuthAvail = st.authAvail || { login: true, key: true };
@@ -7364,8 +7396,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       if (already) return already as HTMLElement;
       menu.querySelector(".ctx-sub")?.remove();                    // one flyout at a time
       const sub = el("div", "ctx-menu ctx-sub ctx-sub-billing");
-      const choices = [{ label: st.authAcct ? `Login (${st.authAcct})` : "Login", value: "login", why: avail.login ? "" : (avail.loginWhy || "no Claude login signed in on this machine") },
-                       { label: "API key", value: "key", why: avail.key ? "" : (avail.keyWhy || "no apiKeyHelper configured") }];
+      const choices = billingChoices(st, avail);                  // the ONE list both menus below draw from (T387)
       for (const c of choices) {
         const opt = el("div", "ctx-item" + (st.auth === c.value ? " current" : "") + (c.why ? " disabled" : ""));
         opt.textContent = c.label;
@@ -7381,66 +7412,55 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
         });
         sub.appendChild(opt);
       }
-      // ── Default for this machine (T380) ── the owning kernel's seed (authAvail.default): what a NEW
-      // session, and a session with no pick of its own, launches on. The same choices as radios, the
-      // current one marked; a pick posts setAuth with scope "machine" and changes no session that carries
-      // its own pick. A remote session's flyout names ITS host, whose kernel holds the seed.
-      if (avail.default) {
+      // ── Set default billing (T387, the user 2026-09-12) ── below the picks, behind a rule, ONE entry opening a further
+      // submenu with exactly the same entries, the machine's default check-marked. Both the rule and the entry only when
+      // there is more than one billing to choose from HERE (a side this box cannot bill is not a choice), and only from a
+      // kernel that says whether the default is explicit (an older one takes no scoped "auto" and marks no default). No
+      // sub-line anywhere. The submenu rides the same hover-intent road, wired on the Billing flyout itself and appended
+      // inside it, so leaving both closes both and the menu's dismissal covers it; the same placement rule places it.
+      const pickable = choices.filter((c) => !c.why);
+      if (pickable.length > 1 && avail.default && avail.defaultExplicit !== undefined) {
         sub.appendChild(el("div", "ctx-sep"));
-        const explicit = !!avail.defaultExplicit;
-        const head = el("div", "ctx-item ctx-item-toggle ctx-sub-head");
-        const hb = el("span", "ctx-item-body");
-        const hl = el("span", "ctx-item-label"); hl.textContent = "Default for " + (hostOf(id) || "this machine"); hb.appendChild(hl);
-        const hs = el("span", "ctx-item-sub");
-        // the sub-line says which rule holds (review): set here, or automatic (the helper rule) as before
-        hs.textContent = explicit
-          ? "set here: new and unpicked sessions follow it; a session's own pick stays"
-          : "automatic: the API key when a helper is configured, else the login; new and unpicked sessions follow it";
-        hb.appendChild(hs);
-        head.appendChild(hb); sub.appendChild(head);
-        // the same choices as radios, then Automatic (the helper rule), which clears the explicit default (review: the flag
-        // was one-way and invisible); the current mark sits on the explicit side, else on Automatic
-        const autoWord = avail.key ? "API key" : "Login";
-        // an older kernel sends no defaultExplicit and takes no "auto": its flyout marks the side it computed and offers no
-        // Automatic radio (review: the click would be swallowed there)
-        const olderKernel = avail.defaultExplicit === undefined;
-        const radios = [...choices.map((c) => ({ ...c, cur: olderKernel ? avail.default === c.value : (explicit && avail.default === c.value) })),
-                        ...(olderKernel ? [] : [{ label: `Automatic (${autoWord})`, value: "auto", why: "", cur: !explicit }])];
-        for (const c of radios) {
-          const opt = el("div", "ctx-item ctx-radio" + (c.cur ? " current" : "") + (c.why ? " disabled" : ""));
-          opt.textContent = c.label;
-          opt.dataset.scope = "machine";
-          if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
-          opt.addEventListener("click", (ev2) => {
-            ev2.stopPropagation();
-            if (c.why) return;
-            dismissTabMenu();
-            if (!c.cur && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value, scope: "machine" });
-          });
-          sub.appendChild(opt);
-        }
+        const setDef = el("div", "ctx-item ctx-item-toggle ctx-item-setdefault");
+        const sl = el("span", "ctx-item-label"); sl.textContent = "Set default billing"; setDef.appendChild(sl);
+        const sc = el("span", "ctx-caret"); sc.textContent = "▸"; setDef.appendChild(sc);
+        const openDefaultFly = (): HTMLElement | null => {
+          const open = sub.querySelector(".ctx-sub-default");
+          if (open) return open as HTMLElement;
+          const explicit = !!avail.defaultExplicit;
+          const d = el("div", "ctx-menu ctx-sub ctx-sub-default");
+          const post = (value: string) => { dismissTabMenu(); if (vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value, scope: "machine" }); };
+          for (const c of choices) {
+            const cur = explicit && avail.default === c.value;   // the check sits on the EXPLICIT default only; automatic marks nothing
+            const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
+            opt.textContent = c.label;
+            opt.dataset.scope = "machine";   // a MARKER for the labs and the sheet, never read for the wire: post() carries the scope
+            if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
+            // the picks list one level up dismisses on its current entry too (review): the same gesture, the same answer, nothing posted
+            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (c.why) return; if (cur) { dismissTabMenu(); return; } post(c.value); });
+            d.appendChild(opt);
+          }
+          if (explicit) {
+            // the way BACK to the helper rule once a default stands (the manager's call for the user, 2026-09-12, open to
+            // their veto): at the end, behind its own rule, only while an explicit default is set, so a set default can be
+            // cleared; the kernel's scoped "auto" (T380) clears the flag and the seed
+            d.appendChild(el("div", "ctx-sep"));
+            const auto = el("div", "ctx-item ctx-item-auto");
+            auto.textContent = "Automatic";
+            auto.dataset.scope = "machine";   // the marker again
+            auto.addEventListener("click", (ev2) => { ev2.stopPropagation(); post("auto"); });
+            d.appendChild(auto);
+          }
+          sub.appendChild(d);
+          placeFlyBeside(setDef, d);
+          return d;
+        };
+        wireFlyout(sub, setDef, ".ctx-sub-default", () => openDefaultFly());
+        sub.appendChild(setDef);
       }
-      // INSIDE the menu node (so dismissTabMenu and the outside-mousedown check cover it), placed
-      // beside the item — .ctx-menu is position:fixed, so the coords are viewport-space, clamped
+      // INSIDE the menu node (so dismissTabMenu and the outside-mousedown check cover it), placed beside the item
       menu.appendChild(sub);
-      const ir = item.getBoundingClientRect();
-      const sr = sub.getBoundingClientRect();
-      // the side rule (Tags, the model-version submenus): PREFER right; fall LEFT when the right edge would clip and
-      // the left has room; with room on neither side (a narrow window) the flyout drops BELOW the row when it fits
-      // there, else ABOVE the row's top, and only when neither fits is it clamped inside the viewport — never over
-      // the row while a place beside or beyond it exists (review: at 560 px it covered its menu and ran 33 px out;
-      // at 560 by 420 the clamp pulled the drop-below back over the row)
-      let left: number, top: number = ir.top;
-      if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
-      else if (ir.left - 2 - sr.width >= 8) left = Math.round(ir.left) - sr.width - 2;
-      else {
-        left = Math.max(8, Math.min(Math.round(ir.left), window.innerWidth - sr.width - 8));
-        if (ir.bottom + 2 + sr.height <= window.innerHeight - 4) top = ir.bottom + 2;
-        else if (ir.top - 2 - sr.height >= 0) top = ir.top - 2 - sr.height;
-        else top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4));
-      }
-      sub.style.left = left + "px";
-      sub.style.top = Math.max(0, Math.min(top, window.innerHeight - sr.height - 4)) + "px";
+      placeFlyBeside(item, sub);
       return sub;
     };
     wireFlyout(menu, item, ".ctx-sub-billing", () => openBillingFly());
