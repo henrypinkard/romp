@@ -187,7 +187,7 @@ const measure = () => page.evaluate(() => {
     const kind = t.querySelector(".postal-kind");
     const icon = t.querySelector(".postal-delivery");
     const self = t.querySelector(".notice-src-self");
-    const peer = t.querySelector(".notice-src-chip:not(.notice-src-self)");
+    const peer = t.querySelector(".notice-src-peer");
     const cs = getComputedStyle(n);
     const glyph = t.querySelector(".notice-glyph");
     const ends = t.querySelector(".notice-src-ends");
@@ -229,7 +229,13 @@ const measure = () => page.evaluate(() => {
       state: icon ? icon.dataset.state : null, title: icon ? (icon.getAttribute("aria-label") || "") : null,
       iconRight: icon && n ? Math.round(n.getBoundingClientRect().right - icon.getBoundingClientRect().right) : null,
       peerText: peer ? peer.textContent : null, peerBg: peer ? getComputedStyle(peer).backgroundColor : null,
+      // T390: the ends are bold names inked in the identity colour, no chip (the class, the fill, the padding all gone)
+      peerColor: peer ? asRGB(getComputedStyle(peer).color) : null, peerWeight: peer ? getComputedStyle(peer).fontWeight : null,
+      peerPad: peer ? getComputedStyle(peer).paddingLeft : null, peerChip: !!(peer && peer.classList.contains("notice-src-chip")),
+      peerIdentity: peer ? peer.style.getPropertyValue("--peer-bg") : null,
       selfText: self ? self.textContent : null, selfBg: self ? getComputedStyle(self).backgroundColor : null,
+      selfColor: self ? asRGB(getComputedStyle(self).color) : null, selfWeight: self ? getComputedStyle(self).fontWeight : null,
+      selfChip: !!(self && self.classList.contains("notice-src-chip")),
       selfWidth: self ? Math.round(self.getBoundingClientRect().width) : null,
       bg: asRGB(cs.backgroundColor), border: cs.borderTopStyle, provisional: n.classList.contains("queued-bubble"),
       opacity: cs.opacity,   // T337: the provisional dress fades by its colours, never by an element opacity
@@ -293,6 +299,11 @@ for (const pass of [{ width: 1000, theme: "dark" }, { width: 520, theme: "dark" 
   const boxOnPage = composite(m.boxBg, m.pageBg);
   // every kind word against the ground it actually sits on: the page, the box, or the provisional wash (T337)
   for (const c of m.cards) c.kindContrast = c.kind && c.kindColor ? contrast(c.kindColor, composite(c.bg, m.pageBg)) : null;
+  // T390: both names against the ground they sit on (the card's, provisional wash included), per theme
+  for (const c of m.cards) {
+    c.peerContrast = c.peerColor ? contrast(c.peerColor, composite(c.bg, m.pageBg)) : null;
+    c.selfContrast = c.selfColor && c.selfWidth > 12 ? contrast(c.selfColor, composite(c.bg, m.pageBg)) : null;   // not the collapsed dot
+  }
   m.contrast = {}; m.contrastOn = {}; m.contrastPage = {};
   for (const k of ["delegate", "coordinate", "question"]) {
     if (!m.kinds[k]) { m.contrast[k] = null; continue; }
@@ -304,9 +315,10 @@ for (const pass of [{ width: 1000, theme: "dark" }, { width: 520, theme: "dark" 
   if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/romp_chat-postal-cards-" + pass.theme + "-" + width + ".png", fullPage: false }); }
   await page.close();
 }
-fs.writeSync(1, "RESULT:" + JSON.stringify(results) + "\n");
 await browser.close();
-process.exit(0);
+// through the stream, drained before the exit: a single synchronous write of a line past the pipe's 64 KiB buffer came out
+// truncated (the T390 measurements pushed this result past it), and the reader saw an unterminated string
+process.stdout.write("RESULT:" + JSON.stringify(results) + "\n", () => process.exit(0));
 """
 
 
@@ -376,6 +388,12 @@ class ServedPostalCards(unittest.TestCase):
             k.kill(); k.wait()
         shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
 
+    @staticmethod
+    def _rgb(hex_color):
+        """A #rrggbb identity colour as the browser reports a computed colour."""
+        h = hex_color.strip().lstrip("#")
+        return "rgb(%d, %d, %d)" % (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
     def test_every_kind_and_delivery_state_renders_as_ruled(self):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
@@ -392,6 +410,7 @@ class ServedPostalCards(unittest.TestCase):
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         r = json.loads(line[len("RESULT:"):])
+        print("RESULT:" + json.dumps(r), file=sys.stderr)   # the whole measurement rides the captured stderr (-rA shows it for a pass too)
         wide, narrow, phone, light = r["1000"], r["520"], r["340"], r["light"]
         cards = wide["cards"]
         self.assertEqual(len(cards), 12, cards)
@@ -420,6 +439,23 @@ class ServedPostalCards(unittest.TestCase):
                 if c["provisional"]:
                     self.assertEqual(c["opacity"], "1", "no element opacity on the provisional card: %r" % c)
         self.assertTrue(any(c["provisional"] and c["kind"] for c in wide["cards"]), "a provisional card with a kind word is in the world")
+        # (1b) T390 (the user 2026-09-12): both ends are the NAME itself, bold, in the session's identity colour, no chip box and
+        # no fill, in both themes; the colour reads on the card's ground (the cream theme deepens it on its own hue)
+        for m, name in ((wide, "dark"), (light, "light")):
+            for c in m["cards"]:
+                self.assertFalse(c["peerChip"] or c["selfChip"], "%s: no chip class on either end: %r" % (name, c))
+                self.assertEqual(c["peerBg"], "rgba(0, 0, 0, 0)", "%s: the peer's name has no fill: %r" % (name, c))
+                self.assertEqual(c["peerPad"], "0px", "%s: no chip padding: %r" % (name, c))
+                self.assertEqual(c["peerWeight"], "700", "%s: the peer's name is bold: %r" % (name, c))
+                self.assertGreaterEqual(c["peerContrast"] or 0, 4.5, "%s: the peer's name reads on its ground: %r" % (name, c))
+                if c["selfContrast"] is not None:
+                    self.assertEqual(c["selfBg"], "rgba(0, 0, 0, 0)", "%s: this session's name has no fill: %r" % (name, c))
+                    self.assertEqual(c["selfWeight"], "700", "%s: this session's name is bold: %r" % (name, c))
+                    self.assertGreaterEqual(c["selfContrast"], 4.5, "%s: this session's name reads on its ground: %r" % (name, c))
+        # in the dark theme the ink IS the identity colour, as the awaiting fold draws a peer
+        for c in wide["cards"]:
+            if c["peerIdentity"]:
+                self.assertEqual(c["peerColor"], self._rgb(c["peerIdentity"]), "dark: the name is inked in the identity colour itself: %r" % c)
         # (2) the delivery icon per state, at the head's right edge, with a worded title
         states = {c["gist"][:20]: c["state"] for c in cards}
         self.assertIsNone(card("Take the retry-loop")["state"], "an incoming message in hand: no icon")
@@ -469,7 +505,7 @@ class ServedPostalCards(unittest.TestCase):
         for c in cards:
             self.assertTrue(c["peerText"], c)
             self.assertTrue(c["selfText"] and "web" in c["selfText"], "this session's own end: %r" % c)
-            self.assertEqual(c["selfBg"], "rgb(156, 210, 255)", "web's own colour on its chip: %r" % c)
+            self.assertEqual(c["selfColor"], "rgb(156, 210, 255)", "web's own colour as its ink, no fill (T390): %r" % c)
             if c["dir"] == "in":
                 self.assertTrue(c["boxed"] and not c["slim"], "incoming is boxed: %r" % c)
                 self.assertNotEqual(c["bg"], wide["boxBg"], "the tint: the peer's hue on the ground, never the plain box: %r" % c)
@@ -478,8 +514,8 @@ class ServedPostalCards(unittest.TestCase):
             else:
                 self.assertEqual(c["slim"], not c["collapsible"], "a sent card is slim unless it has a fold: %r" % c)
             self.assertFalse(c["selfDot"], "the own chip wears no working dot: %r" % c)
-        self.assertEqual(card("Take the retry-loop")["peerBg"], "rgb(30, 161, 235)", "api's colour on its chip")
-        self.assertEqual(card("Heads-up")["peerBg"], "rgb(84, 178, 4)", "tests' colour on its chip")
+        self.assertEqual(card("Take the retry-loop")["peerColor"], "rgb(30, 161, 235)", "api's colour as its ink (T390)")
+        self.assertEqual(card("Heads-up")["peerColor"], "rgb(84, 178, 4)", "tests' colour as its ink (T390)")
         # the tint is the PEER's hue: two peers' incoming cards wear two grounds, in both themes, and a landed sent card none
         for m, name in ((wide, "dark"), (light, "light")):
             grounds = {}

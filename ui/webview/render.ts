@@ -5357,9 +5357,17 @@ function setPeerDot(peerEl: HTMLElement, on: boolean) {
   else if (!on && has) prev!.remove();
 }
 function refreshPostalDots() {
-  // the PEER chips only: this session's own end (.notice-src-self) shows its state elsewhere, and a dot that
-  // arrives with the next working frame and leaves on the next rebuild would only flap (T302 review)
-  document.querySelectorAll(".notice-src-chip:not(.notice-src-self)").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p.textContent || "").trim())));
+  // the PEER ends only: this session's own end (.notice-src-self) shows its state elsewhere, and a dot that
+  // arrives with the next working frame and leaves on the next rebuild would only flap (T302 review). The name is read
+  // without its muted host prefix (the working set is keyed by the bare name)
+  document.querySelectorAll(".notice-src-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p as HTMLElement).dataset.name || (p.textContent || "").trim())));
+}
+/** The nodes a PEER's name renders as: the host prefix muted (a peer on another kernel, as the tab wears it), then the name.
+ *  The peer is known by name and host, not by a sid (hostNameNodes reads the host off a sid), so the prefix is built here. */
+function peerNameNodes(name: string, host?: string): Node[] {
+  if (!host) return [document.createTextNode(name)];
+  const h = el("span", "host-prefix"); h.textContent = host + ":";
+  return [h, document.createTextNode(name)];
 }
 
 
@@ -5411,9 +5419,13 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   // colour, which that ruling removed as reading like this session's, is back since 2026-09-11 (the user asked
   // where the tint had gone): styles.css paints the incoming card's ground from its rail, which is the peer's
   // colour here (`rail` below), so nothing more is set on the card. Click a name → that session's tab.
-  const peer = el("span", "notice-src-chip");
-  peer.textContent = ev.peer;
-  if (ev.color) { peer.style.setProperty("--peer-bg", ev.color.bg); peer.style.setProperty("--peer-fg", ev.color.fg); }
+  // T390 (the user 2026-09-12): a session's name is the NAME ITSELF, bold, in the session's identity colour, the way the
+  // awaiting fold names a peer (bg-await-peer): no chip box, no fill, in either theme. The identity colour rides --peer-bg
+  // and the sheet inks the text from it (a relative colour: the cream theme deepens it to read on the card's ground).
+  const peer = el("span", "notice-src-end notice-src-peer");
+  peer.append(...peerNameNodes(ev.peer, ev.peerHost));   // the host prefix muted, as the tab wears it
+  peer.dataset.name = ev.peer;                            // the bare name the working set is keyed by (refreshPostalDots)
+  if (ev.color) peer.style.setProperty("--peer-bg", ev.color.bg);
   makeSessionChip(peer, ev.peer);
   setPeerDot(peer, workingSet.has(ev.peer));   // working dot before the peer name if that session is working
   // the session that OWNS the transcript being built (a comment popover's parent, a subagent viewer's session),
@@ -5426,11 +5438,11 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   if (own && ownId) {
     // this session's own end: its name (the host label muted, as the tab wears it) in its identity colour; a
     // narrow head collapses it to its coloured dot (the container query in styles.css) — both colours still show
-    const self = el("span", "notice-src-chip notice-src-self");
+    const self = el("span", "notice-src-end notice-src-self");
     const nm = el("span", "notice-src-name"); nm.append(...hostNameNodes(own.name, ownId));
     self.appendChild(nm);
     self.title = own.name;
-    if (own.color) { self.style.setProperty("--peer-bg", own.color.bg); self.style.setProperty("--peer-fg", own.color.fg); }
+    if (own.color) self.style.setProperty("--peer-bg", own.color.bg);
     src.appendChild(document.createTextNode(ev.direction === "in" ? " to " : " from "));
     src.appendChild(self);
   }
