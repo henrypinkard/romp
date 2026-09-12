@@ -922,9 +922,11 @@ class KernelFolds(Base):
         self.assertEqual(sorted(em.checkpoint_converge_candidates()), sorted([self.leaf, leaf2]))
         saved = km.CKPT_CONVERGE_BYTES; km.CKPT_CONVERGE_BYTES = 1
         self.addCleanup(setattr, km, "CKPT_CONVERGE_BYTES", saved)
+        km._begin_checkpoint_cycle()                                  # the cycle's start hands the pass its budget (T362)
         self.assertEqual(km._converge_checkpoints(TS0 + 600), 1, "the first always writes; the budget stops the second")
         self.assertEqual(em.checkpoint_stats()["converge"]["deferred"], 1)
         self.assertEqual(len(em.checkpoint_converge_candidates()), 1)
+        km._begin_checkpoint_cycle()
         self.assertEqual(km._converge_checkpoints(TS0 + 601), 1, "the next pass takes it")
         self.assertEqual(em.checkpoint_converge_candidates(), [])
 
@@ -1244,33 +1246,127 @@ class KernelFolds(Base):
 
     def test_the_agent_files_gist_drop_writes_its_document_too(self):
         self._converge_world({}, quiescent=True)
-        d = self.doc(self.agent); d["folds"].pop("agentGist", None); em._ckpt_file(self.agent).write_text(json.dumps(d))
         old = time.time() - 600; os.utime(self.agent, (old, old))
+        d = self.doc(self.agent); d["folds"].pop("agentGist", None); d["mtime"] = os.stat(self.agent).st_mtime   # the idle file's
+        em._ckpt_file(self.agent).write_text(json.dumps(d))                                                     #  document, as written
         self.fresh_process()
         km._agent_steps(self.agent)                                   # a whole read (no document entry), then the drop writes
         self.assertIn("state", self.doc(self.agent)["folds"].get("agentGist", {}))
         self.assertEqual(em.checkpoint_stats()["converge"]["dropWrites"], 1)
 
-    def test_a_drop_over_the_cycles_byte_budget_is_deferred_with_the_entry_held(self):
-        """The budget is shared with the converge pass: over it, the drop is deferred by one cycle (the entry stays, the read is
-        not lost), counted; the next cycle writes and pops."""
+    def test_a_drop_over_the_cycles_byte_budget_is_deferred_and_paid_by_the_next_cycles_start(self):
+        """The budget is shared with the converge pass: over it, the write and the drop are deferred (the entry stays, the read
+        is not lost), counted. Round one, low 2: the population this serves (a returned subagent's transcript) is never folded
+        again, so the drop owed is paid at the next cycle's START with the room that cycle has, oldest first, no fold needed;
+        an owed path whose file is gone is forgotten."""
         self._converge_world({"bgJudge": "missing", "agentLaunches": "missing"}, quiescent=True)
+        old = time.time() - 600; os.utime(self.agent, (old, old))
+        d = self.doc(self.agent); d["folds"].pop("agentGist", None); d["mtime"] = os.stat(self.agent).st_mtime
+        em._ckpt_file(self.agent).write_text(json.dumps(d))
         jd._bg_scan(self.leaf)
         saved = km.CKPT_CONVERGE_BYTES; km.CKPT_CONVERGE_BYTES = 1
         self.addCleanup(setattr, km, "CKPT_CONVERGE_BYTES", saved)
-        km._converge_checkpoints(TS0 + 600)                           # the cycle begins with a one-byte budget (the pass refuses the quiescent leaf)
-        km._agent_launch_state(self.leaf)
+        km._begin_checkpoint_cycle()                                  # the cycle begins with a one-byte budget
+        km._agent_launch_state(self.leaf); km._agent_steps(self.agent)
         with em._JSONL_CACHE_LOCK:
             self.assertIsNotNone(em._JSONL_CACHE.get(self.leaf), "deferred: the entry is held")
         cv = em.checkpoint_stats()["converge"]
-        self.assertEqual((cv["dropWrites"], cv["dropDeferred"]), (0, 1))
+        self.assertEqual((cv["dropWrites"], cv["dropDeferred"]), (0, 2))
+        self.assertEqual(list(em._DROP_OWED), [self.leaf, self.agent], "owed, oldest first")
+        km._begin_checkpoint_cycle()                                  # still a one-byte budget: held again, counted again
+        self.assertEqual(em.checkpoint_stats()["converge"]["dropDeferred"], 4)
+        os.unlink(self.agent)
         km.CKPT_CONVERGE_BYTES = saved
-        km._converge_checkpoints(TS0 + 601)                           # the next cycle begins with the normal budget
-        km._agent_launch_state(self.leaf)
-        self.assertEqual(em.checkpoint_stats()["converge"]["dropWrites"], 1)
+        km._begin_checkpoint_cycle()                                  # the next cycle's start pays what is owed: no fold over the file
+        cv = em.checkpoint_stats()["converge"]
+        self.assertEqual((cv["dropWrites"], cv["dropDeferred"]), (1, 4))
         self.assertIn("bgJudge", self.doc(self.leaf)["folds"])
         with em._JSONL_CACHE_LOCK:
             self.assertIsNone(em._JSONL_CACHE.get(self.leaf), "written, then popped")
+        self.assertEqual(list(em._DROP_OWED), [], "paid, and the deleted file's path forgotten")
+        import inspect
+        src = inspect.getsource(km._pusher_cycle_jobs)
+        self.assertLess(src.index("_begin_checkpoint_cycle()"), src.index("_push_all("), "the cycle's budget begins before its builds")
+        self.assertNotIn("checkpoint_cycle_begin", inspect.getsource(km._converge_checkpoints), "the pass shares the cycle, it does not begin it")
+
+    def test_the_cycle_budget_stands_before_the_first_cycle_begins(self):
+        """Round one, low 3: the boot's first cycle charged no budget (no cap until the pass, near the cycle's end, began one), so
+        the drops this change exists for were uncapped where the volume is. The default cap stands from import and after a
+        fresh process, and the kernel's knob is that default."""
+        self.assertEqual(em._CKPT_CYCLE_CAP_DEFAULT, km.CKPT_CONVERGE_BYTES)
+        self.fresh_process()
+        self.assertTrue(em.checkpoint_cycle_take(1)); self.assertFalse(em.checkpoint_cycle_take(em._CKPT_CYCLE_CAP_DEFAULT))
+
+    def test_the_pass_off_switch_covers_the_drop_write(self):
+        """Round one, low 4: ROMP_CKPT_CONVERGE_MS=0 stopped the pass and not the drop write. Off, the drop pops as before T362:
+        no write, no deferral, no held entry."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "missing"}, quiescent=True)
+        jd._bg_scan(self.leaf); seq = self.doc(self.leaf)["seq"]
+        saved = km.CKPT_CONVERGE_MS; km.CKPT_CONVERGE_MS = 0.0
+        self.addCleanup(setattr, km, "CKPT_CONVERGE_MS", saved)
+        km._begin_checkpoint_cycle(); km._agent_launch_state(self.leaf)
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNone(em._JSONL_CACHE.get(self.leaf), "popped, not held")
+        cv = em.checkpoint_stats()["converge"]
+        self.assertEqual((cv["dropWrites"], cv["dropDeferred"], self.doc(self.leaf)["seq"]), (0, 0, seq))
+
+    def test_a_zero_byte_budget_pops_without_holding(self):
+        """Round one, low 4: ROMP_CKPT_CONVERGE_MB=0 deferred every drop and HELD the entries, worse than a no-op."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "missing"}, quiescent=True)
+        jd._bg_scan(self.leaf); seq = self.doc(self.leaf)["seq"]
+        saved = km.CKPT_CONVERGE_BYTES; km.CKPT_CONVERGE_BYTES = 0
+        self.addCleanup(setattr, km, "CKPT_CONVERGE_BYTES", saved)
+        km._begin_checkpoint_cycle(); km._agent_launch_state(self.leaf)
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNone(em._JSONL_CACHE.get(self.leaf), "popped, not held")
+        cv = em.checkpoint_stats()["converge"]
+        self.assertEqual((cv["dropWrites"], cv["dropDeferred"], self.doc(self.leaf)["seq"]), (0, 0, seq))
+
+    def test_a_stateless_document_cursor_never_replaces_a_held_state_after_the_drop(self):
+        """Round one, medium: after the drop popped the entry, the next fold's stale-generation restore took the document's cursor
+        even without a state (an over-cap, cold or bare legacy write), so a complete state this process held was replaced by a
+        tail-only one that answered empty, forever (the pass refuses a quiescent leaf, an idle session never settles for the
+        heal; 9 of 481 live documents carry such a cursor). A stateless document cursor against a held state is refused: the
+        fold reads whole and answers what it held, as before."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "missing"}, quiescent=True)
+        jd._bg_scan(self.leaf)
+        held = km._agent_launch_state(self.leaf)                      # the refold's answer; the drop writes and pops
+        self.assertTrue(held["launched"], "the fixture's leaf holds a launch")
+        d = self.doc(self.leaf); d["folds"]["agentLaunches"] = {"count": d["folds"]["agentLaunches"]["count"]}   # a bare legacy cursor
+        em._ckpt_file(self.leaf).write_text(json.dumps(d))
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNone(em._JSONL_CACHE.get(self.leaf))
+        read0 = em.read_bytes_report().get(self.leaf, 0); size = os.path.getsize(self.leaf)
+        again = km._agent_launch_state(self.leaf)
+        self.assertEqual(again["launched"], held["launched"], "the held launch, not an empty tail-only state")
+        self.assertGreaterEqual(em.read_bytes_report().get(self.leaf, 0) - read0, size, "read whole, as the base did")
+        self.assertEqual(km._agent_launch_state(self.leaf)["launched"], held["launched"], "and it stays")
+
+    def test_the_post_drop_fold_answers_from_the_document_over_a_tail_read(self):
+        """Round one, low 5: the fold after a drop takes its cursor from the DOCUMENT (a state planted there is the answer) over a
+        tail read, and writes nothing."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "missing"}, quiescent=True)
+        jd._bg_scan(self.leaf); km._agent_launch_state(self.leaf)   # written, popped
+        d = self.doc(self.leaf)
+        d["folds"]["agentLaunches"]["state"] = em._ckpt_encode({"launched": {"planted": {"t": 1}}, "settled": set()})
+        em._ckpt_file(self.leaf).write_text(json.dumps(d))
+        read0 = em.read_bytes_report().get(self.leaf, 0); size = os.path.getsize(self.leaf)
+        self.assertEqual(km._agent_launch_state(self.leaf)["launched"], {"planted": {"t": 1}}, "the document's cursor is the fold's answer")
+        self.assertLess(em.read_bytes_report().get(self.leaf, 0) - read0, size / 2, "over a tail read")
+        self.assertEqual((em.checkpoint_stats()["converge"]["dropWrites"], self.doc(self.leaf)["seq"]), (1, d["seq"]), "and no rewrite")
+
+    def test_a_cold_fold_at_the_drop_is_not_rewritten_every_fold(self):
+        """Round one, low 1: the rule stayed true forever for a fold cold for want of a state, so a quiescent file whose document
+        held the dropping fold's cursor without a state was rewritten at every fold (seq 2, 3, 4). A write that cannot improve
+        the document (the cold fold is written cold again) is not needed; the fold is left for the heal."""
+        self._converge_world({"agentLaunches": "bare"}, quiescent=True)
+        km._session_meta(self.leaf)                                   # the boot: the tail
+        seq = self.doc(self.leaf)["seq"]
+        for k in range(3):
+            km._begin_checkpoint_cycle(); km._agent_launch_state(self.leaf); km._converge_checkpoints(TS0 + 600 + k)
+        self.assertEqual(em.cold_fold_reasons(self.leaf), {"agentLaunches": "cold"}, "restored cold at the cut, left for the heal")
+        self.assertEqual((self.doc(self.leaf)["seq"], em.checkpoint_stats()["converge"]["dropWrites"]), (seq, 0),
+                         "nothing to improve on the document: no write")
 
     def test_one_rule_for_the_writer_the_carry_the_candidates_and_the_drop(self):
         import inspect
@@ -1281,6 +1377,7 @@ class KernelFolds(Base):
         self.assertIn("_cursor_recordable(", inspect.getsource(em._path_needs_write))
         src = inspect.getsource(em._drop_quiescent_entry)
         self.assertLess(src.index("checkpoint_write("), src.index("with _JSONL_CACHE_LOCK"), "the write before the reader's lock")
+        self.assertIn("checkpoint_cycle_take(", src); self.assertNotIn("checkpoint_cycle_room(", src)   # the room check and the charge are one step
 
     def test_perf_carries_the_checkpoint_counters_and_the_kernel_wires_the_three_events(self):
         snap = km._PERF_STATS.snapshot()

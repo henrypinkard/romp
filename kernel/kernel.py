@@ -9824,7 +9824,8 @@ _CKPT_SETTLE_SEEN = {}          # sid -> (turn-end key, states-log stat) at the 
 _CKPT_PERIODIC_SEEN = {}        # sid -> (leaf stat, monotonic time) at the last PERIODIC write (see _persist_checkpoints)
 CKPT_PERIOD_S = float(os.environ.get("ROMP_CKPT_PERIOD_S", "30"))   # a session mid-turn for hours writes at least this often
 CKPT_CONVERGE_MS = float(os.environ.get("ROMP_CKPT_CONVERGE_MS", "150"))          # the converge pass's wall budget per pusher cycle (T360)
-CKPT_CONVERGE_BYTES = int(float(os.environ.get("ROMP_CKPT_CONVERGE_MB", "8")) * 1024 * 1024)   # ...and its bytes (documents written plus leaves read for a heal)
+CKPT_CONVERGE_BYTES = em._CKPT_CYCLE_CAP_DEFAULT   # ...and its bytes (documents written plus leaves read for a heal), the cycle budget the
+#                                                     quiescence drop's writes share (T362); 0 turns those writes off too (the drop then pops as before)
 
 
 def _session_fold_files(sid, leaf):
@@ -9908,6 +9909,16 @@ def _stored_tree(path, sid):
 _CKPT_JUST_WRITTEN = set()          # the paths the settle write took this cycle; the converge pass skips them (T360 review, low 4)
 
 
+def _begin_checkpoint_cycle():
+    """The pusher cycle's START (T362 round one, lows 2 and 3): the cycle's checkpoint byte budget is whole again, shared by the
+    builds' quiescence-drop writes and the converge pass near the cycle's end (the boot's first builds are capped where the
+    volume is; before, the pass began the cycle and the first cycle's drops ran uncapped), and the drops an earlier cycle
+    deferred are paid with this cycle's room, oldest first, no fold over their files needed. The pass's off switch
+    (ROMP_CKPT_CONVERGE_MS=0) covers the drop write: the cycle begins with no budget, and the drop pops as before T362."""
+    em.checkpoint_cycle_begin(CKPT_CONVERGE_BYTES if CKPT_CONVERGE_MS > 0 else 0)
+    em.checkpoint_pay_owed_drops()
+
+
 def _converge_checkpoints(now):
     """The converge pass (T360), one per pusher cycle after the settle writes: the dirty documents that lack a complete
     state this process now holds (em.checkpoint_converge_candidates: a fold missing from the document because it never ran
@@ -9919,7 +9930,6 @@ def _converge_checkpoints(now):
     no read), so one write carries all five. For another file a tail-only cursor is dropped so the write leaves it out and
     its next run reads the small file whole once. A document already carrying every fold that ran is never a candidate,
     so an idle session's document is written once and then left alone. Returns the documents written."""
-    em.checkpoint_cycle_begin(CKPT_CONVERGE_BYTES)         # the cycle's checkpoint byte budget, shared with the quiescence drop (T362)
     if CKPT_CONVERGE_MS <= 0 or not em.checkpoint_has_work():
         _CKPT_JUST_WRITTEN.clear()
         return 0                                           # off (ROMP_CKPT_CONVERGE_MS=0), or nothing dirty and nothing cold: a quiet
@@ -48642,6 +48652,10 @@ def _pusher_cycle():
 
 def _pusher_cycle_jobs(now, live_map, any_client):
     _t_jobs = time.monotonic()            # /perf: this function minus the _push_all below is the `jobs` stage
+    try:                                  # the cycle's checkpoint byte budget, whole again, and the drops owed from the last one
+        _begin_checkpoint_cycle()         # (T362): before the builds below, whose quiescence drops write against it
+    except Exception:
+        sys.stderr.write("checkpoint-cycle: %s\n" % traceback.format_exc())
     _t_push = 0.0
     try:                                  # parked ops deliver on the settle EVENT this cycle was woken for
         _apply_pending_ops()              # (_wake_kernel, /tick, a park/cancel/move, the 0.5 s backstop) —

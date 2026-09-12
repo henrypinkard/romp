@@ -1010,16 +1010,26 @@ that ran. An idle session's leaf, which no settle reaches and the pass must
 refuse, converges at the reader's quiescence drop instead: when a fold that
 drops quiescent files ends over a file unchanged for two minutes, its document
 is written from the entry in memory (the boot's own read, whichever fold made
-it) if it lacks anything the process holds (the pass's rule, `_path_needs_write`,
-with a dirty path counting here and not for the pass), before the entry is
-popped, and on a hit or a restore at the witness the entry stays as it always
-has; the write is charged to the cycle's byte budget shared with the pass, and
-over the budget the write and the drop wait one cycle with the entry held
-(`converge.dropDeferred`), the drop then owed to the next fold over the file.
-A document already whole is never rewritten at a later drop
-(`converge.dropWrites` counts the writes), and a dropped file's next fold
-restores its cursor from the document over a tail read instead of reading the
-file whole. A leaf unchanged for longer than the reader keeps a quiescent
+it) if a write would improve it with a state the process holds (the pass's
+rule, `_path_needs_write`; a dirty path counts here and not for the pass, and a
+fold cold for want of a state counts for the pass, which heals it, and not
+here, where it would only be written cold again), before the entry is popped,
+and on a hit or a restore at the witness the entry stays as it always has. The
+write is charged to the pusher cycle's byte budget, which the kernel begins at
+each cycle's start and the pass shares near its end; over the budget the write
+and the drop wait with the entry held (`converge.dropDeferred`), the drop then
+owed and paid at the next cycle's start with the room that cycle has, oldest
+first, or by the next fold over the file, whichever comes first. A document
+already whole is never rewritten at a later drop (`converge.dropWrites` counts
+the writes), and a dropped file's next fold restores its cursor from the
+document over a tail read instead of reading the file whole, provided the
+document's cursor carries a state: against a state the process holds, a cursor
+without one (an over-cap, cold or legacy bare write) is refused and the fold
+reads whole as before, so a complete state is never replaced by a tail-only one.
+The knobs: `ROMP_CKPT_CONVERGE_MS=0` turns the pass off and the drop write with
+it (the drop then pops as it did before the write existed); `ROMP_CKPT_CONVERGE_MB`
+is the cycle budget both charge, and `0` turns the drop write off the same way
+rather than deferring every drop. A leaf unchanged for longer than the reader keeps a quiescent
 file's whole entry (two minutes) is refused by the pass and counted under
 `quiescent`: its heal would read the file whole every cycle and the write
 would find no entry (the boot's cold refold or the next settle converges it);
