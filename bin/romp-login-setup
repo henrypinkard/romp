@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# usage: romp-login-setup <1password-vault> <label> [--check]
+set -euo pipefail; umask 077
+VAULT="${1:?usage: $0 <1password-vault> <label> [--check]}"; LABEL="${2:?usage: $0 <1password-vault> <label> [--check]}"
+work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+CLAUDE_CONFIG_DIR="$work/claude" claude setup-token </dev/tty 2>/dev/tty | tee "$work/out" | awk '{ gsub(/sk-ant-oat01-[A-Za-z0-9_-]+/, "<token captured>"); print; fflush() }'
+grep -o 'sk-ant-oat01-[A-Za-z0-9_-]*' "$work/out" | head -1 > "$work/token" || true
+[ -s "$work/token" ] || { echo "no token was printed" >&2; exit 1; }
+printf '{"title":"%s","category":"API_CREDENTIAL","fields":[{"id":"credential","type":"CONCEALED","label":"credential","value":"%s"}]}' "$LABEL" "$(cat "$work/token")" > "$work/item.json"
+op item create --vault "$VAULT" --template "$work/item.json" >/dev/null
+romp login add "$LABEL" --op "op://$VAULT/$LABEL/credential"
+[ "${3:-}" = "--check" ] || exit 0
+printf '#!/bin/sh\nexec op read --no-newline "op://%s/%s/credential"\n' "$VAULT" "$LABEL" > "$work/helper"; printf '#!/bin/sh\necho not-a-real-credential\n' > "$work/junk"; chmod 700 "$work/helper" "$work/junk"
+ask() { printf '{"apiKeyHelper":"%s"}' "$1" > "$work/settings.json"; env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN claude -p 'Reply with the single word ok and nothing else.' --settings "$work/settings.json"; }
+ask "$work/helper" 2>/dev/null | grep -qi ok || { echo "check failed: the stored token was not accepted" >&2; exit 1; }
+! ask "$work/junk" >/dev/null 2>&1 || { echo "check failed: a junk helper was also accepted" >&2; exit 1; }
+echo "check passed"
