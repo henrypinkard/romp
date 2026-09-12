@@ -45,7 +45,7 @@ test("the click acknowledges immediately and failures state why — both self-re
   assert.match(PREVIEW, /\(e\) => say\(ICON_CROSS, "Copy failed: " \+ \(\(e && \(e as Error\)\.message\) \|\| String\(e\)\), "err", 3000\)\);/);
   assert.match(PREVIEW, /const say = \(icon: string, word: string, cls: string, ms: number \| null\) => \{\s*\n\s*btn\.innerHTML = icon; btn\.title = word; btn\.setAttribute\("aria-label", word\);/);
   // the viewer's click-safety (T385 review): the press dims in its own tick, and ONE restore timer is cleared on every swap
-  assert.match(PREVIEW, /ev\.stopPropagation\(\);\s*\/\/ copying must not also dismiss\s*\n\s*btn\.classList\.add\("fileview-busy"\);/, "the same-tick acknowledgement");
+  assert.match(PREVIEW, /ev\.stopPropagation\(\);\s*\/\/ copying must not also dismiss\s*\n\s*say\(COPY_SVG, "Copy image", "", null\);[^\n]*\n\s*btn\.classList\.add\("fileview-busy"\);/, "the same-tick acknowledgement, after the one state-setter reset the glyph and cleared a pulse's pending restore (review, round two)");
   assert.match(PREVIEW, /btn\.classList\.remove\("ok", "err", "fileview-busy"\); if \(cls\) btn\.classList\.add\(cls\);/);
   assert.match(PREVIEW, /if \(copyTimer\) \{ window\.clearTimeout\(copyTimer\); copyTimer = null; \}\s*\n\s*if \(ms !== null\) copyTimer = window\.setTimeout\(\(\) => say\(COPY_SVG, "Copy image", "", null\), ms\);/, "one timer, cleared on every swap");
   assert.match(PREVIEW, /ev\.stopPropagation\(\);\s*\/\/ copying must not also dismiss/);

@@ -73,7 +73,7 @@ const ctx = await browser.newContext({ viewport: { width: 1100, height: 640 } })
 const page = await ctx.newPage();
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
-await page.waitForFunction(() => { const is = Array.from(document.querySelectorAll(".path-full-img")); return is.length >= 2 && is.every((i) => i.complete && i.naturalWidth > 0); }, null, { timeout: 30000 });
+await page.waitForFunction(() => { const is = Array.from(document.querySelectorAll(".path-full-img")); return is.length >= 3 && is.every((i) => i.complete && i.naturalWidth > 0); }, null, { timeout: 30000 });
 await page.waitForTimeout(200);
 const r1 = (v) => Math.round(v * 10) / 10;
 const rectOf = "(e) => { const b = e.getBoundingClientRect(); const r = (v) => Math.round(v * 10) / 10; return { top: r(b.top), bottom: r(b.bottom), left: r(b.left), right: r(b.right), w: r(b.width), h: r(b.height) }; }";
@@ -110,6 +110,8 @@ const measure = (label) => page.evaluate(([label, rectSrc, dressSrc]) => {
     barClasses: bar.className, barBorderBottom: getComputedStyle(bar).borderBottomColor, barPadding: getComputedStyle(bar).padding,
     nameMinWidth: (bar.querySelector(".fileview-name") ? getComputedStyle(bar.querySelector(".fileview-name")).minWidth : ""), barContain: getComputedStyle(bar).contain,
     baseOverflow: base ? getComputedStyle(base).overflow : "", imgNatural: img.naturalWidth,
+    title2: { baseWhole: base ? base.scrollWidth <= base.clientWidth + 0.5 : null, dirClipped: dir ? dir.scrollWidth > dir.clientWidth + 0.5 : null, baseW: base ? base.getBoundingClientRect().width : null },
+    actsRect: rect(acts), floor: getComputedStyle(inner).minWidth,
     title: { dir: dir && dir.textContent, base: base && base.textContent, full: (bar.querySelector(".fileview-name") || bar.querySelector(".romp-lightbox-name") || {}).title || "", baseColor: base && getComputedStyle(base).color, dirColor: dir && getComputedStyle(dir).color },
     controls, actsChildren: acts ? Array.from(acts.children).map((c) => c.className) : [], bodyLight: document.body.classList.contains("theme-light") };
 }, [label, rectOf, dressOf]);
@@ -134,6 +136,17 @@ await page.waitForSelector("#romp-lightbox .romp-lightbox-bar", { timeout: 15000
 await page.waitForFunction(() => { const i = document.querySelector("#romp-lightbox .romp-lightbox-img"); return !!(i && i.complete && i.naturalWidth > 0); }, null, { timeout: 15000 });
 await page.waitForTimeout(150);
 out.narrow = await measure("narrow");
+await page.keyboard.press("Escape"); await page.waitForTimeout(120);
+// the TINY picture: 48px, narrower than the three controls; the column keeps a floor of their width and every control stays inside it
+await page.click(".path-full-img >> nth=2");
+await page.waitForSelector("#romp-lightbox .romp-lightbox-bar", { timeout: 15000 });
+await page.waitForFunction(() => { const i = document.querySelector("#romp-lightbox .romp-lightbox-img"); return !!(i && i.complete && i.naturalWidth > 0); }, null, { timeout: 15000 });
+await page.waitForTimeout(150);
+out.tiny = await measure("tiny");
+if (cfg.shots) {
+  const clip = await page.evaluate(() => { const b = document.querySelector("#romp-lightbox .romp-lightbox-inner").getBoundingClientRect(); return { x: Math.max(0, b.left - 24), y: Math.max(0, b.top - 24), width: Math.min(window.innerWidth, b.width + 48), height: Math.min(window.innerHeight, b.height + 48) }; });
+  await page.screenshot({ path: cfg.shots + "-tiny-dark.png", clip });
+}
 if (cfg.shots) {
   const clip = await page.evaluate(() => { const b = document.querySelector("#romp-lightbox .romp-lightbox-inner").getBoundingClientRect(); return { x: Math.max(0, b.left - 24), y: Math.max(0, b.top - 24), width: Math.min(window.innerWidth, b.width + 48), height: Math.min(window.innerHeight, b.height + 48) }; });
   await page.screenshot({ path: cfg.shots + "-narrow-dark.png", clip });
@@ -186,6 +199,7 @@ class ServedLightboxBar(unittest.TestCase):
         cls.figure = os.path.join(cwd, "docs", "figure.png")
         Path(cls.figure).write_bytes(_png())
         Path(cwd, "docs", "narrow.png").write_bytes(_png(120, 80, (4, 120, 178)))   # narrower than the bar's controls: the picture must still set the column
+        Path(cwd, "docs", "tiny.png").write_bytes(_png(48, 32, (178, 60, 4)))        # narrower than the controls themselves: the column keeps a floor of their width
         proj = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cwd)))
         os.makedirs(proj, exist_ok=True)
         t0 = int(time.time()) - 900
@@ -197,7 +211,7 @@ class ServedLightboxBar(unittest.TestCase):
                  "message": {"role": "user", "content": "where is the figure for the notes-api guide?"}},
                 {"type": "assistant", "timestamp": iso(t0 + 5), "uuid": "a1", "parentUuid": "u1", "sessionId": SID,
                  "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn",
-                             "content": [{"type": "text", "text": "The guide's figure is at docs/figure.png and its thumbnail at docs/narrow.png."}]}}]
+                             "content": [{"type": "text", "text": "The guide's figure is at docs/figure.png, its thumbnail at docs/narrow.png and its icon at docs/tiny.png."}]}}]
         Path(proj, SID + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
         cls.port, cls.token = _free_port(), "testtok-lightbox"
@@ -329,6 +343,34 @@ class ServedLightboxBar(unittest.TestCase):
         for c in m["controls"]:
             self.assertGreaterEqual(c["rect"]["left"], m["inner"]["left"] - 0.5, "every control stays inside the column: " + json.dumps(c["rect"]))
             self.assertLessEqual(c["rect"]["right"], m["inner"]["right"] + 0.5, "every control stays inside the column: " + json.dumps(c["rect"]))
+
+    def test_a_picture_narrower_than_the_controls_gets_a_column_floored_at_their_width_with_every_control_inside(self):
+        """Round two's low: at 48px the download and copy group sat 18px outside the column to the left. The column keeps a floor
+        of the actions' measured width (a variable the lightbox sets when it mounts), so the controls stay inside it and the
+        picture centres under them."""
+        m = self._run()["tiny"]
+        table = "\n  " + json.dumps({"inner": m["inner"], "img": m["img"], "acts": m["actsRect"], "floor": m["floor"], "controls": [c["rect"] for c in m["controls"]]})
+        self.assertEqual(m["imgNatural"], 48)
+        self.assertAlmostEqual(m["img"]["w"], 48, delta=0.5, msg="the tiny picture at its own size" + table)
+        group = [c for c in m["controls"] if "fileview-group" in c["group"]]
+        need = sum(c["rect"]["w"] for c in group) + 4 * (len(group) - 1)
+        self.assertGreaterEqual(m["inner"]["w"], need - 0.5, "the column is at least as wide as the download-and-copy group" + table)
+        self.assertNotEqual(m["floor"], "0px", "the floor variable is set (the lightbox measured its group)" + table)
+        for c in m["controls"]:
+            self.assertGreaterEqual(c["rect"]["left"], m["inner"]["left"] - 0.5, "every control inside the column: " + json.dumps(c["rect"]) + table)
+            self.assertLessEqual(c["rect"]["right"], m["inner"]["right"] + 0.5, "every control inside the column: " + json.dumps(c["rect"]) + table)
+        centre = (m["img"]["left"] + m["img"]["right"]) / 2
+        self.assertAlmostEqual(centre, (m["inner"]["left"] + m["inner"]["right"]) / 2, delta=1.5, msg="the picture centres in the wider column" + table)
+
+    def test_under_a_narrow_picture_the_basename_reads_whole_and_the_directory_carries_the_ellipsis(self):
+        """Round two's low: both halves shared the deficit (do... narrow.p...), against the viewer's rule that only the directory
+        truncates. The directory absorbs the deficit first; the basename shrinks only when it does not fit alone."""
+        m = self._run()["narrow"]
+        table = "\n  " + json.dumps(m["title2"]) + " " + json.dumps(m["title"])
+        self.assertTrue(m["title2"]["baseWhole"], "the basename is not clipped at 120px" + table)
+        self.assertTrue(m["title2"]["dirClipped"], "…the directory carries the ellipsis" + table)
+        t = self._run()["tiny"]
+        self.assertEqual(t["title2"]["dirClipped"], True, "at 48px the directory is gone to its ellipsis first: " + json.dumps(t["title2"]))
 
     def test_escape_closes_the_lightbox(self):
         self.assertTrue(self._run()["afterEscape"]["gone"])
