@@ -298,13 +298,13 @@ class SurfacesPinTheOnYouTreatment(unittest.TestCase):
                       "client ask share this one decision")
 
     def test_the_card_floors_to_needs_you(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('or aerr.get("authErr") or aerr.get("refusal"))))', src,
                       "api_block must include the refusal — otherwise the card sits in Working "
                       "with the nudge suppressed and nothing able to move it")
 
     def test_the_card_names_the_real_remedy(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('"refusal": bool(aerr.get("refusal"))', src)
         self.assertIn("the model's safeguards refused this prompt — rewrite it or drop this thread",
                       src)

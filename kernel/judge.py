@@ -9117,7 +9117,10 @@ class _PlacementIndex:
     """The placement lookup _placed_key makes, built ONCE per planner call (T377 review, medium 2): the recorded keys by their
     timestamp-invariant form, so the guard per segment is a dictionary lookup and not a walk of every recorded key (with 20
     unplaced of 300 segments over 2,300 keys the nudge gate's derivation had grown twelve-fold). The episode floor is taken
-    once for the index (handed in by the pass, else derived from the first key that needs it) and never moves within it."""
+    once for the index (handed in by the pass, else derived from the first key that needs it) and never moves within it.
+    The build normalizes every recorded key once per plan_units call (about 2 ms at 2,300 keys; the nudge gate's derivation
+    sits at 1.4 to 2.1 times the pre-T377 base where the walk was 10 to 100 times); not memoized across calls on purpose: the
+    consumer mutates the placements dict between calls, and a stale fuzzy row would dedup a real unit away (review, low 6)."""
 
     def __init__(self, placements, live, floor=_UNSET_FLOOR):
         self.placements, self.live, self.floor = placements, live, floor
@@ -9188,7 +9191,8 @@ def unit_text_for(seg, phase):
         ptext = _prompt_text(seg["atoms"])
         return _strip_cmd_prefix(ptext, seg) if _seg_command(seg) else ptext
     if phase == "work":
-        return _work_note(seg) + (_seam_text(seg) or "") if _seam_text(seg) else ""
+        t = _seam_text(seg)
+        return (_work_note(seg) + t) if t else ""
     return _seam_text(seg)
 
 
@@ -9342,7 +9346,8 @@ def plan_units(session, store=None, floor=_UNSET_FLOOR):
                 _put("nudge", _wt, False, followup)
             else:
                 prefix = _work_note(seg)                  # a kernel notice woke this stretch, or the cleared-cards wrap-up
-                _put("work", (lambda: prefix + _wt()) if prefix else _wt, human, followup)   # ENDED segment → WORK-run
+                _put("work", (lambda: (prefix + _wt()) if _wt() else "") if prefix else _wt, human, followup)   # ENDED segment →
+                #                                                                    WORK-run; a note alone is no unit (review, low 3)
     return out
 
 
@@ -11305,12 +11310,14 @@ def _plan_session(fsid, path, now):
         if _placed_key(store["placements"], _unit_key(seg_id, phase), live, floor=floor):
             continue                                  # placed while THIS pass applied an earlier unit — the
         if text is None:                              # yielded as placed (no text read) yet planned here: the text is read now,
-            seg = seg_by_id.get(seg_id)               #  lazily, never None to the model (T377 review, medium 1)
-            if seg is None:
+            seg = seg_by_id.get(seg_id)               #  lazily, never None to the model (T377 review, medium 1), and the quote with
+            if seg is None:                           #  it, so a node minted on this branch carries the trigger's verbatim head
                 continue
             text = unit_text_for(seg, phase)
             if not text:
                 continue
+            if vq is None:
+                vq = _mint_quote(seg)
         #                                               apply loop must uphold the same idempotence the
         #                                               collection loop checked at pass START (2026-07-06)
         away = _rewound_away(fsid, path, trig) if trig else False

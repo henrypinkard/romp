@@ -139,13 +139,13 @@ class BuildFeedWiring(_Base):
     never was the problem there)."""
 
     def test_the_item_ships_the_derived_title_and_badge(self):
-        src = getsource(km.build_feed)
+        src = getsource(km._feed_session_entry)
         self.assertIn("handoff_to, card_text = _handoff_card_fields(nodes, nid)", src)
         self.assertIn('"text": card_text', src)
         self.assertIn('**({"handoffTo": handoff_to} if handoff_to else {})', src)
 
     def test_nested_tree_rows_keep_their_raw_text(self):
-        src = getsource(km.build_feed)
+        src = getsource(km._feed_session_entry)
         self.assertIn('"kind": "handoff" if _ho_sid else "ask", "text": nd["text"]', src,
                       "flatten's rows are untouched — nested handoff rows render as before")
 

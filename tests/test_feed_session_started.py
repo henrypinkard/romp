@@ -390,7 +390,7 @@ class AwaitingPanel(unittest.TestCase):
         self.assertFalse(km._bg_is_agent("local_bash"))
         # the feed's cards are goal nodes only: the card loop reads children[None], nothing else
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn("for nid in children.get(None, [])", src)
         self.assertNotIn("local_workflow", src.split("for nid in children.get(None, [])")[0].split("healed = _heal_session_tops")[0][-4000:],
                          "no card is built from a workflow row")

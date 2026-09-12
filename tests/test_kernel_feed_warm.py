@@ -25,7 +25,8 @@ km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 class FeedCacheOnly(unittest.TestCase):
     def test_build_feed_reads_the_parse_cache_only_never_a_cold_parse(self):
-        src = inspect.getsource(km.build_feed)
+        src = (inspect.getsource(km.build_feed) + inspect.getsource(km._feed_session_key)
+               + inspect.getsource(km._feed_session_entry))   # T368: the loop body and its key builder
         self.assertIn("ps = _parse_cached(s[\"path\"])", src, "the working-dot reads the CACHED parse, no cold parse")
         self.assertIn("cold_parse = True", src)
         self.assertIn("_warm_fleet_bg(now)", src, "an unparsed living session kicks the background warmer")

@@ -43,7 +43,7 @@ test("only the explicit pick switches — the gesture census, both surfaces", ()
 
 test("the offer retires with the window and rides beside the auto-retry, never instead", () => {
   assert.match(KERNEL, /\(w\.get\("resets_at"\) or 0\) > now/, "resets_at passing ends the mint — the deciding event");
-  assert.match(KERNEL, /_cap_off = _cap_switch_offer\(fsid, aerr\) if aerr else None/);
+  assert.match(KERNEL, /_cap_off = _cap_switch_offer\(fsid, aerr, now\) if aerr else None/);   // the build's clock (T368: the memo key reads the same window)
   assert.match(KERNEL, /\*\*\(\{"capOffer": _cap_off\} if _cap_off else \{\}\),/, "sparse — absent payloads are byte-identical");
   // the auto-retry contract is untouched: the retry button (a manual retry, as the chat pane sends) + auto ladder stay
   assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "apiRetry", id: it\.sid, manual: true \}\);/);

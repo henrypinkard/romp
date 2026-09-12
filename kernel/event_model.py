@@ -4917,6 +4917,27 @@ def asm_converge_skip(reason):
         sk[reason] = sk.get(reason, 0) + 1
 
 
+def asm_whole_entries():
+    """The WHOLE (unrestored) assembly entries this process holds, as (leaf path, rompuuid, sdk_human): the parses the boot
+    actually did, whatever the sessions' age. The converge pass enumerates its assembly candidates from these (T382: the
+    discover window's rows left every idle leaf older than 48 hours out, the very population the step targets)."""
+    with _ASM_LOCK:
+        keys = [k for k, e in _ASM_CACHE.items() if e is not None and not e.get("prefix") and not e.get("preTurns")]
+    return [(k[0], k[1], bool(k[2])) for k in keys]
+
+
+def asm_whole_entry_for(leaf_path):
+    """This process's whole assembly entries over `leaf_path` as {rompuuid: set of sdk_human flags}: how the pass names the
+    session of a leaf the discover window no longer lists, and sees which flags it was parsed under (T382; a process can hold
+    two whole entries for one leaf, the judges' flag and the display's)."""
+    real = os.path.realpath(str(leaf_path)); out = {}
+    with _ASM_LOCK:
+        for k, e in _ASM_CACHE.items():
+            if k[0] == real and e is not None and not e.get("prefix") and not e.get("preTurns"):
+                out.setdefault(k[1], set()).add(bool(k[2]))
+    return out
+
+
 def asm_entry_whole(leaf_path, rompuuid, sdk_human=False):
     """Whether this process holds a WHOLE (unrestored) assembly entry for the session over `leaf_path`: the boot's own parse,
     which the converge pass writes an idle leaf's document from (T376); a restored entry's document already stands, and no

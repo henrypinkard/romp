@@ -1440,16 +1440,19 @@ class ViewBuilder(unittest.TestCase):
             "nodes": {top: gn(top, "research the API", None, why="user asked for the research")},
             "placements": {}, "status": {top: "working"}}))
         saved = km._session_awaiting
+        def _feed():
+            km._feed_memo.clear()          # T368: a patched helper is no input the per-session memo can see; make the body run
+            return km.build_feed(NOW)
         try:
             for n in (1, 3):
                 km._session_awaiting = lambda sid, path, idle, stamp=False, n=n: {
                     "kind": "agents", "why": "%d background agent%s still working" % (n, "" if n == 1 else "s"),
                     "since": T0, "count": n}
-                card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+                card = next(a for a in _feed()["asks"] if a["itemId"] == top)
                 self.assertEqual(card["awaiting"]["kind"], "agents")
                 self.assertEqual(card["awaiting"]["count"], n, "the card's count is the snapshot's own")
             km._session_awaiting = lambda sid, path, idle, stamp=False: {"kind": None, "why": "waiting on dispatched work", "since": None}
-            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+            card = next(a for a in _feed()["asks"] if a["itemId"] == top)
             self.assertIsNone(card["awaiting"]["count"], "a source that cannot count ships None, never a guess")
         finally:
             km._session_awaiting = saved
@@ -4856,25 +4859,28 @@ class ViewBuilder(unittest.TestCase):
         # stranding properties to pin are: the echo alone arms nothing, and the watermark always releases.
         g = self._blocked_store()
         saved_p, saved_w = km._last_plain_user_turn_t, km._session_working
+        def _feed():
+            km._feed_memo.clear()          # T368: a patched helper is no input the per-session memo can see; make the body run
+            return km.build_feed(NOW)
         try:
             # NO plain reply since the block in the parse (the slash-command case: its expanded transcript
             # form never text-matches the typed echo, so nothing reads as a reply). Nothing arms the flip,
             # working or idle.
             km._last_plain_user_turn_t = lambda turns: NOW - 300
             km._session_working = lambda turns: False
-            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            card = next(a for a in _feed()["asks"] if a["itemId"] == g)
             self.assertFalse(card["rejudging"], "a stranded echo can never arm rejudging — only a parsed reply can")
             self.assertEqual(card["column"], "needs_input",
                              "so the blocked card stays in Needs-You where the nudge sees it — never stuck in Working")
             # a REAL parsed reply after the block arms the latch even while idle (pending the judge)…
             km._last_plain_user_turn_t = lambda turns: NOW - 10
-            card2 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            card2 = next(a for a in _feed()["asks"] if a["itemId"] == g)
             self.assertTrue(card2["rejudging"], "a parsed plain reply arms the latch — idle or not, it's the judge's move")
             self.assertEqual(card2["column"], "working")
             # …and the unblocker's watermark ALWAYS releases it — advanced on every examine and on the
             # parse give-up path, so the 2026-07-22 stuck-in-Working failure has no revival route.
             g = self._blocked_store(blockCheckT=NOW - 5)
-            card3 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            card3 = next(a for a in _feed()["asks"] if a["itemId"] == g)
             self.assertFalse(card3["rejudging"], "the watermark passed the reply → released")
             self.assertEqual(card3["column"], "needs_input")
         finally:

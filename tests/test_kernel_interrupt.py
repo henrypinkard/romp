@@ -234,7 +234,7 @@ class FeedCardInterruptingBadge(unittest.TestCase):
 
     def test_build_feed_computes_and_gates_the_interrupting_badge(self):
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_key) + inspect.getsource(km._feed_session_entry)   # T368: the key computes it, the body wears it
         self.assertIn("sess_interrupting = _interrupting(fsid, ps or {}, now, tm)", src,
                       "the card reuses the chip's derivation — safe to call again in this push")
         self.assertIn('"interrupting": bool(sess_interrupting', src, "the card carries the in-flight flag")

@@ -88,7 +88,7 @@ class FeedWarmParsesOnlyWhatMoved(unittest.TestCase):
             _join_new(before)
         self.assertEqual(km._built_feed[1], "a built payload", "the feed cache is left alone")
         self.assertEqual(pokes, [], "and the pusher is not woken")
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn("if _warm_wanted(s, tm):", src, "build_feed asks for a warm only for a session the gate would parse")
         self.assertFalse(km._warm_wanted(rows[0], None), "an unmoved idle session is cold by design")
         self.assertTrue(km._warm_wanted(rows[0], {"state": "working"}))

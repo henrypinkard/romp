@@ -1058,7 +1058,7 @@ class Doors(unittest.TestCase):
         self.assertEqual(km._login_refusal_label(row, {"authErr": False, "text": "overloaded"}), "")
         self.assertEqual(km._login_refusal_label({}, err), "")
         src = open(os.path.join(ROOT, "kernel", "kernel.py")).read()
-        self.assertEqual(src.count("_auth_login_lbl = _login_refusal_label(_lm_row, aerr)"), 1,
+        self.assertEqual(src.count("_auth_login_lbl = _login_refusal_label(tm or {}, aerr)"), 1,
                          "the feed's one refusal site reads the gate")
 
 

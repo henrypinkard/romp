@@ -64,7 +64,8 @@ def _tm():
 WIRED = {"_open_top_goal": 1, "_deferral_sweep_tick": 1, "_session_stamp_read": 1, "_owned_yield_why": 1,
          "_msg_sum_scan_session": 1,
          "_bg_placed_tops": 1}   # the placed-launch memo: the shared view, or the store the caller hands in
-WIRED_BOUNDARY = {"build_feed": 1, "build_session": 2, "build_timeline": 1}
+WIRED_BOUNDARY = {"_feed_session_entry": 1, "_feed_peer_facts": 1, "build_session": 2, "build_timeline": 1}   # T368: the feed's
+#   per-session body reads the origin sender's store through the boundary; its memo key's peer facts probe the same boundary
 # TWO-PHASE: the awaiting-lift job takes one shared PROBE (through the boundary: a fault forgets the gate so
 # the next tick retries) and one writer load only when the probe found a lift due (jd.load_goals_or_fault,
 # the same boundary around the writer's loader); the decision body (_lift_decisions) loads nothing and

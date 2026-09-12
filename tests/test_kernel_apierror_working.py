@@ -29,7 +29,7 @@ class ApiErrorWorking(unittest.TestCase):
         self.assertIn('"tooLong": "too long" in text.lower()', src)
 
     def test_only_on_you_errors_floor_the_card_to_needs_input(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         # api_block fires for an ON-YOU api_top — "prompt too long" (compact), a monthly spend cap (raise
         # it, the user 2026-07-14), a spent model allowance, a dead credential (per-session auth, the
         # user 2026-08-08), or a safeguards refusal (the user 2026-08-15); a transient error does NOT
@@ -44,7 +44,7 @@ class ApiErrorWorking(unittest.TestCase):
         # a monthly spend cap is on you (raise it) AND never auto-retried: classified in _api_error_pass,
         # floored to needs-input, and badged with the raise-your-cap guidance (the user 2026-07-14).
         self.assertIn('"spendLimit": _is_spend_limit(text)', inspect.getsource(km._api_error_pass))
-        bf = inspect.getsource(km.build_feed)
+        bf = inspect.getsource(km._feed_session_entry)
         self.assertIn('"spendLimit": bool(aerr.get("spendLimit"))', bf)
         self.assertIn("monthly spend limit — raise it at claude.ai/settings/usage", bf)
         self.assertIn('"apiSpendLimit": bool(aerr and aerr.get("spendLimit"))', inspect.getsource(km.build_session))
@@ -54,7 +54,7 @@ class ApiErrorWorking(unittest.TestCase):
         self.assertIn('"apiTooLong": bool(aerr and aerr.get("tooLong"))', src)
 
     def test_the_card_blocked_badge_distinguishes_tooLong(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('"tooLong": bool(aerr.get("tooLong"))', src)
         self.assertIn("prompt is too long — compact it to continue", src)
 

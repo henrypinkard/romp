@@ -176,6 +176,26 @@ class Collector(unittest.TestCase):
         self.assertGreaterEqual(snap["uptime_s"], 0)
         json.dumps(snap)                                     # the whole thing serializes as-is
 
+    def test_the_feed_build_block_carries_the_per_session_card_memo(self):
+        """builds.feed gained `memo` (T368): the feed's per-session card memo beside the build counters, its hits and
+        misses per session per build, the misses attributed to the key component that moved (plus `cold`), the
+        evictions, and the resident set against its bound (a fraction of the machine's memory, or ROMP_FEED_MEMO_BYTES).
+        The map is the memo's own report, copied per read; tests/test_feed_session_memo.py drives the values."""
+        snap = self.st.snapshot()
+        self.assertEqual(set(snap["builds"]["feed"]), {"cached", "built", "ms", "memo"})
+        memo = snap["builds"]["feed"]["memo"]
+        self.assertEqual(set(memo), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by"})
+        self.assertEqual(set(memo["miss_by"]), set(km._FEED_MEMO_LABELS) | {"cold"})
+        self.assertEqual(memo["bound"], km.FEED_MEMO_BYTES)
+        self.assertEqual(memo, km._feed_memo_report())
+        for k, v in memo.items():
+            self.assertIsInstance(v, (int, dict), k)
+        for k, v in memo["miss_by"].items():
+            self.assertIsInstance(v, int, k)
+        self.assertIsNot(memo, km._FEED_MEMO_STATS, "a copy per read, never the live counters")
+        for kind in ("chat", "timeline", "feedJson", "thread"):
+            self.assertEqual(set(snap["builds"][kind]) & {"memo"}, set(), "%s: only the feed carries the memo" % kind)
+
     def test_pusher_counters(self):
         self.st.wake(); self.st.wake(); self.st.wake()
         self.st.wake_kind(True); self.st.wake_kind(False); self.st.wake_kind(False)

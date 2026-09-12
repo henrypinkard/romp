@@ -584,6 +584,59 @@ class ConvergeAssembly(Harness):
         self.assertEqual(em.checkpoint_stats()["restoredFolds"].get("bgJudge", 0), before + 1, "the fold document restores")
         self.assertLess(em.read_bytes_report().get(path, 0), size, "the next boot reads the tail")
 
+    def test_a_leaf_older_than_the_discover_window_is_written_from_the_boots_parse(self):
+        """T382: the step walked _sessions(now), the discover window's rows (48 hours), so an idle leaf older than that was never a
+        candidate although the boot had parsed it (19 of the 25 boundary leaves without a document on the devbox, 20 to 714
+        hours old). The candidates come from the assembly cache's whole unrestored entries, the parses the boot actually did,
+        each with its sid and flag; every other guard stands."""
+        path = self.idle_leaf("aged")
+        self.km._sessions = lambda now, **kw: []                       # no row in the window: the session is too old for discover
+        read0 = em.read_bytes_report().get(path, 0)
+        self.cycle(NOW + 600)
+        self.assertTrue(em._asm_ckpt_file(path).exists(), "written from the parse in the cache, whatever the session's age")
+        av = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual((av["writes"], av["candidates"], av["deferred"]), (1, 1, 0), "%s" % av)
+        self.assertLess(em.read_bytes_report().get(path, 0) - read0, 512, "no read of records")
+        self.cycle(NOW + 601); self.cycle(NOW + 602)
+        self.assertEqual(em.asm_checkpoint_stats()["converge"]["writes"], 1, "once")
+        tree, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"])
+
+    def _parse_as(self, path, human):
+        return em.parse_session(path, rompuuid=SID, name="impl", dir="/TESTDIR", candidate_files=[path], states=self.states,
+                                postal_log=self.sent, now=NOW, sdk_human=human)
+
+    def test_the_document_is_written_under_the_display_parses_flag_whichever_entry_the_cache_yields_first(self):
+        """T382 review, medium: with two whole entries for one leaf (the judges' flag and the display's differ until the owner
+        provider is wired), the step wrote under whichever entry the LRU order yielded first; under the wrong flag the display's
+        next boot took a session fallback, deleted the document and read the leaf whole. The entry whose flag is the display
+        parse's is chosen, in either order."""
+        for order in ((False, True), (True, False)):
+            with self.subTest(order=order):
+                path = self.idle_leaf("flag%d%d" % order)
+                self.fresh(); em.set_checkpoint_dir(lambda: self.ck)
+                for c in list(em._FOLD_REG.values()): c.clear()
+                self.km._ASM_CONVERGE_DONE.clear(); self.km._ASM_CONVERGE_NOENTRY.clear()
+                for human in order:
+                    self._parse_as(path, human)                        # two whole entries, the display's flag (False) first or second
+                self.cycle(NOW + 600)
+                self.assertTrue(em._asm_ckpt_file(path).exists())
+                self.assertFalse(_doc(path)["sdkHuman"], "written under the display parse's flag")
+                tree, modes, n_lazy = self.restored(path)
+                self.assertEqual(modes, ["restore"], "the display's next boot restores it: %s" % em.asm_checkpoint_stats()["fallbacks"])
+
+    def test_a_leaf_parsed_only_under_the_other_flag_is_skipped_and_counted(self):
+        path = self.idle_leaf("otherflag")
+        self.fresh(); em.set_checkpoint_dir(lambda: self.ck)
+        for c in list(em._FOLD_REG.values()): c.clear()
+        self.km._ASM_CONVERGE_DONE.clear(); self.km._ASM_CONVERGE_NOENTRY.clear()
+        self._parse_as(path, True)                                     # the judges' flag alone: a document the display would unlink
+        for k in range(2):
+            self.cycle(NOW + 600 + k)
+        self.assertFalse(em._asm_ckpt_file(path).exists(), "no document the reader would delete")
+        av = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual((av["writes"], av["skipped"].get("flagMismatch")), (0, 1), "skipped once, counted: %s" % av)
+
     def test_a_write_over_the_cycles_budget_is_deferred_to_the_next(self):
         path = self.idle_leaf("budget")
         self.km.CKPT_CONVERGE_BYTES = 1

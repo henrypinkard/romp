@@ -131,7 +131,7 @@ class TheExemptionSetIsWhatTheCodeUses(unittest.TestCase):
         self.assertNotIn(jd.WHY_TURN_IN_FLIGHT,
                          [w for w in (jd.WHY_JUDGING,) if False] or [],)  # tuple membership is the one definition
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('_stall_rec.get("why") in jd.WHY_IN_FLIGHT', src,
                       "the feed routes in-flight-class holds to the judging swirl")
 
