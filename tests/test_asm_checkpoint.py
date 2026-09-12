@@ -694,7 +694,7 @@ class HydrationAttribution(Harness):
         other_walker()
         self.assertEqual(list(em.asm_checkpoint_stats()["hydratedBy"]), ["_atom_text<-other_walker"], "the first caller outside the shared readers")
 
-    def test_a_walk_from_inside_a_generator_expression_or_a_comprehension_names_the_enclosing_function(self):
+    def test_a_walk_from_inside_a_generator_expression_names_the_enclosing_function(self):
         """The 1e60c712 head went red on Python 3.10 and 3.11: a list comprehension there runs in its own frame (inlined from
         3.12 on, PEP 709), and the attribution named `<listcomp>`. A generator expression keeps its own frame on every version,
         so the first pin is red everywhere at that head; the comprehension pin is red on 3.10 and 3.11 and green above."""
@@ -710,7 +710,16 @@ class HydrationAttribution(Harness):
             return sum(em.hydrate([a]) for a in atoms)
         genexpr_walker()
         self.assertEqual(list(em.asm_checkpoint_stats()["hydratedBy"]), ["genexpr_walker"], "%s" % em.asm_checkpoint_stats()["hydratedBy"])
-        atoms = restored_atoms()
+
+    def test_a_shared_reader_reached_from_a_list_comprehension_names_the_walker_around_it(self):
+        """The comprehension case alone: red on Python 3.10 and 3.11 at 1e60c712 (`<listcomp>` has its own frame there), green
+        from 3.12 on, where PEP 709 inlines it."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("listcomp", records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        atoms = [a for t in tree["turns"] for a in t["atoms"]]
         def _atom_user_texts(a):                                # a shared reader reached from a comprehension inside a walker
             return em.hydrate([a])
         def listcomp_walker():
