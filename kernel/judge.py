@@ -9058,6 +9058,19 @@ def plan_units(session, store=None):
     unit mints so follow-ups/nudges can quote the user's own words back (the user 2026-07-01, g13)."""
     turns = session["turns"]
     out = []
+    # T377 (2026-09-12): every consumer skips a unit the store already places (or reads its key alone), yet the unit TEXT was read
+    # for every ended segment first; over a restored tree that hydrated every pre-cut body from disk (1.06 GB per boot on the
+    # devbox, the judges' first pass). A placed unit is yielded with its key, time and scalars and NO text (None); the rest read
+    # their text after the placement check, exactly as before. `live_ids` is the current parse's segment ids (_placed_key's
+    # orphan rule, as run_plan hands it).
+    placed = (store.get("placements") or None) if isinstance(store, dict) else None
+    live_ids = None
+    if placed:
+        live_ids = {sg["id"] for t_ in turns for sg in (_segs(t_, store) if store is not None else em.segments(t_))}
+
+    def _placed_phase(seg, phase):
+        return bool(placed) and _placed_key(placed, _unit_key(seg["id"], phase), live_ids)
+
     for ti, turn in enumerate(turns):
         turn_open = (ti == len(turns) - 1 and not turn["ended"]
                      and not any(a["type"] == "idle" for a in turn["atoms"]))
@@ -9070,22 +9083,36 @@ def plan_units(session, store=None):
                 #                                           real ask in its args — falls through and is planned like any
                 #                                           other prompt (the user 2026-07-22: a `/jld <request>` session
                 #                                           ran with NO card at all, not even a provisional one).
-            work_text = _unit_text(seg["atoms"])           # left framed ("USER ASKED: /jld …") — honest, and the
-            #                                               planner has the whole exchange for context. Only the raw
-            #                                               PROMPT gist below is stripped, since that one IS the title.
-            if not work_text:
-                continue
-            if seg.get("seam"):                           # settle-time seam tail (plans/segment-regrowth.md): work that
-                # continued past its goal's close. Tell the planner so wrap-up files without reopening
-                # and only a genuine PIVOT mints its own goal.
-                work_text = ("Note: everything below happened **after** the goal \"%s\" was already completed "
+            _memo = []
+
+            def _wt(seg=seg, _memo=_memo):                # the unit text, read once and only when a unit of this segment is not
+                if not _memo:                             #  placed yet: a hydration over a restored tree (T377)
+                    t = _unit_text(seg["atoms"])           # left framed ("USER ASKED: /jld …") — honest, and the planner's own
+                    if t and seg.get("seam"):             #  instructions tell it a bare command is not a goal
+                        t = ("Note: everything below happened **after** the goal \"%s\" was already completed "
                              "and closed. If it is merely wrap-up, verification, or cleanup of that finished "
                              "goal, **skip** it — do not reopen. Only if it is a genuinely **new** or different "
                              "thread of work, mint a goal for it.\n\n" % ((seg.get("seamOf") or {}).get("text") or "?")
-                             ) + work_text
+                             ) + t   # settle-time seam tail (plans/segment-regrowth.md): work that
+                    _memo.append(t)                       #  came after a completed goal: the planner is told so
+                return _memo[0]
+            if not any(_placed_phase(seg, ph) for ph in ("work", "prompt", "delegation", "live")) and not _wt():
+                continue                                  # an empty segment drops (as before); a placed one was not empty
             is_open_final = turn_open and si == len(segs) - 1
             trig = _seg_anchor(seg)      # trigger, else the segment head — a minted node always gets an anchor
-            vq = _mint_quote(seg)
+            _vq = []
+
+            def _quote(seg=seg, _vq=_vq):                 # the minting quote reads the trigger's text: for an unplaced unit only
+                if not _vq:                               #  (a placed unit mints nothing; T377)
+                    _vq.append(_mint_quote(seg))
+                return _vq[0]
+
+            def _put(phase, text_fn, human_, followup_, seg=seg, trig=trig):
+                if _placed_phase(seg, phase):             # placed already: the key, time and scalars; no text and no quote read
+                    out.append((seg["id"], phase, seg["t"], None, human_, followup_, trig, None)); return
+                t = text_fn()
+                if t:
+                    out.append((seg["id"], phase, seg["t"], t, human_, followup_, trig, _quote()))
             if not is_open_final and not _has_asst_work(seg["atoms"]):
                 # The segment ENDED with no assistant work at all — the turn died before producing anything
                 # (an API-error storm that exhausted; isApiError records don't count, same rule as the
@@ -9099,11 +9126,8 @@ def plan_units(session, store=None):
                 # stays re-nudgeable, a workless delegation stays unfiled.
                 if (_seg_human(seg) and not _seg_followup(seg) and not _seg_nudge(seg)
                         and not _seg_peer(seg)):
-                    ptext = _prompt_text(seg["atoms"])
-                    if _is_cmd:
-                        ptext = _strip_cmd_prefix(ptext, seg)
-                    if ptext:
-                        out.append((seg["id"], "prompt", seg["t"], ptext, True, None, trig, vq))
+                    _put("prompt", lambda: (_strip_cmd_prefix(_prompt_text(seg["atoms"]), seg) if _is_cmd   # the ask, not the invocation
+                                         else _prompt_text(seg["atoms"])), True, None)
                 elif _seg_followup(seg) and not _seg_nudge(seg) and not _seg_peer(seg):
                     # A workless FOLLOW-UP is still JUDGED (the user 2026-08-08, the beacon g10 card):
                     # the card reply armed the fold's msg-reopen latch (followupPending — the card pins
@@ -9116,13 +9140,12 @@ def plan_units(session, store=None):
                     # own reopen/dismiss row is the release, and _strip_unevidenced_dones keeps a
                     # workless reply from CLAIMING completion (the closer holds done authority). Nudges
                     # keep their skip: their machinery re-asks and escalates on its own.
-                    out.append((seg["id"], "work", seg["t"], work_text, _seg_human(seg),
-                                _seg_followup(seg), trig, vq))
+                    _put("work", _wt, _seg_human(seg), _seg_followup(seg))
                 continue
             _pm = _seg_peer(seg)
             if _pm and _pm[0]:                            # POSTAL segment with a KNOWN sender → DELEGATION work-run
                 if not is_open_final:                     # ended → the recipient's work is known; place it under G
-                    out.append((seg["id"], "delegation", seg["t"], work_text, False, None, trig, vq))
+                    _put("delegation", _wt, False, None)
                 continue                                  # peer segs never get a prompt-run or a normal work-run
             # A SENDER-LESS postal delivery (author.peer None: mail whose id the postal index can't
             # resolve — an external tool posting through the kernel's send route with no session
@@ -9139,11 +9162,8 @@ def plan_units(session, store=None):
                 if human and not followup and not _seg_slash_shaped(seg):
                     # slash-shaped → DEFER to the close (the CLI 2.1.215+ raw-record window; see
                     # _seg_slash_shaped): mid-window it may be a command whose wrapper hasn't landed
-                    ptext = _prompt_text(seg["atoms"])
-                    if _is_cmd:                           # same: the ask, not the invocation
-                        ptext = _strip_cmd_prefix(ptext, seg)
-                    if ptext:
-                        out.append((seg["id"], "prompt", seg["t"], ptext, human, followup, trig, vq))
+                    _put("prompt", lambda: (_strip_cmd_prefix(_prompt_text(seg["atoms"]), seg) if _is_cmd   # the ask, not the invocation
+                                         else _prompt_text(seg["atoms"])), human, followup)
                 if (human and store is not None and not _seg_nudge(seg)
                         and _live_anchor_gone(store, seg["id"], followup)):
                     # LIVE RE-PLAN (the user 2026-07-05): the user CLEARED this open segment's card out from
@@ -9153,24 +9173,25 @@ def plan_units(session, store=None):
                     # NUDGE segment (_seg_nudge): a nudge is an automated status check, and its reply
                     # re-minting a card the user just cleared would be the nudge system resurrecting
                     # dismissed work — the loop-interaction the design must rule out.
-                    out.append((seg["id"], "live", seg["t"], work_text, human, followup, trig, vq))
+                    _put("live", _wt, human, followup)
                 continue                                  # no work unit yet — its work hasn't ended
             if _seg_nudge(seg) and followup:              # a romp NUDGE on a goal → RESOLVE it (done/block), not a plain step
-                out.append((seg["id"], "nudge", seg["t"], work_text, False, followup, trig, vq))
+                _put("nudge", _wt, False, followup)
             else:
+                prefix = ""
                 if _seg_system(seg):                      # a kernel status notice woke this stretch, not the user —
                     # post-restart housekeeping files nowhere (the user 2026-07-08, g133: a resume-notice
                     # verification sweep minted its own top-level card)
-                    work_text = ("Note: this stretch was triggered by an automated romp notice (a kernel "
+                    prefix = ("Note: this stretch was triggered by an automated romp notice (a kernel "
                                  "restart or session resume), not by the user. If it is merely resuming, "
                                  "re-verifying, or tidying up after the interruption, **skip** it — file "
                                  "nothing and mint nothing. Only work that advances an open goal, or a "
-                                 "genuinely **new** thread of work, belongs on the board.\n\n") + work_text
+                                 "genuinely **new** thread of work, belongs on the board.\n\n")
                 elif _seg_clearwrap(seg):                 # the ONE-round wrap-up of cleared card(s) (the user
                     # 2026-07-24). It asks for NO reply since 2026-07-29, so this files NOTHING by default;
                     # only a session that raises something needing the user mints one card, blocked on them.
                     # Never the cleared goal reborn.
-                    work_text = ("Note: this stretch is the one-time wrap-up of goals the user just "
+                    prefix = ("Note: this stretch is the one-time wrap-up of goals the user just "
                                  "**cleared** off their board — a dismissal, not a completion. Never "
                                  "re-create or reopen the cleared goals themselves. The wrap-up asks for "
                                  "NO reply (the user 2026-07-29), so the DEFAULT is to **skip**: file "
@@ -9179,8 +9200,8 @@ def plan_units(session, store=None):
                                  "**one** new top-level goal, blocked on the user, ONLY when the session "
                                  "raises something that genuinely needs them: an explicit question it is "
                                  "waiting on, or a warning that the dismissal looks premature. The why is "
-                                 "that question, naming where any parked work is.\n\n") + work_text
-                out.append((seg["id"], "work", seg["t"], work_text, human, followup, trig, vq))   # ENDED segment → WORK-run
+                                 "that question, naming where any parked work is.\n\n")
+                _put("work", (lambda: prefix + _wt()) if prefix else _wt, human, followup)   # ENDED segment → WORK-run
     return out
 
 

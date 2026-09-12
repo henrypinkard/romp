@@ -447,6 +447,58 @@ class WriteValves(Harness):
         self.assertTrue(self.doc(path), "a missing document is written again from the same entry")
 
 
+class PlannerOverRestored(Harness):
+    """T377 (2026-09-12): the judges' planner computed every ended segment's unit text before any consumer checked placement,
+    and every consumer skips placed units or reads keys only; over a restored tree that hydrated every pre-cut body from disk,
+    1.06 GB per boot on the devbox (96 percent of the lazy index's atoms, in the judges' first pass). A unit the store already
+    places is yielded with no text and nothing read; the rest read their text after the placement check, as before."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.km = kernel_module(); cls.jd = cls.km.jd
+
+    def _scalars(self, units):
+        return [(u[0], u[1], u[2], u[4], u[5], u[6]) for u in units]     # id, phase, time, human, followup, trigger
+
+    def test_placed_units_are_yielded_without_text_and_nothing_is_hydrated(self):
+        jd = self.jd
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("planner", records(), sent=sent)
+        self.fresh(); whole = self.parse(path); self.assertTrue(self.doc(path))
+        empty = {"placements": {}, "nodes": {}, "seq": 0}
+        ref = jd.plan_units(whole, empty)                              # the whole parse's units: the reference, text included
+        self.assertTrue(ref and any(u[3] for u in ref), "the fixture yields units with text")
+        placed = {"placements": {jd._unit_key(u[0], u[1]): "n1" for u in ref}, "nodes": {"n1": {"id": "n1"}}, "seq": 1}
+        self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        got = jd.plan_units(tree, placed)
+        self.assertEqual(self._scalars(got), self._scalars(ref), "the same units, keys, times and scalars as the whole parse's")
+        self.assertTrue(all(u[3] is None and u[7] is None for u in got), "a placed unit carries no text and no quote: %r" % [(u[3], u[7]) for u in got][:3])
+        self.assertTrue(any(u[7] for u in ref), "the reference carries quotes")
+        st = em.asm_checkpoint_stats()
+        nseg = sum(len(em.segments(t)) for t in tree["turns"])
+        self.assertFalse(any(k.startswith(("_unit_text", "_prompt_text")) for k in st["hydratedBy"]), "no unit text read: %s" % st["hydratedBy"])
+        self.assertLessEqual(st["hydratedAtoms"], nseg, "at most the trigger atom's text per segment (the shape checks, as before): %s" % st)
+
+    def test_unplaced_units_read_their_text_as_before(self):
+        jd = self.jd
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("planner2", records(), sent=sent)
+        self.fresh(); whole = self.parse(path); self.assertTrue(self.doc(path))
+        empty = {"placements": {}, "nodes": {}, "seq": 0}
+        ref = jd.plan_units(whole, empty)
+        self.fresh(); tree = self.parse(path)                          # restored: what a full hydration of the tree costs
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        em.hydrate(tree, SID); full = em.asm_checkpoint_stats()["hydratedBytes"]
+        self.fresh(); tree = self.parse(path)
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        got = jd.plan_units(tree, empty)
+        self.assertEqual(got, ref, "unplaced: byte-identical to the whole parse's units, text included")
+        st = em.asm_checkpoint_stats()
+        self.assertEqual(st["hydratedBytes"], full, "unplaced units read what they always did: every pre-cut body of the units")
+        self.assertTrue(any(k.startswith("_unit_text") for k in st["hydratedBy"]), "%s" % st["hydratedBy"])
+
+
 class KernelOverRestored(Harness):
     """The kernel's and the judges' body readers over a restored tree: every consumer the audit named hydrates what it
     reads, so the same answers come from the restored tree as from the whole parse, with no LazyBodyRead."""
