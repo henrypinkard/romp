@@ -1106,7 +1106,12 @@ each mean a whole parse, counted per reason in `/perf` and said once. The
 agent files (the subagents' transcripts) get no document yet; that is the next
 stage's. The gain is one tree per session, about
 a quarter of the record cost the T311 report measured (0.25 GB of 6.6); the
-record cache itself, the bulk, is the checkpoint work's target.
+record cache itself, the bulk, is the checkpoint work's target. The goal planner reads placement first (T377): a unit the
+store already places is yielded with its key and scalars and no text or quote
+(no pre-cut body read), the rest read their text after the placement check;
+the lookup is an index built once per planner call with the episode floor
+taken once per pass, and a consumer that plans a unit yielded as placed reads
+its text then.
 
 What the CLI itself does when its parent goes quiet was measured on Claude Code
 2.1.257 (2026-09-10, the restart-surviving sessions program's stage 3 probe, run
@@ -1464,8 +1469,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
-  name, whole refolds that read the file: a fold with no cursor and nothing to
-  restore over a tail entry, with count and bytes), `skippedFolds`
+  name, refolds that read: a fold with no cursor and nothing to restore, over a
+  tail entry or from zero, the boot's first whole read of a file included, with
+  count and the bytes the call read, an appended tail's among them), `skippedFolds`
   (fold states the codec could not encode), `oversizeFolds` (per fold name,
   states over the cap: the document keeps that fold's cursor without its
   state, with the state's KB as the reason, and the next kernel starts the fold
