@@ -413,7 +413,8 @@ class AvailabilityLists(unittest.TestCase):
         self.assertIn("a year old", logins[1]["why"])
         self.assertEqual(a["acct"], "user@example.com", "older readers keep the account name")
         st = km._auth_avail_status()
-        self.assertEqual(sorted(st), ["key", "login", "logins"])
+        self.assertEqual(sorted(st), ["default", "defaultExplicit", "key", "login", "logins"],
+                         "the login list rides beside the machine default and its explicit flag (T380)")
         self.assertEqual(st["logins"][2]["value"], "login:" + ok["id"])
 
     def test_a_signed_out_machine_still_offers_a_stored_login(self):

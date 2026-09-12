@@ -19,7 +19,7 @@ const FEED = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.ts"), "utf8"
 
 test("the status and the availability reply carry WHICH login, typed", () => {
   assert.match(RENDER, /interface AuthLogin \{ id\?: string; value\?: string; label\?: string; machine\?: boolean; available\?: boolean; why\?: string; expiresSoon\?: boolean \}/);
-  assert.match(RENDER, /interface AuthAvail \{ login\?: boolean; key\?: boolean; loginWhy\?: string; keyWhy\?: string; acct\?: string; default\?: string; logins\?: AuthLogin\[\] \}/);
+  assert.match(RENDER, /interface AuthAvail \{ login\?: boolean; key\?: boolean; loginWhy\?: string; keyWhy\?: string; acct\?: string; default\?: string; defaultExplicit\?: boolean; logins\?: AuthLogin\[\] \}/);
   assert.match(RENDER, /authAcct\?: string; authLogin\?: string; authLabel\?: string; authLoginLive\?: string \| null; ctx\?: string;/);
 });
 
