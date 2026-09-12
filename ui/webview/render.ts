@@ -7355,12 +7355,19 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       const ir = item.getBoundingClientRect();
       const sr = sub.getBoundingClientRect();
       // the side rule (Tags, the model-version submenus): PREFER right; fall LEFT when the right edge would clip and
-      // the left has room; with room on neither side (a narrow window) the flyout drops BELOW the row, clamped inside
-      // the viewport — never over the row or off-screen (review: at 560 px it covered its menu and ran 33 px out)
+      // the left has room; with room on neither side (a narrow window) the flyout drops BELOW the row when it fits
+      // there, else ABOVE the row's top, and only when neither fits is it clamped inside the viewport — never over
+      // the row while a place beside or beyond it exists (review: at 560 px it covered its menu and ran 33 px out;
+      // at 560 by 420 the clamp pulled the drop-below back over the row)
       let left: number, top: number = ir.top;
       if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
       else if (ir.left - 2 - sr.width >= 8) left = Math.round(ir.left) - sr.width - 2;
-      else { left = Math.max(8, Math.min(Math.round(ir.left), window.innerWidth - sr.width - 8)); top = ir.bottom + 2; }
+      else {
+        left = Math.max(8, Math.min(Math.round(ir.left), window.innerWidth - sr.width - 8));
+        if (ir.bottom + 2 + sr.height <= window.innerHeight - 4) top = ir.bottom + 2;
+        else if (ir.top - 2 - sr.height >= 0) top = ir.top - 2 - sr.height;
+        else top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4));
+      }
       sub.style.left = left + "px";
       sub.style.top = Math.max(0, Math.min(top, window.innerHeight - sr.height - 4)) + "px";
       return sub;

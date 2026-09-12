@@ -1644,6 +1644,8 @@ def _fast_org_env():
         return env
 
 
+_DEFAULT_AUTH_FN = None        # kernel wiring: fn(reg) -> 'login' | 'key', SdkBackend.default_auth: the ONE billing resolver
+#                                (the reg's own pick, else the machine's explicit default when billable, else the helper rule)
 _LOGIN_AUTH_ENV_FN = None      # login tokens claimed out of the manager's ambient environment: the kernel
                                # wires sdk_backend.startup_auth_env; standalone reads the environment
 
@@ -1681,29 +1683,31 @@ def _judge_auth(fsid):
     user 2026-08-12: a judge rides the account of the session it judges, never a third choice and
     never a silent fall to the other one — a judge quietly billing the login on a session the user
     put on the key is the same wrong-account failure the per-session picker exists to prevent).
-    Same resolution as the picker (sdk_backend default_auth / effective_auth), read from the same
-    registry file: an explicit 'login' or 'key' pick → that side; anything else → the machine's EXPLICIT
-    default when one is set (T380: sdk-defaults.json auth with authExplicit, the Billing flyout's Default
-    group; a key default with no helper on this box falls to the login, as the picker's rule does), else the
-    key when Claude Code's settings carry an apiKeyHelper, else login. A call with no session (rows with no
-    session) takes the same default a fresh session would."""
-    a = ""
+    THE resolution the picker uses, asked of the ONE resolver: the kernel wires _DEFAULT_AUTH_FN to
+    SdkBackend.default_auth, which reads the reg's own pick, else the machine's EXPLICIT default when this
+    box can bill it (T380; auth_unavailable_why: a logged-out login, a managed helper, an expired account
+    file all move the launch, the status and the flyout to the other side, and the judges with them — the
+    round-3 review found a seed re-read here that kept billing the login alone), else the helper rule. A
+    call with no session (rows with no session) takes the same default a fresh session would. Standalone
+    (tests, no kernel wiring) the registry file and the helper rule stand in: an explicit 'login' or 'key'
+    pick → that side; else the key when Claude Code's settings carry an apiKeyHelper, else login."""
+    reg = {}
     if fsid:
         try:
-            a = json.loads((SDKDIR / (fsid + ".json")).read_text()).get("auth") or ""
+            reg = json.loads((SDKDIR / (fsid + ".json")).read_text())
+            reg = reg if isinstance(reg, dict) else {}
         except Exception:
-            a = ""
+            reg = {}
+    if _DEFAULT_AUTH_FN is not None:
+        try:
+            side = str(_DEFAULT_AUTH_FN(reg) or "")
+            if side in ("login", "key"):
+                return side
+        except Exception:
+            pass   # the resolver failed: the standalone rule below decides, never a raise inside a judge call
+    a = reg.get("auth") or ""
     if a in ("login", "key"):
         return a
-    try:
-        d = json.loads((STATE / "sdk-defaults.json").read_text())
-        d = d if isinstance(d, dict) else {}
-    except Exception:
-        d = {}
-    if d.get("authExplicit") and d.get("auth") in ("login", "key"):
-        if d["auth"] == "key" and not _key_available():
-            return "login"
-        return d["auth"]
     return "key" if _key_available() else "login"
 
 

@@ -501,9 +501,11 @@ toward nothing.
 ## Billing, and when the credential itself is broken
 
 A judge call bills **the account of the session it judges**: the same pick the
-session's own Billing selector holds, read from the same registry, with the same
-default (an explicit login pick, the login; otherwise the API key when Claude
-Code's settings carry an `apiKeyHelper`, else the login). Judges run on Claude
+session's own Billing selector holds, read from the same registry, resolved by
+the same rule the launch uses (the kernel wires the backend's resolver into the
+judges): the session's own pick; else the machine's default set in the tab
+menu's Billing flyout, when the machine can bill it; else the API key when
+Claude Code's settings carry an `apiKeyHelper`, else the login. Judges run on Claude
 Code's own credential resolution, and romp holds no key (the user 2026-09-08).
 Every judge child (`claude -p`) launches with no credential in its environment.
 A key-billed call resolves the helper itself, inside its own CLI, the way a

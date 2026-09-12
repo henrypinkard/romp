@@ -16034,6 +16034,10 @@ def _sdk_locked():
             # ends, so an idle fleet's usage.json goes stale — measured ~15h — and the rate gate is
             # only as good as that file); the backend picks any live login session to ask
             jd._USAGE_REFRESH_FN = getattr(_sdk_backend, "refresh_usage", None)   # best-effort hook (judge guards None)
+            # the ONE billing resolver (T380): a judge on a session with no pick of its own bills what the launch and
+            # the status resolve for it, the machine's explicit default when this box can bill it, else the helper rule
+            # (default_auth over the reg applies auth_unavailable_why); the judge guards None and falls to its file rule
+            jd._DEFAULT_AUTH_FN = getattr(_sdk_backend, "default_auth", None)
             # the Billing pick's login gate (T124): set_auth refuses 'login' when the credential
             # store names no signed-in account — the same authority the usage bars trust, so the
             # pick can never sit in the UI as applied fact on a box that demonstrably cannot apply it

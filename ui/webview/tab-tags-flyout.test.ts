@@ -42,7 +42,12 @@ test("the Billing flyout's placement (T380 review): prefer right, fall left with
   const BILL = RENDER.slice(RENDER.indexOf("const openBillingFly = (): HTMLElement | null => {"), RENDER.indexOf('wireFlyout(menu, item, ".ctx-sub-billing"'));
   assert.match(BILL, /if \(ir\.right \+ 2 \+ sr\.width <= window\.innerWidth - 8\) left = Math\.round\(ir\.right \+ 2\);/, "prefer right");
   assert.match(BILL, /else if \(ir\.left - 2 - sr\.width >= 8\) left = Math\.round\(ir\.left\) - sr\.width - 2;/, "fall left only with room");
-  assert.match(BILL, /else \{ left = Math\.max\(8, Math\.min\(Math\.round\(ir\.left\), window\.innerWidth - sr\.width - 8\)\); top = ir\.bottom \+ 2; \}/, "no room either side: below the row, clamped inside the viewport, never over the row");
+  // no room either side: below the row when it fits, else above the row's top, and only then clamped (round 3: a short
+  // window's clamp pulled the drop-below back over the row)
+  assert.match(BILL, /left = Math\.max\(8, Math\.min\(Math\.round\(ir\.left\), window\.innerWidth - sr\.width - 8\)\);/, "clamped inside the viewport horizontally");
+  assert.match(BILL, /if \(ir\.bottom \+ 2 \+ sr\.height <= window\.innerHeight - 4\) top = ir\.bottom \+ 2;/, "below the row when it fits");
+  assert.match(BILL, /else if \(ir\.top - 2 - sr\.height >= 0\) top = ir\.top - 2 - sr\.height;/, "else above the row's top");
+  assert.match(BILL, /else top = Math\.max\(0, Math\.min\(ir\.top, window\.innerHeight - sr\.height - 4\)\);/, "only when neither fits, clamped");
   assert.doesNotMatch(BILL, /Math\.max\(0, Math\.min\(ir\.right \+ 2, window\.innerWidth - sr\.width - 4\)\)/, "the old slide-over-the-row rule is gone");
   assert.match(BILL, /const olderKernel = avail\.defaultExplicit === undefined;/);
   assert.match(BILL, /\.\.\.\(olderKernel \? \[\] : \[\{ label: `Automatic \(\$\{autoWord\}\)`, value: "auto", why: "", cur: !explicit \}\]\)/, "an older kernel that takes no auto gets no Automatic radio");

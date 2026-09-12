@@ -1224,6 +1224,9 @@ class DrivePlumbing(unittest.TestCase):
         # the machine's default (T380): the same op with scope "machine" writes the seed on THIS kernel and touches no session
         self.assertIn('elif t == "setAuth" and msg.get("scope") == "machine" and msg.get("value") in ("login", "key", "auto"):', src)
         self.assertIn('_set_def = getattr(be, "set_auth_default", None)', src)
+        # the judges ask the same resolver the launch and the status use (round 3 of T380): the kernel wires it
+        ksrc = open(os.path.join(os.path.dirname(HERE), "kernel", "kernel.py")).read()
+        self.assertIn('jd._DEFAULT_AUTH_FN = getattr(_sdk_backend, "default_auth", None)', ksrc, "the one billing resolver, wired into the judges")
         self.assertIn("keeps no machine billing default", src, "a backend without the writer (Codex) is refused by name, never a raise inside the drive")
         self.assertLess(src.index('msg.get("scope") == "machine"'), src.index('elif t == "setAuth" and msg.get("value") in ("login", "key"):'),
                         "the scoped arm is tried first: the plain arm would otherwise swallow it as a per-session pick")

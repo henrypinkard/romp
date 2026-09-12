@@ -89,7 +89,7 @@ const readFly = () => page.evaluate(() => {
   const rowEl = document.querySelector(".ctx-menu .ctx-item-billing"); const rr = rowEl ? rowEl.getBoundingClientRect() : null;
   const menuEl = document.querySelector(".ctx-menu:not(.ctx-sub)"); const mr = menuEl ? menuEl.getBoundingClientRect() : null;
   return { choices, head: head ? head.querySelector(".ctx-item-label").textContent : null, note: head ? head.querySelector(".ctx-item-sub").textContent : null, radios, sep: !!fly.querySelector(".ctx-sep"), rect: { left: r.left, top: r.top, w: r.width, h: r.height, right: r.right, bottom: r.bottom }, subLine: row ? row.textContent : null,
-    rowRect: rr ? { left: rr.left, right: rr.right, top: rr.top, bottom: rr.bottom } : null, menuRect: mr ? { left: mr.left, right: mr.right } : null, viewport: window.innerWidth };
+    rowRect: rr ? { left: rr.left, right: rr.right, top: rr.top, bottom: rr.bottom } : null, menuRect: mr ? { left: mr.left, right: mr.right } : null, viewport: window.innerWidth, viewportH: window.innerHeight };
 });
 const out = {};
 out.tabs = await page.evaluate(() => Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => ({ id: t.dataset.id, name: (t.querySelector(".tab-label") || t).textContent.trim(), active: t.classList.contains("active") })));
@@ -125,13 +125,13 @@ for (const theme of ["dark", "light"]) {
 await page.evaluate(() => document.body.classList.remove("theme-light"));
 // narrow windows (review: at 560, 760 and 886 px the flyout covered its menu and ran off-screen): inside the viewport, never over the row
 out.narrow = {};
-for (const w of [560, 760, 886]) {
-  await page.setViewportSize({ width: w, height: 700 }); await page.waitForTimeout(150);
+for (const [w, h] of [[560, 700], [760, 700], [886, 700], [560, 420], [560, 300]]) {
+  await page.setViewportSize({ width: w, height: h }); await page.waitForTimeout(150);
   await menuOpen(); row = await billingRow(); bb = await row.boundingBox();
   await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
   await page.waitForSelector(".ctx-sub-billing", { timeout: 1500 }).catch(async () => { await row.click(); });
   await page.waitForTimeout(150);
-  out.narrow[w] = await readFly();
+  out.narrow[w + "x" + h] = await readFly();
   await page.keyboard.press("Escape"); await page.waitForTimeout(100);
 }
 await page.setViewportSize({ width: 1100, height: 700 }); await page.waitForTimeout(150);
@@ -345,17 +345,27 @@ class ServedTabTipTones(unittest.TestCase):
         self.assertIn("set here:", a["note"], "the sub-line says the default is explicit" + table)
         self.assertIn("own pick stays", a["note"], table)
 
-    def test_in_a_narrow_window_the_flyout_stays_inside_the_viewport_and_never_covers_its_row(self):
+    def test_in_a_narrow_or_short_window_the_flyout_stays_inside_the_viewport_and_never_covers_its_row_while_a_place_exists(self):
         r = self._run()
-        for w, f in r["narrow"].items():
-            table = "\n  %s px: %s" % (w, json.dumps(f)[:700])
+        for size, f in r["narrow"].items():
+            table = "\n  %s: %s" % (size, json.dumps(f)[:800])
             self.assertIsNotNone(f, table)
             self.assertGreaterEqual(f["rect"]["left"], 8 - 0.5, "inside the viewport, left" + table)
             self.assertLessEqual(f["rect"]["right"], f["viewport"] - 8 + 0.5, "inside the viewport, right" + table)
-            rr = f["rowRect"]
-            beside = f["rect"]["left"] >= rr["right"] - 0.5 or f["rect"]["right"] <= rr["left"] + 0.5
-            below = f["rect"]["top"] >= rr["bottom"] - 0.5
-            self.assertTrue(beside or below, "never over its own row: beside it, or below it" + table)
+            self.assertGreaterEqual(f["rect"]["top"], -0.5, "inside the viewport, top" + table)
+            self.assertLessEqual(f["rect"]["bottom"], f["viewportH"] + 0.5, "inside the viewport, bottom" + table)
+            rr, fr = f["rowRect"], f["rect"]
+            beside = fr["left"] >= rr["right"] - 0.5 or fr["right"] <= rr["left"] + 0.5
+            below = fr["top"] >= rr["bottom"] - 0.5
+            above = fr["bottom"] <= rr["top"] + 0.5
+            fits_below = rr["bottom"] + 2 + fr["h"] <= f["viewportH"] - 4
+            fits_above = rr["top"] - 2 - fr["h"] >= 0
+            if fits_below or fits_above:
+                self.assertTrue(beside or below or above, "never over its own row while a place beside, below or above exists" + table)
+            if fits_below and not beside:
+                self.assertTrue(below, "below the row when it fits there (review: the clamp pulled it back over the row)" + table)
+            elif fits_above and not beside:
+                self.assertTrue(above, "above the row's top when below does not fit" + table)
 
 
 if __name__ == "__main__":

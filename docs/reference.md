@@ -324,7 +324,13 @@ and the group's sub-line says which rule holds. Until the default is set here,
 the last per-session pick seeds it (as a model or effort pick does); once set
 here, a per-session pick is about that session alone and moves no default. A
 remote session's flyout names its host, and the pick sets that host's default
-(the op routes to the session's owning kernel).
+(the op routes to the session's owning kernel). The judges follow the same
+resolution: a judge on a session with no pick of its own bills the machine's
+default when the machine can bill it, else the helper rule, exactly as the
+launch does. The flyout places itself to the right of its row, to the left
+when the right would clip and the left has room, below the row when neither
+side has room, above it when below does not fit, and only then clamped inside
+the window; it never covers its row while a place beside or beyond it exists.
 
 On a one-auth box the picker never chooses the missing side. The remembered
 default falls to the side that exists, in both directions: a remembered login

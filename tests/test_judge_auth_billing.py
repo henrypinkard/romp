@@ -78,24 +78,50 @@ class TheJudgesFollowTheMachineDefault(unittest.TestCase):
         self.fsid = "11111111-2222-3333-4444-555555555555"
         (jd.SDKDIR / (self.fsid + ".json")).write_text(json.dumps({"sid": self.fsid, "name": "web"}))   # no pick of its own
         self._key = jd._key_available
+        self._fn = jd._DEFAULT_AUTH_FN
+        jd._DEFAULT_AUTH_FN = None
 
     def tearDown(self):
         jd._key_available = self._key
+        jd._DEFAULT_AUTH_FN = self._fn
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_an_unpicked_session_follows_the_explicit_default_and_a_key_default_without_a_helper_falls_to_the_login(self):
+    def test_the_judges_ask_the_one_resolver_the_kernel_wires_so_an_unbillable_default_moves_them_with_the_launch(self):
+        """Round-3 review: a seed re-read here kept billing the login after the machine could no longer bill it (the login
+        logged out, a managed helper appearing) while the launch, the status and the flyout had moved to the key; and an
+        explicit key default with unreadable Claude Code settings made the picker keep the key while the judge said login.
+        The judges now ask SdkBackend.default_auth over the reg, the resolver that applies the availability check."""
+        calls = []
+        # the resolver's verdicts, as the backend would give them for these regs: a logged-out login default → key
+        jd._DEFAULT_AUTH_FN = lambda reg: (calls.append(dict(reg)), "key")[1]
         jd._key_available = lambda: True
-        self.assertEqual(jd._judge_auth(self.fsid), "key", "no default: the helper rule")
-        (jd.STATE / "sdk-defaults.json").write_text(json.dumps({"auth": "login", "authExplicit": True}))
-        self.assertEqual(jd._judge_auth(self.fsid), "login", "the explicit login default, as the launch does")
-        self.assertEqual(jd._judge_auth(""), "login", "a call with no session takes the same default a fresh session would")
-        (jd.STATE / "sdk-defaults.json").write_text(json.dumps({"auth": "login"}))
-        self.assertEqual(jd._judge_auth(self.fsid), "key", "a remembered pick that is not explicit: the helper rule (a new session seeds from it, an existing one does not follow)")
-        (jd.STATE / "sdk-defaults.json").write_text(json.dumps({"auth": "key", "authExplicit": True}))
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "the resolver's word, not a seed re-read")
+        self.assertEqual(calls[-1].get("sid"), self.fsid, "asked over the session's own reg")
+        # the fourth shape: an explicit key default with unreadable settings: the resolver keeps the key (cannot tell is
+        # never a fall), while the standalone helper probe would have said no key
         jd._key_available = lambda: False
-        self.assertEqual(jd._judge_auth(self.fsid), "login", "an explicit key default on a box without a helper falls to the login")
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "the resolver decides even when the judge's own helper probe says no")
+        self.assertEqual(jd._judge_auth(""), "key", "a call with no session asks the resolver over an empty reg")
+        self.assertEqual(calls[-1], {}, "…the empty reg")
+        # a session's own pick: the resolver returns it (default_auth reads the reg first); the judge trusts the resolver
+        (jd.SDKDIR / (self.fsid + ".json")).write_text(json.dumps({"sid": self.fsid, "auth": "login"}))
+        jd._DEFAULT_AUTH_FN = lambda reg: reg.get("auth") or "key"
+        self.assertEqual(jd._judge_auth(self.fsid), "login")
+        # a resolver that fails or answers junk never raises inside a judge call: the standalone rule decides
+        jd._DEFAULT_AUTH_FN = lambda reg: (_ for _ in ()).throw(RuntimeError("boom"))
+        self.assertEqual(jd._judge_auth(self.fsid), "login", "the reg's own pick, standalone")
+        jd._DEFAULT_AUTH_FN = lambda reg: "credit-card"
+        (jd.SDKDIR / (self.fsid + ".json")).write_text(json.dumps({"sid": self.fsid}))
+        jd._key_available = lambda: True
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "junk from the resolver: the helper rule")
+
+    def test_standalone_the_registry_pick_and_the_helper_rule_stand_in(self):
+        jd._key_available = lambda: True
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "no wiring, no pick: the helper rule")
+        jd._key_available = lambda: False
+        self.assertEqual(jd._judge_auth(self.fsid), "login")
         (jd.SDKDIR / (self.fsid + ".json")).write_text(json.dumps({"sid": self.fsid, "auth": "key"}))
-        self.assertEqual(jd._judge_auth(self.fsid), "key", "a session's own pick beats the default")
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "a session's own pick")
 
 
 class _JudgeAuthBase(unittest.TestCase):
