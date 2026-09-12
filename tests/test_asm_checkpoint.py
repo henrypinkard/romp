@@ -501,6 +501,35 @@ class ConvergeAssembly(Harness):
         self.assertLess(self.read_before, size, "the next boot reads the tail, not the whole leaf: %d of %d bytes" % (self.read_before, size))
         self.assertEqual(tree, whole)
 
+    def test_the_dirty_leaf_boot_shape_writes_the_fold_document_and_the_assembly_document_in_one_pass(self):
+        """Round one, medium: the ordinary boot shape is a dirty idle leaf (the judges' pass read it whole, its fold document lacks
+        the pairing) with no assembly document. The fold half of the pass healed and primed it and its held quiescence drop
+        POPPED the record entry; the assembly step then found the assembly entry but no record entry (record_offsets None), a
+        skipped write, retried once, abandoned. The assembly write now runs while the record entry is resident, inside the same
+        hold, and the held drop is paid after it: one pop, both documents from the one read, and the next boot restores both."""
+        path = self.idle_leaf("both")
+        km = self.km; jd = km.jd
+        size = os.path.getsize(path)
+        jd._bg_scan(path)                                             # the boot's whole read by a fold: dirty, whole-resident
+        self.assertTrue(em.entry_whole_resident(path))
+        self.assertIn(path, em.checkpoint_converge_candidates(), "a fold candidate too")
+        read0 = em.read_bytes_report().get(path, 0)
+        self.cycle(NOW + 600)
+        cv = em.checkpoint_stats()["converge"]; av = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual((cv["viaDrop"], cv["dropWrites"]), (1, 1), "the fold document, written at the held drop: %s" % cv)
+        self.assertEqual((av["writes"], av["skipped"]), (1, {}), "the assembly document, written from the same read: %s" % av)
+        self.assertTrue(em._asm_ckpt_file(path).exists())
+        self.assertLess(em.read_bytes_report().get(path, 0) - read0, 1024, "no read of records for either")
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNone(em._JSONL_CACHE.get(path), "one pop, after both writes")
+        self.fresh(); em.set_checkpoint_dir(lambda: self.ck)
+        for c in list(em._FOLD_REG.values()): c.clear()
+        before = em.checkpoint_stats()["restoredFolds"].get("bgJudge", 0)
+        modes = []; self.parse(path, modes); self.assertEqual(modes, ["restore"], "the assembly document restores")
+        jd._bg_scan(path)
+        self.assertEqual(em.checkpoint_stats()["restoredFolds"].get("bgJudge", 0), before + 1, "the fold document restores")
+        self.assertLess(em.read_bytes_report().get(path, 0), size, "the next boot reads the tail")
+
     def test_a_write_over_the_cycles_budget_is_deferred_to_the_next(self):
         path = self.idle_leaf("budget")
         self.km.CKPT_CONVERGE_BYTES = 1
@@ -511,6 +540,16 @@ class ConvergeAssembly(Harness):
         self.cycle(NOW + 601)
         self.assertTrue(em._asm_ckpt_file(path).exists())
         self.assertEqual(em.asm_checkpoint_stats()["converge"]["writes"], 1)
+
+    def test_a_zero_byte_budget_turns_the_step_off_rather_than_deferring_forever(self):
+        """Round one, low 2: with ROMP_CKPT_CONVERGE_MB=0 every attempt was deferred and candidates and deferred grew each cycle."""
+        path = self.idle_leaf("zero")
+        self.km.CKPT_CONVERGE_BYTES = 0
+        for k in range(3):
+            self.cycle(NOW + 600 + k)
+        cv = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual((cv["candidates"], cv["deferred"], cv["writes"]), (0, 0, 0), "off, as the drop write is: %s" % cv)
+        self.assertFalse(em._asm_ckpt_file(path).exists())
 
     def test_a_leaf_without_a_boundary_is_looked_at_once(self):
         path = self.idle_leaf("plain", scenario=next(n for n in G.SINGLE_FILE if n not in COMPACTING))
@@ -551,6 +590,16 @@ class HydrationAttribution(Harness):
         by = em.asm_checkpoint_stats()["hydratedBy"]
         self.assertEqual(list(by), ["_unit_text<-some_walker"], "%s" % by)
         self.assertEqual(em.hydrate(atoms), 0, "hydrated already: nothing counted twice")
+        self.fresh(); tree = self.parse(path); atoms = [a for t in tree["turns"] for a in t["atoms"]]
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        def _atom_text(atoms):                                  # a reader reached through another shared reader (round one, low 3)
+            return em.hydrate(atoms)
+        def _prompt_text(atoms):
+            return _atom_text(atoms)
+        def other_walker():
+            return _prompt_text(atoms)
+        other_walker()
+        self.assertEqual(list(em.asm_checkpoint_stats()["hydratedBy"]), ["_atom_text<-other_walker"], "the first caller outside the shared readers")
 
 
 class KernelOverRestored(Harness):

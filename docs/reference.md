@@ -1035,9 +1035,15 @@ writes the ASSEMBLY document of an idle leaf that has none (the assembly
 document is otherwise written only at a settle, which an idle session never
 reaches, so the parse read those leaves whole at every boot: 31 of 60 on the
 devbox, about 2.5 GB): from the whole assembly entry the boot's own parse built,
-through the settle's writer, no read of records, charged to the same cycle
-budget, once per file state (written, or refused for a property of its cut);
-`ROMP_ASM_CONVERGE=0` turns that step off, and the pass's own switch covers it. The owed table
+through the settle's writer, while the reader's whole record entry is still
+resident (the writer takes its record offsets from it), so for a leaf the fold
+half handles the assembly write runs inside the same hold, before the held drop
+pops that entry, and both documents come from the one read; no read of records,
+charged to the same cycle budget. A leaf is looked at once per file state:
+written, or refused for a property of its cut, it is done; a blip is tried
+twice; a leaf with no whole entry to write from is re-examined each cycle and
+counted once. `ROMP_ASM_CONVERGE=0` turns that step off, and so do the pass's
+own switch and a zero byte budget, as for the drop write. The owed table
 is bounded: over it the oldest owed drop is paid by its pop alone, and an owed
 file since deleted has its entry popped when the cycle pays. A leaf unchanged for longer than the reader keeps a quiescent
 file's whole entry (two minutes) is refused by the pass and counted under

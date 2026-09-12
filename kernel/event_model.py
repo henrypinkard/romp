@@ -4998,50 +4998,55 @@ def _tree_key(tree):
     return (id(tree), len(turns), turns[-1].get("id") if turns else None)
 
 
-def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None):
+def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason_out=None, who="settle"):
     """Write the leaf's assembly checkpoint from its WHOLE assembly entry. False when there is nothing to write: no
     entry, an entry restored from a document (its cut stands until a compaction moves it), no compaction boundary in
     the tree (the whole file would be the tail), a cut that would not split the chronological order the fold's gate
-    needs (garbled stamps), or a document past the cap; each counted under asmCheckpoint.skipped."""
+    needs (garbled stamps), or a document past the cap; each counted under asmCheckpoint.skipped, and appended to
+    `reason_out` when a list is given (the converge pass reads its refusal there; T376 review). `who` names the caller
+    in the blip line (the settle, the converge pass), said once per leaf and reason."""
     cp = _asm_ckpt_file(leaf_path)
     if cp is None:
         return False
+
+    def _skip(reason):
+        if reason_out is not None:
+            reason_out.append(reason)
+        return _asm_ckpt_skip(reason)
     key = (os.path.realpath(str(leaf_path)), str(rompuuid), bool(sdk_human))
     with _asm_key_lock(key):
         with _ASM_LOCK:
             entry = _ASM_CACHE.get(key)
         if entry is None:
-            return _asm_ckpt_skip("noEntry")
+            return _skip("noEntry")
         if entry.get("prefix") or entry.get("preTurns"):
-            return _asm_ckpt_skip("restored")            # the document it came from stands
+            return _skip("restored")            # the document it came from stands
         if entry.get("docWritten") and cp.exists() and (tree is None or entry.get("docTurns")
                                                           or entry.get("docNoTurns") == _tree_key(tree)):
-            return _asm_ckpt_skip("written")             # this entry's pre-cut part has not moved (a fold appends after the cut);
+            return _skip("written")             # this entry's pre-cut part has not moved (a fold appends after the cut);
         #                                                  a document written without a tree is written again once one is given,
         #                                                  one whose tree yielded no section is not, for that tree (review low 4)
         ad = entry["ad"]
         atoms = entry["atoms"]
         bounds = [a for a in atoms if a.get("type") == "system" and a.get("subtype") == "compact_boundary"]
         if not bounds:
-            return _asm_ckpt_skip("noBoundary")
+            return _skip("noBoundary")
         active = ad.active_path()
         verdicts = ad.chain_verdicts(active)
         turns = segment_turns([dict(a) for a in atoms], rompuuid)
         last_b = max(bounds, key=lambda a: (a["t"], a.get("_seq", 0)))
         memo = entry.get("docSkip")
         if memo is not None and memo[0] == last_b["uuid"]:
-            return _asm_ckpt_skip(memo[1])               # this cut already failed to write: nothing rebuilt until it moves
+            return _skip(memo[1])               # this cut already failed to write: nothing rebuilt until it moves
 
         def skip(reason):
             if reason in _ASM_SKIP_STRUCTURAL:            # a property of this cut: memoized like a success (docWritten),
                 entry["docSkip"] = (last_b["uuid"], reason)   #  re-armed when the cut moves
                 _say_once("assembly checkpoint: %s not written: %s (said once until its cut moves)" % (leaf_path, reason))
             else:                                         # a blip (a stat or a write failing, a record landing between the
-                try:                                      #  parse and the offsets): said each time, tried again next settle
-                    sys.stderr.write("assembly checkpoint: %s not written this settle: %s\n" % (leaf_path, reason))
-                except Exception:
-                    pass
-            return _asm_ckpt_skip(reason)
+                _say_once("assembly checkpoint: %s not written by the %s: %s (said once per leaf; tried again at the next %s)"
+                          % (leaf_path, who, reason, who))   #  parse and the offsets): named for its caller, once per leaf
+            return _skip(reason)
         bi = next(i for i, t in enumerate(turns) if any(a.get("uuid") == last_b["uuid"] for a in t["atoms"]))
         if last_b["uuid"] in ad._adopted and bi > 0:
             bi -= 1                                       # an adopted manual compact: its /compact episode is the turn before
@@ -5694,9 +5699,12 @@ def hydrate(atoms, rompuuid=None, by=None):
         return 0
     if by is None:
         try:
-            by = sys._getframe(1).f_code.co_name
-            if by in _HYDRATE_TEXT_READERS:               # a text reader every walker shares says nothing about WHO walked: its
-                by = "%s<-%s" % (by, sys._getframe(2).f_code.co_name)   #  own caller is recorded with it (T377: naming the boot's reader)
+            f = sys._getframe(1); by = f.f_code.co_name
+            if by in _HYDRATE_TEXT_READERS:               # a text reader every walker shares says nothing about WHO walked: the
+                g = f.f_back                              #  first caller outside the shared readers is recorded with it (T377:
+                while g is not None and g.f_code.co_name in _HYDRATE_TEXT_READERS:   #  naming the boot's reader; a reader reached
+                    g = g.f_back                          #  through another reader still names the walker)
+                by = "%s<-%s" % (by, g.f_code.co_name if g is not None else "?")
         except Exception:
             by = "?"
     filled, by_file = 0, {}
