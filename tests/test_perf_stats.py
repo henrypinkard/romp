@@ -148,7 +148,7 @@ class Collector(unittest.TestCase):
             for k, v in snap["memos"][blk].items():
                 self.assertIsInstance(v, int, "%s.%s" % (blk, k))
         self.assertEqual(set(snap["memos"]["lanes"]), {"hit", "miss", "live_tail", "complain_skip", "unshared_skip", "evict", "entries",
-                                                     "segs_hit", "segs_miss", "dead_serve", "dead_miss", "dead_failed_serve"},
+                                                     "segs_hit", "segs_miss", "prefix_hit", "prefix_segs", "dead_serve", "dead_miss", "dead_failed_serve"},
                          "the timeline's per-lane segment memo: one outcome per live lane per bars build, the dead lanes beside")
         self.assertTrue(all(type(v) is int for v in snap["memos"]["lanes"].values()))
         self.assertEqual(set(snap["memos"]["chatMergeSets"]), {"hit", "miss", "entries"})

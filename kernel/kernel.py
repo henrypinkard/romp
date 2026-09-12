@@ -39971,6 +39971,9 @@ _lanes_memo = {}          # sid -> (session, goals_obj, caps_key, key, value, pr
 _LANES_MEMO_MAX = 256
 _lanes_stats = {"hit": 0, "miss": 0, "live_tail": 0, "complain_skip": 0, "unshared_skip": 0, "evict": 0,
                 "segs_hit": 0, "segs_miss": 0,
+                # the PREFIX memo (2026-09-12): derivations that reused a held prefix of closed turns, and the segments
+                # those prefixes carried (work a whole-lane derivation would have redone); segs_miss counts only the derived
+                "prefix_hit": 0, "prefix_segs": 0,
                 # the DEAD lanes of a bars build, counted by build_timeline (this memo never sees one): served from
                 # _dead_lane_memo (dead_serve), derived through _lane_segments (dead_miss: cached after, unless the
                 # store faulted, the transcript could not be stat'd or a stage complained), or served as the empty
@@ -39999,9 +40002,46 @@ def _lanes_forget(keep):
             _lanes_memo.pop(k, None)
         if gone:
             _lanes_stats["evict"] += len(gone)
+    with _LANE_PREFIX_LOCK:
+        for k in [k for k in _lane_prefix_memo if k not in keep]:
+            _lane_prefix_memo.pop(k, None)
 
 
-def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None):
+# The lane PREFIX memo (2026-09-12, the user's performance program): a live lane whose transcript moved, or whose
+# live tail was merged (a turn in flight: `session is not parsed`, 35 % of the per-lane memo's lookups on the devbox),
+# re-derived EVERY turn of its history each build: 1.19 million segments re-walked in 25 minutes for 149 builds of
+# 3.4 s each, a third of the pusher's wall time. Every closed turn's bars depend only on that turn and the lane's
+# inputs (the goals object for the seams, the captions file for the captions, live, the branch clip, the host's
+# downtime), never on its neighbours, so the bars of the turns BEFORE the last one are held per lane and reused
+# while those turns' identities and the inputs stand; only the tail (and any turn after the first that changed) is
+# derived. Keyed like _lanes_memo (its comment names the inputs); the goals object is compared by identity, so an
+# unshared mutable store disables the prefix for that build (the derivation stays whole). Bounded by the lanes the
+# builds draw (_lanes_forget drops the rest) and by _LANES_MEMO_MAX like the lane memo; the bars it holds are the
+# same objects the lane memo and the wire cache hold. Counted under memos.lanes as prefix_hit and prefix_segs.
+_lane_prefix_memo = {}    # sid -> (inputs, turn_keys, bars, seg_ends, prompts, last_t, nsegs, complained)
+_LANE_PREFIX_LOCK = threading.Lock()
+
+
+def _turn_prefix_key(turn):
+    """A closed turn's identity for the prefix: its id, whether it ended, its atom count and its end."""
+    return (turn.get("id"), bool(turn.get("ended")), len(turn.get("atoms") or ()), turn.get("end"))
+
+
+def _lane_prefix_inputs(goals, cap_key, live, bft):
+    """The non-turn inputs a prefix is valid under, or None when the prefix must not be used this build (an unshared
+    mutable goals store, captions read with no file key)."""
+    if isinstance(goals, jd.FrozenStore):
+        gkey = ("shared", id(goals))
+    elif goals is None or (not goals.get("seams") and not goals.get("nodes")):
+        gkey = "empty"
+    else:
+        return None
+    if not (isinstance(cap_key, tuple) or cap_key == "empty"):   # a stat key, or the lane memo's "no file, no rows"
+        return None
+    return (gkey, cap_key, bool(live), bft, tuple(_downtime))
+
+
+def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_key=None):
     """The SEGMENT part of one timeline lane: the turn loop build_timeline ran inline, moved here so the per-lane
     memo (_lane_memo; the comment above _lanes_memo names every input) can hold its result: (bars, seg_ends,
     last_t, compactions, cap_marks, other_marks, nsegs, complained). bars are the lane's wire bars in turn order
@@ -40019,7 +40059,40 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None):
         full_prompts = {}
     st_turns = session["turns"]
     bars, last_t, seg_ends, nsegs, complained = [], None, {}, 0, False   # seg_ends: seg-start t → work-END t (for completion marks)
-    for ti, turn in enumerate(st_turns):
+    # the prefix: the held bars of the closed turns before the last one, reused while their identities and the inputs stand
+    inputs = _lane_prefix_inputs(goals, cap_key, live, bft)
+    n_last = len(st_turns) - 1
+    turn_keys = [_turn_prefix_key(t) for t in st_turns[:n_last]] if inputs is not None and n_last > 0 else []
+    start_k = 0
+    if turn_keys:
+        with _LANE_PREFIX_LOCK:
+            held = _lane_prefix_memo.get(sid)
+        if held is not None and held[0] == inputs:
+            k = 0
+            for a, b in zip(held[1], turn_keys):
+                if a != b:
+                    break
+                k += 1
+            if k > 0:
+                if k == len(held[1]):                       # the whole held prefix stands: reuse its objects
+                    bars = list(held[2]); seg_ends = dict(held[3]); prompts_held = held[4]; last_t = held[5]; nsegs_held = held[6]
+                    complained = held[7]
+                else:                                       # a shorter common prefix: keep the bars of the turns that stand
+                    nsegs_held = 0; prompts_held = {}
+                    keep_ids = set()
+                    for t in st_turns[:k]:
+                        keep_ids.update(x.get("id") for x in (t.get("atoms") or ()) if False)   # (bars carry seg ids, below)
+                    k = 0                                   # partial reuse is not attempted: a changed middle turn re-derives all
+                if k > 0:
+                    full_prompts.update(prompts_held)
+                    start_k = k
+                    with _LANES_LOCK:
+                        _lanes_stats["prefix_hit"] += 1
+                        _lanes_stats["prefix_segs"] += nsegs_held
+    snap = None
+    for ti, turn in enumerate(st_turns[start_k:], start=start_k):
+        if ti == n_last and turn_keys and snap is None:
+            snap = (list(bars), dict(seg_ends), dict(full_prompts), last_t, nsegs, complained)   # the closed turns' part, before the tail
         if turn.get("echoTurn"):
             continue        # a stale echo's own turn (T344): a send the transcript never took draws no bar
         turn_open = (live and ti == len(st_turns) - 1 and not turn["ended"]
@@ -40112,6 +40185,12 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None):
                     # whose dot had drawn as a human prompt instead of wearing the logo), mirroring the chat's 2026-07-05 rule
                     bar["o"] = True
                 bars.append(bar)
+    if turn_keys and snap is not None and not snap[5]:
+        with _LANE_PREFIX_LOCK:                             # hold the closed turns' part for the next derivation of this lane
+            _lane_prefix_memo.pop(sid, None)
+            while len(_lane_prefix_memo) >= _LANES_MEMO_MAX:
+                _lane_prefix_memo.pop(next(iter(_lane_prefix_memo)))
+            _lane_prefix_memo[sid] = (inputs, turn_keys, snap[0], snap[1], snap[2], snap[3], snap[4] + (nsegs_held if start_k else 0), False)
     try:
         cap_marks, other_marks = _derive_judging_marks(sid, caps, goals, seg_ends) if goals is not None else ([], [])
         # The horizon comparisons run in _judging_assemble, per build, outside this lane's guard; the one-pass form
@@ -40184,7 +40263,7 @@ def _lane_memo(sid, parsed, session, goals, caps, cap_key, live, bft, parse_ok=T
             if ent[0] is not parsed:
                 _lanes_memo.pop(sid, None)                    # its parse object is no longer the build's: it cannot hit again
     lane_prompts = {}
-    value = _lane_segments(sid, session, goals, caps, live, bft, lane_prompts)
+    value = _lane_segments(sid, session, goals, caps, live, bft, lane_prompts, cap_key=ckey)
     if full_prompts is not None:
         full_prompts.update(lane_prompts)
     outcome = skip or ("complain_skip" if value[7] else "miss")

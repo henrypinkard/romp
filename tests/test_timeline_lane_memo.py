@@ -1337,13 +1337,60 @@ class PerfWiring(LaneMemoBase):
         self.build(); self.build()
         blk = km._PERF_STATS.snapshot()["memos"]["lanes"]
         self.assertEqual(set(blk), {"hit", "miss", "live_tail", "complain_skip", "unshared_skip", "evict", "entries",
-                                    "segs_hit", "segs_miss", "dead_serve", "dead_miss", "dead_failed_serve"})
+                                    "segs_hit", "segs_miss", "prefix_hit", "prefix_segs", "dead_serve", "dead_miss", "dead_failed_serve"})
         self.assertEqual((blk["hit"], blk["miss"], blk["entries"], blk["segs_hit"], blk["segs_miss"]), (1, 1, 1, 1, 1))
         self.assertEqual((blk["dead_serve"], blk["dead_miss"], blk["dead_failed_serve"]), (0, 0, 0), "live lanes only so far")
         self.build(live_map={}); self.build(live_map={})
         blk = km._PERF_STATS.snapshot()["memos"]["lanes"]
         self.assertEqual((blk["dead_serve"], blk["dead_miss"], blk["dead_failed_serve"]), (1, 1, 0), "the dead lanes ride the same block")
         self.assertEqual((blk["hit"], blk["miss"]), (1, 1), "and leave the live counters alone")
+
+
+class PrefixMemo(LaneMemoBase):
+    """The lane PREFIX memo (2026-09-12): a live lane whose transcript moved re-derived every turn of its history each
+    build (1.19 million segments re-walked in 25 minutes on the devbox, a third of the pusher's time). The closed
+    turns before the last one are held per lane and reused; only the tail is derived, and the bars equal a whole
+    derivation's."""
+
+    def _prefix_counts(self):
+        st = self.stats()
+        return (st["prefix_hit"], st["prefix_segs"])
+
+    def test_a_third_turn_reuses_the_held_prefix_and_equals_a_whole_derivation(self):
+        km.jd.append_caption(LIVE_SID, self.seg_id(), "segment", self.t0, "Added backoff")
+        self.build()                                                  # one turn: nothing before the tail, no prefix held
+        self.append_records([_rec("user", self.t0 + 100, "u2", "a1", "and cap the delay"),
+                             _rec("assistant", self.t0 + 120, "a2", "u2", "Capped at two minutes.")])
+        self.build()                                                  # two turns: the first turn is held as the prefix
+        self.assertEqual(self._prefix_counts(), (0, 0), "nothing to reuse yet: the held prefix was empty at the first build")
+        self.append_records([_rec("user", self.t0 + 200, "u3", "a2", "and log each retry"),
+                             _rec("assistant", self.t0 + 220, "a3", "u3", "Logged with the delay.")])
+        tl3 = self.build()                                            # three turns: the first turn's bars come from the prefix
+        self.assertEqual(self._prefix_counts(), (1, 1), "one derivation reused the prefix, one segment came from it")
+        self.assertEqual(len(tl3["turns"][LIVE_SID]), 3)
+        # what the prefix served equals a whole derivation on the same objects
+        km._lane_prefix_memo.clear()
+        session = km._parse(str(self.tpath()), LIVE_SID, self.now)
+        goals = km.jd.load_goals_shared(LIVE_SID)
+        caps = km._captions(LIVE_SID)
+        bars, seg_ends, last_t, compactions, cap_marks, other_marks, nsegs, complained = km._lane_segments(
+            LIVE_SID, session, goals, caps, True, None)
+        self.assertEqual(json.dumps(tl3["turns"][LIVE_SID]), json.dumps(bars), "the prefix path and the whole derivation agree")
+        self.assertEqual(nsegs, 3)
+        self.assertEqual(self.stats()["segs_miss"], 1 + 2 + 2, "the derivations walked 1, then 2, then only the 2 turns after the prefix")
+
+    def test_a_captions_change_is_a_new_input_and_the_prefix_is_not_served_under_the_old_one(self):
+        self.append_records([_rec("user", self.t0 + 100, "u2", "a1", "and cap the delay"),
+                             _rec("assistant", self.t0 + 120, "a2", "u2", "Capped at two minutes.")])
+        self.build()
+        self.append_records([_rec("user", self.t0 + 200, "u3", "a2", "and log each retry"),
+                             _rec("assistant", self.t0 + 220, "a3", "u3", "Logged with the delay.")])
+        self.build()
+        self.assertEqual(self._prefix_counts()[0], 1)
+        km.jd.append_caption(LIVE_SID, self.seg_id(), "segment", self.t0, "Added backoff")   # the first turn's caption changes
+        tl = self.build()
+        self.assertEqual(self._prefix_counts()[0], 1, "a changed captions file is a changed input: the old prefix is not served")
+        self.assertEqual(tl["turns"][LIVE_SID][0].get("c"), "Added backoff", "and the first bar carries the new caption")
 
 
 if __name__ == "__main__":
