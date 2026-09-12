@@ -1923,6 +1923,8 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 /* fork lives BELOW the response it branches from (the user 2026-08-19) — .fork-spot rides the run's
    LAST assistant turn (applyForkSpots), revealed by hovering that turn, left with the response column */
 .fork-spot { display: flex; margin-top: 3px; }
+.msg-fork { display: inline-flex; align-items: center; gap: 4px; }   /* the fork glyph beside the word (T381) */
+.msg-fork svg { display: block; width: 12px; height: 12px; }
 .turn-assistant:hover .msg-fork, .msg-fork:focus-visible { opacity: 0.9; }
 .msg-fork:hover { color: var(--fg); border-color: var(--accent); }   /* non-destructive: accent, never the rewind red */
 /* armed = one click from rolling back: destructive red, holds until blur/pointerleave/re-render */
@@ -3663,8 +3665,6 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 .file-preview-pop .fp-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .file-preview-pop .fp-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-preview-pop .fp-sub { color: var(--dim); font-family: ui-monospace, monospace; font-size: 0.86em; white-space: nowrap; }
-.file-preview-pop .fp-open { margin-left: auto; flex: 0 0 auto; cursor: pointer; background: transparent; color: var(--accent); border: 1px solid var(--card-border); border-radius: 5px; padding: 2px 10px; font: inherit; font-weight: 600; }
-.file-preview-pop .fp-open:hover { background: var(--accent-wash); }
 .file-preview-pop .fp-note { color: var(--dim); font-style: italic; }
 .file-preview-pop .fp-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .file-preview-pop .fp-body.fp-image { display: flex; align-items: center; justify-content: center; }
@@ -3676,9 +3676,10 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 /* a callout (md-wiki.ts calloutBlockquote): the kind as a small label at the top of its blockquote */
 /* the glossary's term links (T351 stage 2, design A): a quiet dotted underline in the text colour, no colour change;
    a retired term greys (its card says to use the plain phrase) */
-.term-link { text-decoration: underline dotted; text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: help; }
-.term-link:hover, .term-link:focus-visible { text-decoration-style: solid; outline: none; }
-.term-link.term-retired { opacity: 0.6; }
+/* a glossary term is a link to the glossary's section and dresses as one (T375, the user 2026-09-12): the link colour,
+   a solid underline, the pointer; nothing else marks it */
+.term-link { color: var(--link); text-decoration: underline solid; cursor: pointer; }
+.term-link:focus-visible { outline: none; }
 .md-callout-label { font-size: 0.72em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent); margin: 0 0 2px; }
 /* the popover's boot loader (the user 2026-08-25: a fresh thread flashed the plain msgs projection
    before jumping into the chat rendering) — the standard romp loader holds the conversation area

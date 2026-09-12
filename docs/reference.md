@@ -1869,8 +1869,9 @@ the same card:
 
 Stage 1 fills it from the slice route (`markdown`, `section`, `code`) and the
 bytes route (`image` at its natural size capped to the card, `pdf` as its first
-page), or with the text-only card; stage 2 fills it with the `term` kind from the
-glossary index below, no fetch. A previewed document renders on the
+page), or with the text-only card; a glossary term (below) is a path link to the
+glossary file's section and previews as one, through the same slice route. A
+previewed document renders on the
 sanitizer's inert DOM and is stripped of every remote load there, before its
 nodes join the page: an image's `src` or `srcset`, a picture's sources, a video's
 poster or source, an audio, an SVG image, in any spelling the URL parser
@@ -1890,7 +1891,11 @@ anchor}` that fills the `term` kind of the same card.
 
 ## The glossary
 
-A team's coinages, linked where they are written. One file per romp tag group,
+A team's coinages, linked where they are written. A linked term is an ordinary
+link to the glossary file's section (the link colour, a solid underline, the
+pointer): hovering it shows that section through the file preview, exactly as
+hovering any file link with a section does, and clicking it opens the glossary
+in the viewer at the heading; there is no term card of its own. One file per romp tag group,
 `~/.claude/glossaries/<group>.md` (under `CLAUDE_CONFIG_DIR` when set), in the
 grammar of that folder's README: an opening `## Not coinages` list of words never
 linked (each bullet's bold lead, or the text before its colon, read as words), then

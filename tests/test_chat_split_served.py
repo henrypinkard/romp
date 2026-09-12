@@ -706,6 +706,9 @@ class ServedChatSplit(unittest.TestCase):
         s = self._r()["s1"]
         o = s["obs"]
         self.assertTrue(o["done"], "the observer saw B's transcript painted in column 2: %r" % o)
+        # a status frame per other tab: the tally read four of seven on a loaded runner while the pusher race sent the other
+        # three sessions whole (a full each, no status); with the race closed the strip lists every other tab as a skeleton
+        # and each takes its status, so the tally holds again (the wait is bounded and event-driven, never a fixed beat)
         self.assertGreaterEqual(s["statusDelta"], BOARD - 1,
                                 "a status frame per other tab on column 2's own socket: the column was served as a skeleton client, not whole: %r" % s)
         # the diet's fingerprint on column 2's own socket: B's full, exactly once, never the board (eight per push before
