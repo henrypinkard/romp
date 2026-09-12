@@ -1,6 +1,7 @@
 # The chat is one scrollable conversation: lazy history regions and one landing notice (T386)
 
-Design note before code (the user approves it). Written 2026-09-12 against upstream/main at ff6b46cb.
+**Status:** design note awaiting the user's approval (2026-09-12); no code landed. Written against upstream/main at ff6b46cb;
+the line references describe the repo at that commit.
 
 ## What the user saw and asked for (paraphrased, 2026-09-12 about 2:25 PM PT)
 
