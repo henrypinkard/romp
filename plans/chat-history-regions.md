@@ -187,8 +187,9 @@ Runs far from the viewport fold back to gaps under a bytes budget (the events' J
 already keeps for its perf rows). Never folded: the tail run, the run holding the viewport, and its nearest
 neighbours on each side. `foldCandidates` orders the rest by distance from the viewport and folds until under budget;
 a folded run's span becomes a gap sized by the measured average, so the scrollbar does not jump. The budget is a
-fraction of the page's memory signal where one exists (`performance.memory` on Chromium) with a fixed floor, under
-the same "one shared pool" rule the kernel's caches follow.
+fraction of the DEVICE's memory (`navigator.deviceMemory`, in gigabytes, where the browser exposes it; else a stated
+fallback), never a small literal, under the same "one shared pool" rule the kernel's caches follow; the budget in
+force and the bytes resident ride the chat's diagnostic rows (the perf minute row), so a report can read them.
 
 ### Diagnostics
 
@@ -231,14 +232,15 @@ Why not the whole thing at once: stage 1 is a user-visible bug with a small fix 
 wire and the kernel's per-client state and needs its own verification round; putting the bug fix behind it would
 leave the double click on the user's screen for the whole design round.
 
-### Open for the user
+### Open for the user (put to them by the manager with these proposed defaults; stages 2 and 3 plan against them)
 
-1. The notice's words. Proposed: "Going to the message from 7:41 AM… click to stay here" / "Going to the earlier
-   message… click to stay here".
+1. The notice's words. Proposed: "Going to the message from 7:41 AM, click to stay here" (the time in the user's clock,
+   as the strip renders it today) / "Going to the earlier message, click to stay here".
 2. Should the reader's own scroll during the wait cancel the landing too, or only the click? Proposed: only the click
    (the user asked for a cancelable notice; a flick to look around while it loads should not lose the jump).
 3. The jump "toward" the target before the reply: to the gap's estimated position (proposed), or no move until the
    snap.
-4. The bytes budget's size (proposed: a quarter of the page's memory signal where Chromium reports one, else 64 MB of
-   event JSON), and whether a folded run's refill on scroll-back should show its loading mark or fill silently
-   (proposed: the mark, since the fill is not instant).
+4. The resident-runs budget: a fraction of the device's memory (`navigator.deviceMemory` in gigabytes where the browser
+   exposes it, else a stated fallback), never a small literal, reported on the chat's diagnostic rows (proposed); and
+   whether a folded run's refill on scroll-back shows its loading mark or fills silently (proposed: the mark, since the
+   fill is not instant).
