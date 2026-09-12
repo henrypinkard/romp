@@ -86,6 +86,7 @@ import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxB
 import { phParts } from "./composer-placeholder";   // the resting placeholder names the session (2026-09-09)
 import { badgeSpec } from "./session-badge";   // the statusline badge names the session (2026-09-09)
 import { retainLiveOmitted } from "./tab-order";
+import { localStrip, readCloseAckMs } from "./tab-order";
 import { userTurnShows } from "./user-turn-content";
 import { ScrollDiagBudget, classifyScroll, scrollWriteRow, tailChangeRow, tailLabel, spacerRow, readScrollDiagCap, summarizeTailMutations, tailMutRow, unitChangeRow, unitChanges, boxChanges, boxLabel, BOX_FROM_TAIL } from "./scroll-write";
 import { reloadScrollRecord, takeReloadScroll, type ReloadScroll } from "./reload-restore";
@@ -685,8 +686,9 @@ const tabMeta = new Map<string, { name: string; color: Color | null }>();
 const closingTabs = new Map<string, number>();
 // …with a backstop for the ack that never comes. A refused/failed end leaves no failure EVENT to key on:
 // the sole evidence a close didn't take is the kernel still listing the tab long after. Past this we say
-// so and let the tab back, rather than hiding a session that's really still open.
-const CLOSE_ACK_MS = 15_000;
+// so and let the tab back, rather than hiding a session that's really still open. Fifteen seconds, or the page's
+// localStorage knob for a lab (tab-order.ts readCloseAckMs: the served split test waits past it in seconds, not fifteen).
+const CLOSE_ACK_MS = readCloseAckMs((k) => { try { return localStorage.getItem(k); } catch { return null; } });
 // Optimistic label/color edits awaiting their kernel echo — holds a stale in-flight push from
 // reverting the strip (see tab-meta.ts; the sessionViews pending machinery's reasoning).
 const pendingTabMeta = new Map<string, PendingTabMeta>();
@@ -978,7 +980,10 @@ function assertPeekFor(id: string): void {
 // plan and the signature, so a tab moved away is simply gone from this strip.
 const COL = colFromSearch(location.search);
 let colSets: ColSets | null = null;
-let tabOrderSeen = false;   // the kernel's first strip has landed on this socket (applyTabOrder): the emptiness post and the stale-active fallback wait for it
+let tabOrderSeen = false;   // the kernel's first strip has landed on this socket (applyTabOrder, the local kernel's own frame only — tab-order.ts localStrip): the emptiness post and the stale-active fallback wait for it
+// The ids the last applied strip's `live` set affirms (the kernel's raw liveness, T258): a member of this column the strip
+// omits while live still names it is a transient read failure, never an emptiness (noteColumnEmptiness).
+let boardLive = new Set<string>();
 function readColSets(): ColSets | null {
   try {
     if (!window.parent || window.parent === window) return null;
@@ -5593,6 +5598,7 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   // older kernel sends no `live` and this is a no-op. One clientDiag row names any id it saves, so a kernel
   // that omits a live session is seen, never silently papered over.
   const liveSet = new Set<string>(Array.isArray(live) ? live.filter((x: any) => typeof x === "string") : []);
+  boardLive = liveSet;
   const omitted = new Set(order.filter((id) => kernelListed.has(id) && !inKernel.has(id) && !liveSet.has(id)));   // all of them first: no fallback onto one going in the same breath
   const keptLive = order.filter((id) => kernelListed.has(id) && !inKernel.has(id) && liveSet.has(id));
   if (keptLive.length && vscodeApi) vscodeApi.postMessage({ type: "clientDiag", surface: "chat", what: "live-omitted-kept", data: { ids: keptLive } });
@@ -5611,7 +5617,14 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   colSets = readColSets();   // membership is fresh for the restore below (the chat split)
   if (back && heldHere(back) && restoreIfShown(back)) { /* focus is back on the tab the pane named; nothing more to paint here. Only a tab this column holds (the chat split): another column's session is its owner's to restore, and no record of it is this column's to keep */ }
   else if (!activeId) showActive();   // the strip changed under an unfocused pane (it may have emptied), or the tab it names is listed but hidden: the body's line and the box's placeholder follow it (the review's low)
-  tabOrderSeen = true;   // the board has been heard once on this socket (the chat split's emptiness post and stale-active fallback wait for it; set after the restore above, so its render is the first that may post or fall back)
+  // The board has been heard on this socket ONLY when this frame is the local kernel's own strip (tab-order.ts localStrip):
+  // a synthetic re-emission is re-served from the manager's store, EMPTY on a fresh page (order []), and another host's
+  // fresh push says nothing about this kernel's sessions. The vanishing tab (the user 2026-09-12): a view-order storage
+  // event from another pane reached a new column between its bundle's registration and its first strip, the re-emitted []
+  // armed this flag, and the render below reported the column's one member gone (colEmpty) while the kernel listed it all
+  // along; the shell closed the column and the tab was in no column until the close backstop toasted. Set after the
+  // restore above, so its render is the first that may post or fall back.
+  if (localStrip(report)) tabOrderSeen = true;
   renderTabs();
 }
 // The tabOrder frame's `skeleton` list (2026-09-07): the tabs the kernel is withholding from this page after a
@@ -6409,7 +6422,16 @@ function renderTabs() {
   // right above, so an only-filtered active tab does reach here. The pane then goes UNFOCUSED naming the hidden tab
   // (T357: never re-pointed at another session); the check at fire time reads the same predicate visibleIds does
   // (stripShows), and the tab comes back below when the filter shows it again.
-  if (activeId && ids.includes(activeId) && !visibleIds.includes(activeId)) {
+  // THE ACTIVE TAB MOVED TO ANOTHER COLUMN (the chat split; the user 2026-09-12, whose source column sat on "This tab view
+  // shows no session" after the drag): a tab the user dragged away is not hidden by a view or a filter, so the pane does
+  // not go unfocused naming it (T357 keeps the box for a tab that comes back when the filter lifts; a moved tab lives in
+  // its own column now). The box falls to this column's first visible member — deferred and re-checked at fire time like
+  // the re-point below — and the persisted tab then names a member, so a reload lands here on one of its own.
+  if (activeId && ids.includes(activeId) && !heldHere(activeId) && visibleIds.length) {
+    const moved = activeId, first = visibleIds[0];
+    setTimeout(() => { if (activeId === moved && !heldHere(moved) && stripLists(first) && stripShows(first)) setActive(first); }, 0);
+  }
+  else if (activeId && ids.includes(activeId) && !visibleIds.includes(activeId)) {
     const hid = activeId;
     setTimeout(() => { if (activeId === hid && !stripShows(hid)) unfocusHiddenByView(hid); }, 0);
   }
@@ -7898,9 +7920,15 @@ function claimSession(id: string): void {
 // EMPTINESS (the chat split): a later column none of whose members the kernel's strip lists any more — ended, or
 // closed from a tab's cross (`ids` excludes closingTabs, so the user's own cross empties the column at once: the
 // acknowledgement) — tells the shell, which prunes the gone ids and closes a column left with none. Once per
-// emptiness: the flag resets when a member is listed again. Waits for the kernel's first strip (tabOrderSeen), so
+// emptiness: the flag resets when a member is listed again. Waits for the kernel's own first strip (tabOrderSeen), so
 // a page that has not heard the board yet says nothing; `ids` keeps host-down remote tabs and live-omitted ids
-// (T258), so neither a tunnel blip nor a transient read failure closes a column.
+// (T258), and a member the strip omits while the kernel's `live` set still affirms it counts as present (boardLive:
+// on a fresh column retainLiveOmitted has no order to keep it in), so neither a tunnel blip nor a transient read
+// failure closes a column. The message names the gone members this page's own ✕ removed (`crossed`): the shell holds
+// ONLY those back in the first column, whose "Couldn't close" backstop is for a cross the kernel refused; a member
+// gone for any other reason is simply the first column's again, shown the moment its strip repaints (the vanishing
+// tab, the user 2026-09-12: a hold over a session the kernel still listed hid it for the backstop and toasted a close
+// nobody asked for).
 let colEmptyPosted = false;
 function noteColumnEmptiness(ids: readonly string[]): void {
   if (!COL || !colSets || !tabOrderSeen) return;
@@ -7909,11 +7937,13 @@ function noteColumnEmptiness(ids: readonly string[]): void {
   // text and the draft died with the document (review find 2026-09-11)
   if (provisionalId || failedProvisionals.size) return;
   const mine = colSets[COL] || [];
-  const empty = mine.length > 0 && !mine.some((id) => ids.includes(id));
+  const present = (id: string) => ids.includes(id) || (boardLive.has(id) && !closingTabs.has(id));
+  const empty = mine.length > 0 && !mine.some(present);
   if (!empty) { colEmptyPosted = false; return; }
   if (colEmptyPosted) return;
   colEmptyPosted = true;
-  try { window.parent.postMessage({ romp: "colEmpty", gone: mine.slice() }, "*"); } catch (e) { /* no shell */ }
+  const crossed = mine.filter((id) => closingTabs.has(id));
+  try { window.parent.postMessage({ romp: "colEmpty", gone: mine.slice(), crossed }, "*"); } catch (e) { /* no shell */ }
 }
 // ORPHANED STATE (the chat split, review find 2026-09-11): a draft, citations, attachments or staged messages this page
 // holds for a session it does not show — a column blob written before the partition (a v1 column was a whole chat page,
@@ -17420,7 +17450,9 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   if (m.romp === "adopt") { adoptSessionState(m.sid, m.state); return; }
   // the shell closed a later column whose members the kernel's strip no longer lists (colEmpty): they return to this,
   // the first column, but the kernel may still list one closed from its own cross for a push or two — held back here
-  // (closingTabs, retired by the kernel's next strip as any ✕ is) so no tab flashes into this strip on its way out
+  // (closingTabs, retired by the kernel's next strip as any ✕ is) so no tab flashes into this strip on its way out. The
+  // shell names ONLY the ids that page's own cross removed (colEmpty's `crossed`): the backstop behind this hold toasts
+  // "Couldn't close", which is right for a refused cross and wrong for anything else (the vanishing tab, 2026-09-12)
   if (m.romp === "closing") { if (Array.isArray(m.ids)) for (const id of m.ids) { if (typeof id === "string" && id) closingTabs.set(id, Date.now()); } renderTabs(); return; }
   // the shell's pane set, which panes are on screen by key: the cache openPath routes file links by (panesOn
   // above; the shell posts it on every toggle, on this iframe's load and on a phone's tab switch). Whole-set

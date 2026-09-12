@@ -184,3 +184,23 @@ test("a session frame's id joins the order once: not when its tabOrder frame alr
   assert.equal(adoptArrival(order, "a", true), false, "an existing session's frame never pushes");
   assert.deepEqual(order, ["a", "b", "c", "d"]);
 });
+
+// ── the strip's provenance and the close backstop's knob (the vanishing tab, the user 2026-09-12) ──
+import { localStrip, readCloseAckMs, CLOSE_ACK_KEY, CLOSE_ACK_DEFAULT_MS } from "./tab-order";
+
+test("localStrip: the local kernel's own strip, or a frame with no provenance, is the board; a synthetic re-emission or another host's fresh push is not", () => {
+  assert.equal(localStrip(undefined), true, "a frame the kernel sent directly (VS Code, no federation manager)");
+  assert.equal(localStrip({ reemit: false, freshHost: undefined }), true, "the dispatch's shape for that frame");
+  assert.equal(localStrip({ freshHost: "" }), true, "the LOCAL kernel's push under federation (host key '')");
+  assert.equal(localStrip({ reemit: true }), false, "a re-emission from the store: on a fresh page an EMPTY order, never the board");
+  assert.equal(localStrip({ reemit: true, freshHost: "" }), false, "reemit wins over any host named");
+  assert.equal(localStrip({ freshHost: "TESTHOST" }), false, "another kernel's push says nothing about this kernel's sessions");
+});
+
+test("readCloseAckMs: fifteen seconds unless the page's localStorage holds a positive integer of ms under the knob", () => {
+  assert.equal(CLOSE_ACK_DEFAULT_MS, 15_000);
+  assert.equal(readCloseAckMs(() => null), 15_000);
+  assert.equal(readCloseAckMs((k) => (k === CLOSE_ACK_KEY ? "1500" : null)), 1500, "the lab's knob");
+  for (const junk of ["0", "-5", "1.5", "soon", ""]) assert.equal(readCloseAckMs(() => junk), 15_000, "junk keeps the default: " + JSON.stringify(junk));
+  assert.equal(readCloseAckMs(() => { throw new Error("no storage"); }), 15_000, "a storage that throws (a sandboxed frame) keeps the default");
+});

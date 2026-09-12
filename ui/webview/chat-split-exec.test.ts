@@ -17,6 +17,9 @@ import { columnHolds, type ColSets } from "./chat-columns";
 import { isProvisionalId } from "./provisional";
 import { isSubId } from "./subagent-view";
 import { StagedStack } from "./staged-messages";
+import { syncSessionsFromTabMeta } from "./tab-meta";
+import { reconcileTabOrder, retainLiveOmitted, localStrip } from "./tab-order";
+import { hostOf } from "./host-prefix";
 
 const requireCjs = createRequire(__filename);
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
@@ -72,7 +75,7 @@ function world(o: { col?: string; sets?: ColSets | null; tabOrderSeen?: boolean;
     let colSets = W.sets, tabOrderSeen = W.tabOrderSeen, activeId = W.activeId, provisionalId = W.provisionalId, wantActive = W.wantActive;
     let vanishedId = null;   // T357's tab-that-left; never set in these worlds (the fallback yields to it, pinned in chat-split.test.ts)
     const failedProvisionals = new Set(W.failed || []);
-    let colEmptyPosted = false;
+    let colEmptyPosted = false; const closingTabs = new Map(); let boardLive = new Set();
     const readColSets = () => { HOOKS.reads++; return W.shell.sets; };
     const peekId = null; const chatVisible = () => true;
     const setTimeout = (f) => { HOOKS.timers.push(f); return HOOKS.timers.length; };
@@ -105,14 +108,14 @@ test("the emptiness post: once per emptiness, reset by a member listed again; no
   w.api.render([WEB, TESTS]);
   assert.deepEqual(w.HOOKS.posts, [], "one member still listed: the column stands");
   w.api.render([WEB]);
-  assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [API, TESTS] }], "none listed: the shell is told which ids are gone");
+  assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [API, TESTS], crossed: [] }], "none listed: the shell is told which ids are gone, and that none went by this page's own cross");
   w.api.render([WEB]); w.api.render([]);
   assert.equal(w.HOOKS.posts.length, 1, "said once per emptiness, not per render");
   w.api.render([WEB, TESTS]);
   assert.equal(w.HOOKS.posts.length, 1, "a member listed again resets the latch…");
   w.api.render([WEB]);
   assert.equal(w.HOOKS.posts.length, 2, "…so the next emptiness is said again");
-  assert.deepEqual(w.HOOKS.posts[1], { romp: "colEmpty", gone: [API, TESTS] });
+  assert.deepEqual(w.HOOKS.posts[1], { romp: "colEmpty", gone: [API, TESTS], crossed: [] });
   // the gates
   const early = world({ col: "2", sets: { "2": [API] }, tabOrderSeen: false });
   early.api.render([WEB]);
@@ -137,7 +140,7 @@ test("a create in flight, or a failed one still holding its text, keeps the colu
   w.api.set({ provisionalId: null, failed: [PROV] }); w.api.render([WEB]);
   assert.deepEqual(w.HOOKS.posts, [], "a failed create holding its text keeps it too, until its ✕ discards it");
   w.api.set({ failed: [] }); w.api.render([WEB]);
-  assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [API] }], "with the create gone the emptiness is said");
+  assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [API], crossed: [] }], "with the create gone the emptiness is said");
 });
 
 test("the stale-active fallback belongs to the partition: no sets, nothing scheduled; with sets, the first visible member after the timer, a wanted tab held elsewhere retired", () => {
@@ -262,4 +265,112 @@ test("adoptSessionState joins every slice onto what is already here, persists on
   assert.equal(w.HOOKS.persisted, 2);
   w.api.adoptSessionState("", { draft: "x" }); w.api.adoptSessionState(API, null); w.api.adoptSessionState(API, "junk");
   assert.equal(w.HOOKS.persisted, 2, "junk changes nothing");
+});
+
+// ── the strip's arrival, RUN: applyTabOrder itself, with the frames a column receives ─────────────────────────────
+// The vanishing tab (the user 2026-09-12): a tab dragged into a new column vanished from every column and came back
+// about fifteen seconds later behind a "Couldn't close" toast. The chain was client-side: the new column's federation
+// manager re-emitted the merged order from an EMPTY store (a view-order storage event from another pane landing between
+// the bundle's frame-handler registration and the kernel's first strip), applyTabOrder took that synthetic frame as
+// the board, and noteColumnEmptiness posted colEmpty for a member the kernel never stopped listing. The world below
+// lifts the real applyTabOrder, ackClosingTabs, noteColumnEmptiness and stripLists, with the strip pass renderTabs
+// runs before the post (order, then pushed tabs not yet in it, each through stripLists; chat-split.test.ts pins the
+// real lines) and stubs for the teardown, the restore and the body.
+const U = "11111111-2222-3333-4444-555555555509";
+const T3 = [{ id: WEB, name: "web" }, { id: API, name: "api" }, { id: TESTS, name: "tests" }];
+const T2 = [{ id: WEB, name: "web" }, { id: TESTS, name: "tests" }];
+type StripHooks = { posts: Record<string, unknown>[]; renders: string[][]; dismissed: [string, string][]; toasts: string[]; shown: number };
+type StripApi = {
+  frame: (o: string[], tabs: { id: string; name: string }[], report: { reemit?: boolean; freshHost?: string } | undefined, live: string[]) => void;
+  cross: (id: string) => void;
+  tick: (ms: number) => void;
+  state: () => { tabOrderSeen: boolean; order: string[]; tabMeta: string[]; closing: string[]; colEmptyPosted: boolean };
+};
+function stripWorld(o: { col: string; sets: ColSets | null; wantActive?: string | null }): { api: StripApi; HOOKS: StripHooks; W: { sets: ColSets | null } } {
+  const HOOKS: StripHooks = { posts: [], renders: [], dismissed: [], toasts: [], shown: 0 };
+  const W = { sets: o.sets };
+  const PARENT = { postMessage(m: Record<string, unknown>) { HOOKS.posts.push(m); }, __rompChatSets: () => W.sets };
+  const win = { parent: PARENT, frameElement: { id: "f-chat-" + o.col } };
+  const js = requireCjs("esbuild").transformSync(
+    [line("heldHere"), line("tabInView"), fn("stripLists"), fn("ackClosingTabs"), fn("applyTabOrder"), fn("noteColumnEmptiness")].join("\n"), { loader: "ts" }).code;
+  const prelude = `
+    const { columnHolds, isProvisionalId, isSubId, syncSessionsFromTabMeta, reconcileTabOrder, retainLiveOmitted, hostOf, localStrip, HOOKS } = W;
+    const COL = W.col;
+    let colSets = W.sets, tabOrderSeen = false, activeId = null, provisionalId = null, wantActive = W.wantActive, vanishedId = null;
+    const failedProvisionals = new Set(); let colEmptyPosted = false; let boardLive = new Set();
+    const readColSets = () => W.shell.sets;
+    const peekId = null; const chatVisible = () => true;
+    const tabMeta = new Map(), sessions = new Map(), pendingTabMeta = new Map(), closingTabs = new Map(), kernelListed = new Set(); const order = [];
+    const CLOSE_ACK_MS = 15_000; let clock = 1_000_000; const Date = { now: () => clock };
+    const vscodeApi = null;
+    const dismissSession = (id, why) => { HOOKS.dismissed.push([id, why]); sessions.delete(id); const i = order.indexOf(id); if (i >= 0) order.splice(i, 1); };
+    const restoreIfShown = () => false; const showActive = () => { HOOKS.shown++; }; const warnToast = (t) => { HOOKS.toasts.push(t); };
+    const renderTabs = () => { colSets = readColSets(); const ids = [], seen = new Set();
+      for (const id of order) { if (!seen.has(id) && stripLists(id)) { seen.add(id); ids.push(id); } }
+      for (const id of tabMeta.keys()) { if (!seen.has(id) && stripLists(id)) { seen.add(id); ids.push(id); } }
+      HOOKS.renders.push(ids.slice()); noteColumnEmptiness(ids); };
+  `;
+  const epilogue = `
+    return {
+      frame: (o, tabs, report, live) => applyTabOrder(o, tabs, report, live),
+      cross: (id) => { closingTabs.set(id, Date.now()); dismissSession(id, "close"); renderTabs(); },
+      tick: (ms) => { clock += ms; },
+      state: () => ({ tabOrderSeen, order: order.slice(), tabMeta: [...tabMeta.keys()], closing: [...closingTabs.keys()], colEmptyPosted }),
+    };
+  `;
+  const make = new Function("W", "window", prelude + js + epilogue) as (w: unknown, win: unknown) => StripApi;
+  const api = make({ columnHolds, isProvisionalId, isSubId, syncSessionsFromTabMeta, reconcileTabOrder, retainLiveOmitted, hostOf, localStrip, HOOKS,
+                     col: o.col, sets: W.sets, shell: W, wantActive: o.wantActive ?? null }, win);
+  return { api, HOOKS, W };
+}
+
+test("the vanishing tab: a synthetic re-emission served from an empty store ahead of the kernel's strip is not the board, so a fresh column posts no emptiness; the kernel's own strip arms the flag", () => {
+  const w = stripWorld({ col: "2", sets: { "2": [API] }, wantActive: API });
+  w.api.frame([], [], { reemit: true }, []);   // federation.ts emitMergedOrder over an empty per-host store: order [], flagged reemit
+  assert.equal(w.api.state().tabOrderSeen, false, "a re-emission is never the kernel's word: the board has not been heard");
+  assert.deepEqual(w.HOOKS.posts, [], "…so nothing is said about emptiness and the column stands");
+  w.api.frame([WEB, API, TESTS], T3, { freshHost: "" }, [WEB, API, TESTS]);   // the LOCAL kernel's strip, fresh
+  assert.equal(w.api.state().tabOrderSeen, true, "the kernel's own strip arms it");
+  assert.deepEqual(w.HOOKS.posts, [], "the member is listed");
+  assert.deepEqual(w.HOOKS.renders.at(-1), [WEB, API, TESTS]);
+  w.api.frame([WEB, API, TESTS], T3, { reemit: true }, [WEB, API, TESTS]);   // another pane's drag: a re-emission from a filled store
+  assert.deepEqual(w.HOOKS.posts, [], "a re-emission carrying the member says nothing either");
+  w.api.frame([WEB, TESTS], T2, { freshHost: "" }, [WEB, TESTS]);   // the member ended: the kernel omits it and no longer affirms it live
+  assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [API], crossed: [] }], "the emptiness is said from the kernel's own strip, and no member went by this page's cross");
+});
+
+test("provenance: a remote host's fresh push ahead of the local strip arms nothing; a frame with no provenance (a kernel that sends directly, VS Code) is the kernel's own word", () => {
+  const r = stripWorld({ col: "2", sets: { "2": [API] } });
+  r.api.frame(["TESTHOST:" + U], [{ id: "TESTHOST:" + U, name: "remote" }], { freshHost: "TESTHOST" }, ["TESTHOST:" + U]);
+  assert.equal(r.api.state().tabOrderSeen, false, "another kernel's push says nothing about this kernel's sessions");
+  assert.deepEqual(r.HOOKS.posts, []);
+  r.api.frame([WEB, API, "TESTHOST:" + U], [...T3.slice(0, 2), { id: "TESTHOST:" + U, name: "remote" }], { freshHost: "" }, [WEB, API, "TESTHOST:" + U]);
+  assert.equal(r.api.state().tabOrderSeen, true);
+  const s = stripWorld({ col: "2", sets: { "2": [API] } });
+  s.api.frame([WEB, API], T3.slice(0, 2), { reemit: false, freshHost: undefined }, [WEB, API]);   // the dispatch's shape for a frame the kernel sent directly
+  assert.equal(s.api.state().tabOrderSeen, true, "no federation: the frame is the kernel's");
+});
+
+test("a first strip that omits a live member (T258's shape on a fresh column) keeps the column: the kernel's live set affirms it", () => {
+  const w = stripWorld({ col: "2", sets: { "2": [API] } });
+  w.api.frame([WEB, TESTS], T2, { freshHost: "" }, [WEB, API, TESTS]);
+  assert.equal(w.api.state().tabOrderSeen, true);
+  assert.deepEqual(w.HOOKS.posts, [], "the kernel affirms the member live: a strip omitting it is a transient read failure, never an emptiness");
+  w.api.frame([WEB, API, TESTS], T3, { freshHost: "" }, [WEB, API, TESTS]);
+  assert.deepEqual(w.HOOKS.renders.at(-1), [WEB, API, TESTS], "re-listed in place");
+  w.api.frame([WEB, TESTS], T2, { freshHost: "" }, [WEB, TESTS]);
+  assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [API], crossed: [] }], "omitted AND no longer live: gone");
+});
+
+test("the user's own cross empties the column at once and is named (crossed), so the shell holds only that id back in the first column; an ended member is gone but not crossed", () => {
+  const w = stripWorld({ col: "2", sets: { "2": [API, TESTS] } });
+  w.api.frame([WEB, API, TESTS], T3, { freshHost: "" }, [WEB, API, TESTS]);
+  w.api.cross(API);   // ✕ on API: the kernel goes on listing it for a push or two
+  assert.deepEqual(w.HOOKS.posts, [], "TESTS still listed: the column stands");
+  w.api.frame([WEB, API], T3.slice(0, 2), { freshHost: "" }, [WEB, API]);   // TESTS ended meanwhile; API still listed, still crossed here
+  assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [API, TESTS], crossed: [API] }], "both gone from this column; only API by this page's cross");
+  const b = stripWorld({ col: "2", sets: { "2": [API, TESTS] } });
+  b.api.frame([WEB, API, TESTS], T3, { freshHost: "" }, [WEB, API, TESTS]);
+  b.api.cross(API); b.api.cross(TESTS);
+  assert.deepEqual(b.HOOKS.posts, [{ romp: "colEmpty", gone: [API, TESTS], crossed: [API, TESTS] }], "two crosses: both named");
 });
