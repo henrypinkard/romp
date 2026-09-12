@@ -3038,7 +3038,7 @@ class PlanTuning(unittest.TestCase):
         import inspect
         # the wrap-up asks for no reply since 2026-07-29, so ONE card is the exception, not the default
         # the phrase spans two source literals, so pin the half that carries the rule
-        self.assertIn("**one** new top-level goal, blocked on the user", inspect.getsource(jd.plan_units))
+        self.assertIn("**one** new top-level goal, blocked on the user", inspect.getsource(jd.plan_units) + inspect.getsource(jd._work_note))   # the note lives in the planner's note helper (T377)
 
     def test_menu_prompts_state_the_numbering_base(self):
         # The zero-based tell's prompt half (the user 2026-07-17): every menu-reading prompt says the

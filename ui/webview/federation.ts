@@ -1302,10 +1302,17 @@ export class FederationManager {
   // tabOrder push mutates the store, in absorbHostReport below, because only a host's own report is
   // evidence about what exists.
   private emitMergedOrder(fresh = false, freshHost: string = LOCAL): void {
+    this.publishPending();   // before the hold, as emitMergedTimeline does: a pane waiting on its LOCAL strip is waiting on the remotes too
+    // HOLD a synthetic re-emission until the LOCAL kernel's strip is in the store — the hold emitMergedTimeline applies to
+    // its own payload. A re-emission is re-served from the stored slices, and on a fresh page those are EMPTY until the
+    // local strip is absorbed: the merged order would be [], which the chat reads as the board (the vanishing tab, the
+    // user 2026-09-12: another pane's view-order write reached a new chat column's manager in that window, the column
+    // reported its one member gone and the shell closed it). The local kernel pushes its strip on connect, so the hold is
+    // momentary, and the local arrival itself emits; a host's own FRESH push is never held — its ids are its word.
+    if (!fresh && !(LOCAL in this.perHostOrder)) return;
     const order = mergeHostOrder(this.perHostOrder, this.hostSeq, this.view());
     const tabs = this.hostSeq.flatMap((h) => this.perHostTabs[h] || []);
     const live = this.hostSeq.flatMap((h) => this.perHostLive[h] || []);   // T258: the union the pane's omission guard reads
-    this.publishPending();
     // `skeleton` rides EVERY merged strip, an array even when empty: the pane's rule is "array → replace,
     // absent → keep", and this frame is the union of every host's slice — the authority the pane must
     // replace from. Leaving the key off an empty union would tell the pane "no news" and let a set the
@@ -1350,6 +1357,7 @@ export class FederationManager {
     const reporting = new Set(Object.keys(this.perHostOrder));
     const live = new Set<string>();
     for (const h of reporting) for (const id of this.perHostOrder[h] || []) live.add(id);
+    for (const h of reporting) for (const id of this.perHostLive[h] || []) live.add(id);   // T258: an id the host affirms live but this strip omits stays placed — a transient read failure must not drop it from the arrangement to re-adopt it at the end
     const seed: string[] = [];
     for (const h of this.hostSeq) seed.push(...(this.perHostOrder[h] || []));
     const next = adoptArrivals(pruneViewOrder(healed, hostOf, reporting, live), seed);

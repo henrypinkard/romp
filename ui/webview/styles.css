@@ -90,23 +90,15 @@ body.scheme-solarized-dark {
   --err: #c0392b;   /* unified with the awaiting/blocked red (the user 2026-06-24): one "needs you" red. API-error (--st-blocked-bg #e5484d) stays distinct. */
   --warn: #d7a23a;  /* the heads-up amber — "attention, not an error". Was referenced with fallbacks but never
                        defined (a phantom token) until 2026-08-26; mirrored in feed.css (own :root). */
-  /* the postal card's three KIND colours (T320, the user 2026-09-10): one SEQUENTIAL ramp in the accent's hue, not
-     three unrelated hues, ranked by how much the kind asks of the reader: coordination lowest (an FYI), delegation
-     next (work handed over), question highest (an answer owed). More asking = more intense against the page. The
-     three are sampled EVENLY, at positions 0, 1/2 and 1 of one straight line in OKLCH (T337, the user 2026-09-10, who
-     found the first three too alike: T320's steps sat at L .66, .76 and .85 with the top two at one saturation, so
-     they read as two tints of one blue). The line's two ends are two floors. The deep end is the deepest blue that
-     still reads at 4.5:1 on the PROVISIONAL card, the darkest ground a kind word sits on (a sent card not yet landed
-     wears the pending bubble's dress, an 8.5% wash of --you over the page; the boxed card and the bare page sit above
-     it): L .65, C .10. The far end stops short of the prose ink, so a lone Question still reads as a colour and not
-     as body text: the accent's own height, L .85, C .078, the sRGB gamut's edge for the hue; hue pinned
-     at the accent's 244 throughout. The trade-off is span against distance from the ink: a brighter far end widens
-     the ramp but converges on --fg (L .845), and this end keeps the word 0.079 from it in OKLab, all of it chroma.
-     Contrast: 5.2:1, 7.6:1 and 10.6:1 on the page, 4.8:1, 7.0:1 and 9.8:1 on a boxed card, 4.8:1, 7.0:1 and 9.8:1 on the provisional
-     wash. The light theme runs its own line the other way, deepening toward the dark end of its clay accent (below).
-     postal-kind-ramp.test.ts holds the positions and the distance from the ink, theme-parity.test.ts the contrast on
-     all three grounds. */
-  --postal-coordinate: #5696c8;  --postal-delegate: #7cb5e3;  --postal-question: #a2d4fe;
+  /* the three mail KINDS (Delegation / Coordination / Question) as coloured TEXT on the card head (T302; T371, the user
+     2026-09-12, who found coordinate and delegate alike: T337's three steps on ONE accent-hue line read as three tints
+     of one blue): three HUES now, sampled from the default progress colormap (aurora, bin/romp_colormap.py), so the two
+     the user confused sit farthest apart on the ramp. The mapping, in this one place (the light block below re-inks the
+     same three hues): coordinate = the ramp's first stop (green), question = its fourth stop (teal-blue), delegate = its
+     last stop (purple). The dark tokens ARE the stops; each reads above 5:1 on the page, the boxed card, the
+     provisional wash and the peer-tinted ground (theme-parity.test.ts holds the contrast on all four), and
+     postal-kind-ramp.test.ts holds the stops, the hue distances and the distance from the prose ink. */
+  --postal-coordinate: #54b204;  --postal-delegate: #9088f0;  --postal-question: #42a9b0;
   --postal-wash-l: 0.263;  --postal-wash-c: 0.03;   /* the incoming card's tint: the peer's hue at the box ground's own
                                                        OKLab lightness (the page under the 3% box), a gentle chroma (T337b).
                                                        The lightness here is the shipped theme's FALLBACK: the chat measures
@@ -251,11 +243,10 @@ body.theme-light {
   --hl-cmt: #67614f; --hl-title: #8C4A00; --hl-meta: #6E6455; --hl-attr: #7A5A20;   /* --hl-cmt from #6E675C (4.39:1 on a code block) to 4.86:1 */
   --box-bg: rgba(0, 0, 0, 0.03);
   --box-border: rgba(0, 0, 0, 0.12);
-  /* the kind ramp (T320, T337): the accent's clay hue (OKLCH 38) deepening with rank, sampled evenly along the line
-     from L .50, C .11 (the same first step as T320, the lightest clay that reads at 4.5:1 on the provisional wash) to
-     L .30, C .098 (the hue's gamut edge there; a deep rust that stays red, short of the prose ink --fg at L .236: 0.118 from it in OKLab); 5.3:1, 8.1:1 and 11.8:1
-     on the cream page, 4.9:1, 7.6:1 and 11.1:1 on a boxed card, 4.8:1, 7.3:1 and 10.7:1 on the provisional wash */
-  --postal-coordinate: #974a32;  --postal-delegate: #752f18;  --postal-question: #551400;
+  /* the three kind hues of the aurora stops (the :root comment holds the mapping), each deepened on its own hue to read
+     at 4.6:1 or better on the cream page, the boxed card, the provisional wash and the peer-tinted ground at every hue
+     (T371: the hues hold within a degree of the stops, OKLCH L about .49, chroma at the gamut's edge for the two vivid ones) */
+  --postal-coordinate: #386f18;  --postal-delegate: #5f57ab;  --postal-question: #0d6d73;
   --postal-wash-l: 0.919;  --postal-wash-c: 0.045;  /* the cream under the 3% box; a stronger chroma: the cream's own hue
                                                        (71) sits near a warm peer's, and at .03 that tint read at less than half
                                                        a cool one's distance from the ground (T337c, the review of 2026-09-11) */
@@ -707,6 +698,14 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    (the user 2026-06-26). The icon is the same metaphor as the timeline lane toggles; a .off icon is slashed
    + dimmed to show the flag is currently off (matching the timeline). */
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--box-border); }
+/* a flyout's group head (the Billing flyout's "Default for this machine", T380): a row that names the radios under it
+   and takes no gesture, so no hover wash; the radios below wear the menu's own current mark */
+.ctx-sub-head, .ctx-sub-head:hover { cursor: default; background: transparent; }
+/* the Billing flyout stays a menu's width (review: the note had grown it to 585 px, past narrow windows): the head's
+   note wraps inside it instead of stretching it */
+.ctx-sub-billing { max-width: 22em; }
+.ctx-sub-billing .ctx-sub-head { white-space: normal; }
+.ctx-sub-billing .ctx-sub-head .ctx-item-sub { display: block; white-space: normal; line-height: 1.3; }
 .ctx-item-toggle { display: flex; align-items: flex-start; gap: 8px; }
 /* ON = the romp accent blue, matching the timeline lane's feed/mail icons (the user 2026-06-26); OFF = dim
    gray + slashed. So the same blue marks "enabled" in both the menu and the timeline. */
@@ -1682,11 +1681,18 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .tx-spacer { width: 100%; pointer-events: none; }
 /* "Loading earlier messages…" cue while a window expand/jump renders un-rendered history (render.ts). Pinned
    top-center of the chat pane, above the transcript, non-interactive. */
+/* T365 (the user 2026-09-12): the loading pill is anchored to the CHAT SECTION, never the viewport. showLoadingPill
+   inserts a zero-height .tx-loading-anchor right before #content in the page's flex column (tab bar, its resize grip,
+   the ledger box, then the transcript), so the pill's top edge follows the tab strip's bottom by layout alone, however
+   many rows the strip wraps into and however that changes while the pill shows; the viewport-fixed top:10px it had
+   sat on the tabs, and on the tabs themselves once the strip wrapped. The surface rides the menu tokens so it reads
+   on cream as on the dark page. */
+.tx-loading-anchor { position: relative; flex: 0 0 auto; height: 0; width: 100%; overflow: visible; z-index: 50; pointer-events: none; }
 .tx-loading-pill {
-  position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50;
-  background: rgba(20, 24, 33, 0.92); color: var(--accent, #9cd2ff); font-size: 12px; font-weight: 600;
-  padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: none;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4); border: 1px solid rgba(156, 210, 255, 0.25);
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50;
+  background: var(--vscode-menu-background, var(--surface-raised)); color: var(--accent, #9cd2ff); font-size: 12px; font-weight: 600;
+  padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: none; white-space: nowrap;
+  box-shadow: var(--shadow-toast); border: 1px solid var(--menu-border);
 }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
 .turn-tool, .turn-thinking, .turn-toolgroup { padding-top: 4px; padding-bottom: 4px; }
@@ -1925,6 +1931,8 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 /* fork lives BELOW the response it branches from (the user 2026-08-19) — .fork-spot rides the run's
    LAST assistant turn (applyForkSpots), revealed by hovering that turn, left with the response column */
 .fork-spot { display: flex; margin-top: 3px; }
+.msg-fork { display: inline-flex; align-items: center; gap: 4px; }   /* the fork glyph beside the word (T381) */
+.msg-fork svg { display: block; width: 12px; height: 12px; }
 .turn-assistant:hover .msg-fork, .msg-fork:focus-visible { opacity: 0.9; }
 .msg-fork:hover { color: var(--fg); border-color: var(--accent); }   /* non-destructive: accent, never the rewind red */
 /* armed = one click from rolling back: destructive red, holds until blur/pointerleave/re-render */
@@ -2092,36 +2100,18 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
   color: var(--dim); background: transparent; border: 0; border-radius: 6px; padding: 0;
 }
 .queued-x:hover { color: var(--vscode-errorForeground, #f48771); background: rgba(255, 255, 255, 0.08); }
-/* EDITABLE — a ✎ beside the ✕ (the user 2026-09-08): a message that has not reached the session yet is still
-   the user's to change. Same corner, same dim-until-hover treatment; the ACCENT (not red) on its own hover — it
-   changes the message, it does not remove it. The bubble reserves room for both controls. */
-.queued-bubble.editable { padding-right: 52px; }
+/* EDIT — a ✎ in the ✕'s corner (the user 2026-09-08; the message's ONE control since T373): a message that has not
+   reached the session yet is still the user's to change; the ✎ takes it out of the queue and back into the composer.
+   The ✕ stays on commands and romp's own words. Same dim-until-hover treatment; the ACCENT (not red) on its own
+   hover — it gives the message back, it does not remove it. The bubble reserves room for the one control. */
+.queued-bubble.editable { padding-right: 28px; }
 .queued-edit {
-  position: absolute; top: 3px; right: 26px; width: 20px; height: 20px;
+  position: absolute; top: 3px; right: 4px; width: 20px; height: 20px;
   display: flex; align-items: center; justify-content: center;
   font: inherit; font-size: 0.82em; line-height: 1; cursor: pointer;
   color: var(--dim); background: transparent; border: 0; border-radius: 6px; padding: 0;
 }
 .queued-edit:hover { color: var(--accent); background: rgba(255, 255, 255, 0.08); }
-/* EDITING IN PLACE (T306, the user 2026-09-10): the ✎ turns the bubble's text into a field where it sits — the same
-   width, the dashed provisional look kept, the ✕ still in its corner — with Save and Cancel under the text. The field
-   inherits the bubble's type; the buttons and the labels wear the queued header's 0.82em. A bubble another client is
-   editing reads "editing" beside its text; a refused edit says why on its own line. */
-.queued-bubble.editing { --prov-ink: var(--fg); border-color: var(--accent); padding-right: 52px; box-sizing: border-box; }   /* full ink while editing (the old opacity lift, now the ink: T337); the width set from the measured bubble is its border box; the idle padding kept, so the words keep their wrap (the ✎'s room stays empty) */
-.queued-editor { display: flex; flex-direction: column; gap: 6px; }
-.queued-editbox {
-  width: 100%; box-sizing: border-box; display: block; resize: none; overflow: hidden;
-  font: inherit; line-height: inherit; color: var(--fg); background: transparent; border: 0; padding: 0; margin: 0; outline: none;
-}
-.queued-editbtns { display: flex; justify-content: flex-end; gap: 6px; }
-.queued-editbtn {
-  font: inherit; font-size: 0.82em; line-height: 1.4; cursor: pointer; padding: 2px 9px; border-radius: 6px;
-  color: var(--fg); background: transparent; border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent);
-}
-.queued-editbtn:hover { border-color: var(--accent); }
-.queued-editbtn.save { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
-.queued-held-label { font-size: 0.82em; color: var(--dim); margin-left: 8px; font-style: italic; }
-.queued-editnote { font-size: 0.82em; color: var(--vscode-errorForeground, #f48771); margin-top: 4px; }
 /* A notice romp itself queued (T243) wears the LANDED romp notice card nested inside the queued bubble: the
    dashed "you" dress comes off the wrapper (the card brings its own gray tone), and the ✕ moves inside the
    card's corner so it reads as the card's control. */
@@ -2188,13 +2178,14 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
   text-decoration: underline dotted; text-underline-offset: 2px;
 }
 .img-link:hover { text-decoration: underline; }
-/* a bare file:// URL in a chat message, made clickable (opens in the host's default app) — the romp
-   accent so it reads as a followable link; a long path wraps inside the bubble */
+/* a bare file:// URL or a path in a chat message, made clickable (opens in the host's default app) — the link
+   dress, exactly as .md a wears it (T378; the accent and a dotted underline before); a long path wraps inside the bubble */
 .file-uri-link {
-  cursor: pointer; overflow-wrap: anywhere; color: var(--accent);
-  text-decoration: underline dotted; text-underline-offset: 2px;
+  cursor: pointer; overflow-wrap: anywhere; color: var(--link);
+  text-decoration: underline solid; text-underline-offset: 2px;
 }
 .file-uri-link:hover { text-decoration: underline; }
+pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (2026-09-12): the accent over the highlight's token colour beneath it */
 .img-copy { flex: 0 0 auto; cursor: pointer; padding: 0 3px; border-radius: 3px; }
 .img-copy:hover { background: rgba(255, 255, 255, 0.18); }
 /* (harness-injected user-role lines — a compact summary, /command stdout — are a SYSTEM notice now; the
@@ -2582,9 +2573,9 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
    T320 (the user, later that day): the word wears the prose weight, not bold, and its three colours are one
    sequential ramp ranked by how much the kind asks of the reader (the tokens' comment has the ranking). */
 .postal-kind { font-weight: 400; }
-.postal-kind-delegate { color: var(--postal-delegate, #7cb5e3); }
-.postal-kind-coordinate { color: var(--postal-coordinate, #5696c8); }
-.postal-kind-question { color: var(--postal-question, #a2d4fe); }
+.postal-kind-delegate { color: var(--postal-delegate, #9088f0); }
+.postal-kind-coordinate { color: var(--postal-coordinate, #54b204); }
+.postal-kind-question { color: var(--postal-question, #42a9b0); }
 /* BOTH ENDS of a postal card in the head, each in its session's identity colour (the peer's chip as before, and this
    session's own chip after it); a narrow head collapses this session's chip to its coloured dot, so both colours
    still show where the words would not fit */
@@ -2750,8 +2741,11 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .md li { margin: 0.2em 0; }
 .md strong { color: var(--vscode-foreground, #fff); font-weight: 600; }
 .md em { font-style: italic; }
-.md a { color: var(--link); text-decoration: none; }
-.md a:hover { text-decoration: underline; }
+/* every link in chat prose wears ONE dress (T378, the user 2026-09-12: one light blue, one solid underline, never dotted):
+   the link token, a solid underline at rest, the same offset — a titled or bare URL here, a path (.file-uri-link) and a
+   glossary term (.term-link) below all read this exact pair. The dark theme's --link is the accent on the served page
+   (kernel.py THEME_CSS emulates --vscode-textLink-foreground with it; VS Code's own theme colours it in the editor). */
+.md a { color: var(--link); text-decoration: underline solid; text-underline-offset: 2px; }
 /* PR references linked in plain-text surfaces (pr-links.ts): card titles, distiller lines, checklists,
    outline goal rows. Inside .md the generic anchor rule already inks them; this covers the rest, in the
    same hyperlink ink. */
@@ -3238,9 +3232,6 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 }
 .warn-toast-x:hover { color: var(--fg); background: rgba(255, 255, 255, 0.08); }
 .warn-toast.fade { opacity: 0; }
-.warn-toast.sticky { border-color: var(--accent); }
-.warn-toast-copy { font: inherit; font-size: 0.82em; cursor: pointer; padding: 1px 8px; border-radius: 6px; color: var(--fg); background: transparent; border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); margin-left: 6px; }
-.warn-toast-copy:hover { border-color: var(--accent); }
 
 /* INTERRUPTING… chip (the user 2026-07-02): the stop is in flight — busy-yellow like working (it still
    is, briefly) but dimmed and static (no pulse, no timer); clears to READY on its own when the stop lands. */
@@ -3273,6 +3264,11 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 /* composer drop cue: dragging a file over the box shows it will be accepted
    (its path gets inserted at the cursor on drop) */
 #composer-input.drop-target { outline: 1.5px dashed var(--vscode-focusBorder, #4daafc); outline-offset: -2px; }
+/* a file drag over the chat pane (the user 2026-09-12): the WHOLE pane is the drop area and says so — a dashed inset ring
+   over the pane while the drag is over it (pointer-transparent, above the pane's own layers), the box's outline above as the
+   landing spot. Each split column is its own document, so each rings on its own. */
+body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 300;
+  outline: 2px dashed var(--accent); outline-offset: -4px; }
 
 /* ---- cross-highlight from the feed modal (glowTurns) ---- */
 /* Hovering a row in a feed-card modal lights the matching turns here in the SAME thicken-in-color
@@ -3400,7 +3396,7 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 .path-full-pdfcard:hover { border-color: var(--accent); }
 /* a whole-backtick URL, tappable but still dressed as code (render.ts linkifyFileUris) */
 .url-code-link { text-decoration: none; cursor: pointer; }
-.url-code-link code { text-decoration: underline dotted; text-underline-offset: 2px; }
+.url-code-link code { text-decoration: underline solid; text-underline-offset: 2px; }   /* solid: no link is dotted (T378) */
 .url-code-link:hover code { color: var(--accent); }
 /* a kernel-VERIFIED preview whose bytes failed to arrive (restart, tunnel blip) — visible, retryable,
    never silently removed (preview.ts previewFull) */
@@ -3668,8 +3664,6 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 .file-preview-pop .fp-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .file-preview-pop .fp-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-preview-pop .fp-sub { color: var(--dim); font-family: ui-monospace, monospace; font-size: 0.86em; white-space: nowrap; }
-.file-preview-pop .fp-open { margin-left: auto; flex: 0 0 auto; cursor: pointer; background: transparent; color: var(--accent); border: 1px solid var(--card-border); border-radius: 5px; padding: 2px 10px; font: inherit; font-weight: 600; }
-.file-preview-pop .fp-open:hover { background: var(--accent-wash); }
 .file-preview-pop .fp-note { color: var(--dim); font-style: italic; }
 .file-preview-pop .fp-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .file-preview-pop .fp-body.fp-image { display: flex; align-items: center; justify-content: center; }
@@ -3681,9 +3675,10 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 /* a callout (md-wiki.ts calloutBlockquote): the kind as a small label at the top of its blockquote */
 /* the glossary's term links (T351 stage 2, design A): a quiet dotted underline in the text colour, no colour change;
    a retired term greys (its card says to use the plain phrase) */
-.term-link { text-decoration: underline dotted; text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: help; }
-.term-link:hover, .term-link:focus-visible { text-decoration-style: solid; outline: none; }
-.term-link.term-retired { opacity: 0.6; }
+/* a glossary term is a link to the glossary's section and dresses as one (T375, the user 2026-09-12): the link colour,
+   a solid underline at the same offset as .md a (T378), the pointer; nothing else marks it */
+.term-link { color: var(--link); text-decoration: underline solid; text-underline-offset: 2px; cursor: pointer; }
+.term-link:focus-visible { outline: none; }
 .md-callout-label { font-size: 0.72em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent); margin: 0 0 2px; }
 /* the popover's boot loader (the user 2026-08-25: a fresh thread flashed the plain msgs projection
    before jumping into the chat rendering) — the standard romp loader holds the conversation area
@@ -3915,34 +3910,54 @@ body.fileview-open { overflow: hidden; }
 .fileview-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 /* the GitHub link wears the button treatment but IS an anchor — the browser owns the new tab */
 a.fileview-btn { text-decoration: none; display: inline-flex; align-items: center; }
-/* the GitHub action is one unit: the control and, when the kernel gave one, its reason as a caption
-   beside it — visible without hover (touch has none, and a disabled button takes no focus), and whole:
-   it wraps inside a bounded width rather than truncating, because nothing in the unit takes a tap,
-   click or focus that could finish a cut sentence; same size as the buttons it annotates, ragged edge
-   away from the control it precedes. */
+/* the GitHub action is one unit holding the link when the kernel's check resolves to a URL, and hidden otherwise
+   (T367: no greyed button, no caption; the [hidden] rule below takes it out of the row's flow) */
 .fileview-gh { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-.fileview-gh-why { font-size: 0.82em; line-height: 1.25; color: var(--dim); max-width: 18em; text-align: right; }
-/* pending: the kernel's check is on its way (up to 3 s when it must ask origin), so the slot holds the
-   dimmed button and the loader's dots (.fileview-dot, the pane's own) where the caption will go — a slow
-   check must read as a wait, not as the old no-button state nor as a verdict (the loading-state rule) */
-.fileview-gh-dots { display: inline-flex; align-items: center; gap: 4px; }
-/* a disabled bar button, greyed, hover inert: the GitHub unit's no-link state (a real disabled button, never
-   hidden: an absent button read as "broken" when the file was simply not committed yet, 2026-09-05), the
-   editor's Save while a save is in flight (disabled and reading "Saving…"), and the text-size control's ends
-   (A− at the smallest step, A+ at the largest; aria-disabled, so the button keeps the keyboard focus it holds
-   and the ring stays where the person left it). One treatment for every bar button, so neither an end nor a
-   save in progress reads as live under the pointer. */
+/* a disabled bar button, greyed, hover inert: the editor's Save while a save is in flight (disabled and reading
+   "Saving…"), and the text-size control's ends (A− at the smallest step, A+ at the largest; aria-disabled, so
+   the button keeps the keyboard focus it holds and the ring stays where the person left it). One treatment for
+   every bar button, so neither an end nor a save in progress reads as live under the pointer. */
 .fileview-btn:disabled, .fileview-btn[aria-disabled="true"] { opacity: 0.55; cursor: default; }
 .fileview-btn:disabled:hover, .fileview-btn[aria-disabled="true"]:hover { border-color: var(--card-border); color: var(--fg); background: transparent; }
 .fileview-btn:disabled:active, .fileview-btn[aria-disabled="true"]:active { transform: none; }
-/* the text-size readout between A− and A+ (file-view.ts textSizeControl): a slot of ONE width whatever it
-   says, and at the default (nothing to reset, nothing to say) an empty slot rather than none, so A− never
-   moves under the pointer when the readout appears after the first press. visibility, not display: the slot
-   stays, the button leaves the tab order. */
+/* the text-size readout between A− and A+ in the zoom flyout (file-view.ts textSizeControl): a slot of ONE
+   width whatever it says, so A− never moves under the pointer as the number changes; at the default (nothing
+   to reset) it reads dimmed rather than empty (T367). */
 .fileview-size-reset { min-width: 5.5em; box-sizing: border-box; text-align: center; font-variant-numeric: tabular-nums; }
-.fileview-size-reset.fileview-size-default { visibility: hidden; }
-/* a link whose branch is not on origin yet: dashed, the caption carries the note */
+.fileview-size-reset.fileview-size-default { color: var(--dim); }
+/* a link whose branch is not on origin yet: dashed, the note in its tooltip and aria-label */
 a.fileview-gh-note { border-style: dashed; }
+/* T367 (the user 2026-09-12): the bar's controls in GROUPS that read as units — the view group (the Rendered|Raw
+   pair, the SVG Source toggle, the text-size glyph) and the file group (edit, the GitHub link, download, copy path),
+   set apart by a wider gap than the controls within them; the close cross alone at the end. The wider gaps apply
+   only where groups exist: the file browser's row and the URL viewer's flat row keep their spacing. */
+.fileview-group { display: inline-flex; align-items: center; gap: 4px; }
+.fileview-acts > .fileview-group + .fileview-group, .fileview-acts > .fileview-group ~ .fileview-close { margin-left: 10px; }
+/* the Rendered|Raw pair is ONE segmented control: joined, the shared hairline drawn once, the outer corners rounded,
+   the pressed segment's accent border over the seam */
+.fileview-seg { display: inline-flex; align-items: stretch; }
+.fileview-seg .fileview-btn { border-radius: 0; }
+.fileview-seg .fileview-btn + .fileview-btn { margin-left: -1px; }
+.fileview-seg .fileview-btn:first-child { border-radius: 6px 0 0 6px; }
+.fileview-seg .fileview-btn:last-child { border-radius: 0 6px 6px 0; }
+.fileview-seg .fileview-btn.on { position: relative; z-index: 1; }
+/* a glyph button: the drawing alone, its words in the title and aria-label (one hover away); the copy control's
+   acknowledgements (a check, a cross) recolour it; a busy press dims it until the answer */
+.fileview-btn.fileview-icon { display: inline-flex; align-items: center; justify-content: center; padding: 3px 7px; line-height: 1; }
+.fileview-btn.fileview-icon svg { display: block; }
+/* the display an author rule sets (inline-flex on a glyph button, on a group) would beat the browser's own [hidden]
+   rule, and a hidden edit pencil or zoom glyph would still paint (found on the lab's image screenshot) */
+.fileview-btn[hidden], .fileview-group[hidden], .fileview-zoom[hidden], .fileview-gh[hidden] { display: none; }
+.fileview-btn.fileview-icon.ok { color: var(--accent); border-color: var(--accent); }
+.fileview-btn.fileview-icon.err { color: var(--err); border-color: var(--err); }
+.fileview-btn.fileview-busy { opacity: 0.55; }
+/* the text-size flyout under its glyph: the menu vocabulary (the menu tokens, ui/CLAUDE.md), one row holding A−,
+   the readout and A+; the readout at the default reads dimmed (nothing to reset) rather than empty */
+.fileview-zoom { position: relative; display: inline-flex; }
+.fileview-zoom-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 5; display: flex; align-items: center; gap: 4px; padding: 4px;
+  background: var(--menu-bg, #252526); color: var(--menu-fg, #cccccc); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-menu, 6px); box-shadow: var(--shadow-menu, 0 4px 12px rgba(0, 0, 0, 0.35)); }
+.fileview-zoom-menu[hidden] { display: none; }
 .fileview-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
 /* the raw-mode editor: height: 100% (not flex) — .fileview-body above is a plain overflow block,
    not a flex container, so a flex basis on its child is inert and the textarea sat at the UA's

@@ -31,9 +31,9 @@ import test_ship_reship as _lab   # noqa: E402
 
 SID = "11111111-2222-3333-4444-555555555555"
 FIX = json.loads(Path(HERE, "fixtures", "glossary_grammar.json").read_text())
-REPLY = ("I tesselled the fixes from your review and pushed the tessel head; the quill was security, and the quill again. "
+REPLY = ("I tesselled the fixes from your review and pushed the tessel head; the quill was security, and the quill again. The keytoken previews whole. "
          "The spar on `tessel` stays as code, and docs/guide.md#tessel is a path, not a term. Two tessels landed. "
-         "The unverified docs/widget/tessel.md and the host example.com/tessel/y stay plain too.")
+         "The unverified docs/widget/tessel.md and the host example.com/tessel/y stay plain too. The write-up is at https://example.com/notes-api/readme for the curious, and [the guide](https://example.com/notes-api/guide) has the rest.")
 USER = "Did the tessel cover the second quill?"
 
 
@@ -51,8 +51,8 @@ let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 }, deviceScaleFactor: 2 });
-let requests = 0;
-page.on("request", (r) => { if (/\/glossary\/|\/file\?/.test(r.url())) requests++; });
+let requests = 0; const fileUrls = [];
+page.on("request", (r) => { if (/\/glossary\/|\/file\?/.test(r.url())) requests++; if (/\/file\?/.test(r.url())) fileUrls.push(r.url()); });
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab[data-id]", { timeout: 20000 });
 await page.click('#tabs .tab[data-id="' + cfg.sid + '"]');
@@ -64,19 +64,47 @@ const links = () => page.evaluate(() => Array.from(document.querySelectorAll("#c
 const out = { links: await links() };
 out.codeLinks = await page.evaluate(() => document.querySelectorAll("#content code .term-link, #content a .term-link, #content .file-uri-link .term-link").length);
 out.pathLink = await page.evaluate(() => { const a = document.querySelector('#content .file-uri-link[data-path="docs/guide.md"]'); return a ? { text: a.textContent, frag: a.dataset.frag } : null; });
-// the term card: hover "tessel head" (the multi-word term), no request
-const before = requests;
+// three kinds of link in one message, at rest, in both themes: the computed colour and underline of a term, a
+// path and a bare URL must be one dress (T378, the user 2026-09-12: one light blue, one solid underline, never dotted)
+const dressOf = () => page.evaluate(() => {
+  const pick = (sel) => { const e = document.querySelector(sel); if (!e) return null; const cs = getComputedStyle(e);
+    const chain = []; let n = e.parentElement; for (let i = 0; n && i < 6; i++, n = n.parentElement) chain.push(n.className || n.tagName.toLowerCase());
+    return { tag: e.tagName.toLowerCase(), cls: e.className, color: cs.color, line: cs.textDecorationLine, style: cs.textDecorationStyle, chain }; };
+  return { term: pick('#content .term-link[data-term="tessel-head"]'), path: pick('#content .file-uri-link[data-path="docs/guide.md"]'),
+           url: pick('#content a[href*="notes-api/readme"], #content [data-url*="notes-api/readme"], #content .file-uri-link[data-path*="notes-api/readme"]'),
+           mdlink: pick('#content a[href*="notes-api/guide"]') };
+});
+await page.mouse.move(900, 700); await page.waitForTimeout(200);
+out.dressDark = await dressOf();
+await page.evaluate(() => document.body.classList.add("theme-light")); await page.waitForTimeout(200);
+out.dressLight = await dressOf();
+await page.evaluate(() => document.body.classList.remove("theme-light")); await page.waitForTimeout(200);
+// the hover on "tessel head" (the multi-word term): the glossary file's section at the term's heading, through the slice
+// route like any file link with a section (T375); no card of the term's own
+const before = requests; const filesBefore = fileUrls.length;
 const shot = async (name) => { if (!cfg.shots) return; fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/" + name + ".png", clip: { x: 0, y: 60, width: 1100, height: 520 } }); };
 await page.hover('#content .term-link[data-term="tessel-head"]');
 await page.waitForFunction(() => { const p = document.getElementById("file-preview-pop"); return !!p && getComputedStyle(p).display !== "none" && !!p.querySelector(".fp-body"); }, null, { timeout: 5000 });
 await page.waitForTimeout(150);
+await page.waitForFunction(() => { const b = document.querySelector("#file-preview-pop .fp-body"); return !!b && !b.querySelector(".rl-in") && (b.textContent || "").length > 20; }, null, { timeout: 8000 });
 out.card = await page.evaluate(() => { const p = document.getElementById("file-preview-pop"); const b = p.querySelector(".fp-body");
-  return { title: p.querySelector(".fp-title")?.textContent, sub: p.querySelector(".fp-sub")?.textContent, kind: b?.className, text: b?.textContent?.trim().slice(0, 300), open: p.querySelector(".fp-open")?.textContent }; });
+  return { title: p.querySelector(".fp-title")?.textContent, sub: p.querySelector(".fp-sub")?.textContent, kind: b?.className, text: b?.textContent?.trim().slice(0, 400), termCard: !!p.querySelector(".fp-term"), open: !!p.querySelector(".fp-open"), note: p.querySelector(".fp-note")?.textContent || null }; });
 out.cardRequests = requests - before;
+out.cardFileUrls = fileUrls.slice(filesBefore).map((u) => u.replace(/token=[^&]*/, "token=x"));
+// the dress: a link like any link (the link colour token, a solid underline, the pointer)
+out.dress = await page.evaluate(() => { const s = document.querySelector('#content .term-link[data-term="tessel-head"]'); const cs = getComputedStyle(s);
+  const probe = document.createElement("a"); probe.style.color = "var(--link)"; document.body.appendChild(probe); const link = getComputedStyle(probe).color; probe.remove();
+  return { color: cs.color, link, line: cs.textDecorationLine, style: cs.textDecorationStyle, cursor: cs.cursor, preview: s.dataset.preview, title: s.getAttribute("title") }; });
 await shot("romp_chat-glossary-dark");
 await page.evaluate(() => document.body.classList.add("theme-light")); await page.waitForTimeout(200);
 await shot("romp_chat-glossary-light");
 await page.evaluate(() => document.body.classList.remove("theme-light"));
+await page.mouse.move(900, 700); await page.waitForTimeout(400);
+// a coinage whose definition carries a credential-shaped example line: the glossary is outside the content belt, so its
+// section still previews (the file already reaches the page whole through the index frame and the route)
+await page.hover('#content .term-link[data-term="keytoken"]');
+await page.waitForFunction(() => { const p = document.getElementById("file-preview-pop"); const b = p && p.querySelector(".fp-body"); return !!p && getComputedStyle(p).display !== "none" && !!b && !b.querySelector(".rl-in") && (b.textContent || "").length > 20; }, null, { timeout: 8000 });
+out.keyCard = await page.evaluate(() => { const p = document.getElementById("file-preview-pop"); const b = p.querySelector(".fp-body"); return { kind: b?.className, sub: p.querySelector(".fp-sub")?.textContent, text: b?.textContent?.trim().slice(0, 300), note: p.querySelector(".fp-note")?.textContent || null }; });
 await page.mouse.move(900, 700); await page.waitForTimeout(400);
 // a click opens the glossary in the viewer at the heading
 await page.click('#content .term-link[data-term="tessel"]');
@@ -139,7 +167,8 @@ class ServedGlossary(unittest.TestCase):
         os.makedirs(os.path.join(claude, "glossaries"), exist_ok=True)
         cls.glossary = os.path.join(claude, "glossaries", "web.md")     # the session's own name: the fallback when it has no tag group
         cls.transcript = None
-        Path(cls.glossary).write_text(FIX["text"])
+        example = "api" + "_key" + " = " + "Q" * 24   # a credential-shaped example line, assembled here (gitleaks reads the repo)
+        Path(cls.glossary).write_text(FIX["text"] + "\n## keytoken\n\nAn invented noun whose definition shows an example line.\n\n- plain words: an example holder\n- also: keytokens\n- status: unconfirmed\n- registered: 2026-09-12 by web\n- example: " + example + "\n")
         proj = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cwd)))
         os.makedirs(proj, exist_ok=True)
         Path(state, "names", SID).write_text("web\t%s\t#9cd2ff\t#0c1a2e\n" % cwd)
@@ -171,7 +200,25 @@ class ServedGlossary(unittest.TestCase):
             k.kill(); k.wait()
         shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
 
-    def test_terms_link_where_written_the_card_needs_no_request_and_a_click_lands_the_viewer_on_the_heading(self):
+    def test_a_term_a_path_and_a_url_link_compute_one_colour_and_one_solid_underline_in_both_themes(self):
+        r = self._result()
+        for theme in ("dressDark", "dressLight"):
+            d = r[theme]
+            for kind in ("term", "path", "url", "mdlink"):
+                self.assertIsNotNone(d[kind], "%s: the %s link is on the page: %r" % (theme, kind, d))
+            dress = {k: (d[k]["color"], d[k]["line"], d[k]["style"]) for k in ("term", "path", "url", "mdlink")}
+            self.assertEqual(set(dress.values()), {(d["url"]["color"], "underline", "solid")},
+                             "%s: a term, a path, a bare URL and a titled link wear one dress at rest, the bare URL's colour and a solid underline: %r" % (theme, d))
+        self.assertNotEqual(r["dressDark"]["url"]["color"], r["dressLight"]["url"]["color"], "the two themes differ (the measurement saw both): %r" % r)
+
+    _r = None
+
+    def _result(self):
+        """One driver run per class (the driver rewrites the glossary and appends a transcript record, so a second run
+        would read a different page); both tests read its measurements."""
+        cls = type(self)
+        if cls._r is not None:
+            return cls._r
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
             json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID, "glossary": self.glossary, "transcript": self.transcript,
@@ -186,7 +233,11 @@ class ServedGlossary(unittest.TestCase):
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + open(self.klog).read()[-1500:])
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
-        r = json.loads(line[len("RESULT:"):])
+        cls._r = json.loads(line[len("RESULT:"):])
+        return cls._r
+
+    def test_terms_link_where_written_the_card_needs_no_request_and_a_click_lands_the_viewer_on_the_heading(self):
+        r = self._result()
         texts = [(l["text"], l["term"]) for l in r["links"]]
         # the assistant's words: tesselled (alias), tessel head (longest first: one term), quill once (first), tessels (plural);
         # the user's words: tessel and quill (its own message, its own first)
@@ -199,12 +250,20 @@ class ServedGlossary(unittest.TestCase):
         for l in r["links"]:
             self.assertTrue(l["path"].endswith("glossaries/web.md")); self.assertEqual(l["frag"], l["term"])
         self.assertTrue(any(l["inUser"] for l in r["links"]), "the user's own words link too")
-        # the card, from the index: no request
+        # the hover: the glossary file's section at the term's heading, through the slice route (T375); no card of its own
         c = r["card"]
-        self.assertEqual((c["title"], c["open"]), ("tessel head", "Open glossary")); self.assertIn("fp-term", c["kind"] or "")
-        self.assertIn("unconfirmed", c["sub"]); self.assertIn("web", c["sub"])
-        self.assertIn("The head a review's fixes land on", c["text"]); self.assertIn("plain words:", c["text"])
-        self.assertEqual(r["cardRequests"], 0, "the term card is filled from the index, no fetch")
+        self.assertFalse(c["termCard"], "no term card element: %r" % c); self.assertFalse(c["open"], "no open control: %r" % c)
+        self.assertIn("fp-section", c["kind"] or "", "the section card, as for any file link with a section: %r" % c)
+        self.assertEqual((c["title"], c["sub"]), ("web.md", "#tessel-head"), "the glossary file and the term's heading: %r" % c)
+        self.assertIn("The head a review's fixes land on", c["text"]); self.assertIn("plain words", c["text"], "the definition and its bullets, the whole section: %r" % c["text"])
+        self.assertEqual(len(r["cardFileUrls"]), 1, "one slice fetch for the hover: %r" % r["cardFileUrls"])
+        self.assertIn("anchor=tessel-head", r["cardFileUrls"][0]); self.assertIn("glossaries", r["cardFileUrls"][0]); self.assertIn("slice=1", r["cardFileUrls"][0], "the slice route, as for any file link with a section")
+        d = r["dress"]
+        self.assertEqual(d["color"], d["link"], "the link colour token: %r" % d); self.assertEqual((d["line"], d["style"], d["cursor"]), ("underline", "solid", "pointer"), "a solid underline and the pointer: %r" % d)
+        self.assertEqual(d["preview"], "markdown", "the kind rides the span from the index"); self.assertIsNone(d["title"], "no native title beside the hover")
+        k = r["keyCard"]
+        self.assertIn("fp-section", k["kind"] or "", "the glossary is outside the content belt: a credential-shaped example line still previews: %r" % k)
+        self.assertEqual(k["sub"], "#keytoken"); self.assertIn("An invented noun whose definition shows an example line", k["text"])
         # the click: the viewer on the heading
         self.assertEqual((r["viewer"]["heading"] or "").strip().lower(), "tessel")
         # the route

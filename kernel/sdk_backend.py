@@ -3274,6 +3274,23 @@ def fed_text_opener(text: str) -> str:
     return "injected" if "<!-- romp-injected -->" in (text or "") else "human"
 
 
+# The bus banner's per-message marker, event_model's one detector (its POSTAL_RE; the fallback is the same pattern
+# for a stand-in event_model in tests).
+_POSTAL_MID_RE = getattr(_em, "POSTAL_RE", None) or re.compile(r"<!--\s*romp-msg-id:\s*(\S+?)\s*-->")
+
+
+def postal_mids(text) -> list[str]:
+    """The postal message ids a fed text carries — its `<!-- romp-msg-id: <id> -->` markers, in order, deduped. A
+    non-empty answer says the text is a bus BANNER (SdkBackend.deliver): peer mail, whose only durable copy is the
+    bus's maildir and which has no input echo, so a loss of it has nothing to flag and must go back to the bus by
+    these ids (SdkSession._return_stranded_mail, 2026-09-12)."""
+    out: list[str] = []
+    for m in _POSTAL_MID_RE.findall(text or ""):
+        if m not in out:
+            out.append(m)
+    return out
+
+
 # A CLI that cannot even START says so on the way out — and the ONE cause that reliably does this is the
 # account being out of usage: `claude` refuses the handshake and exits with the limit in its own words
 # ("You've hit your session limit · resets 1:10pm (America/Los_Angeles)"). romp used to swallow that
@@ -4613,6 +4630,8 @@ def read_sdk_defaults(state_dir: Path) -> dict:
         return {}
 
 
+# the explicit machine default per state root, cached on sdk-defaults.json's (mtime, size): explicit_default_auth (T380)
+_EXPLICIT_DEFAULT_CACHE: dict = {}
 _defaults_lock = threading.Lock()   # serializes the read-modify-writes below: the kernel thread (set_model, the
 #                                     parked-op replay) and the SDK loop thread (_revert_model) both write the file
 
@@ -4921,7 +4940,12 @@ def queue_meta_from_reg(reg: dict) -> list:
     entries = [m for m in raw if isinstance(m, dict) and isinstance(m.get("text"), str)] if isinstance(raw, list) else []
 
     def ident(m):
-        return {"qid": m["qid"], "qts": m.get("qts")} if isinstance(m.get("qid"), str) and m["qid"] else None
+        if not (isinstance(m.get("qid"), str) and m["qid"]):
+            return None
+        out = {"qid": m["qid"], "qts": m.get("qts")}
+        if isinstance(m.get("paths"), list) and m["paths"]:
+            out["paths"] = [str(x) for x in m["paths"] if isinstance(x, str)]   # the attachment list survives a restart with the copy (T373 fold)
+        return out
 
     # the mirror lists EVERY position (text alone for an id-less copy): align the mirrored run as one block of the
     # queue — the boot paths that edit reg['queue'] by text (a notice prepended, a re-delivered send appended)
@@ -5293,12 +5317,6 @@ class SdkSession:
         # the record that lands the text (FIFO per text, at or after the feed) — the landed atom then carries
         # the same id the queued copy and the echo wore, and the chat places by identity, never by text.
         self._pending_meta: list = queue_meta_from_reg(reg)   # the ids the mirror carries, aligned with _pending
-        # A HOLD beside each copy (T306, the user 2026-09-10): the id of the connection whose editor has the copy's
-        # words open, or None. The feeder skips a held copy (_feed_index_locked) so the message cannot leave while it
-        # is being changed; the hold ends with the edit (replace_queued), its cancel (release_queued) or that
-        # connection closing (release_holds_by). Aligned with _pending by the _q_* helpers; in memory only, so a
-        # kernel death drops every hold and the client re-holds when it reconnects.
-        self._pending_hold: list = [None] * len(self._pending)
         self._fed_meta: list = []
         self._landed_qid: dict = {}
         self._ping_feeding = False   # a rename ping was fed and its turn hasn't streamed yet: hold the
@@ -5350,14 +5368,12 @@ class SdkSession:
     def _q_append(self, text: str, meta=None):
         self._pending.append(text)
         self._pending_meta.append(meta if isinstance(meta, dict) and meta.get("qid") else None)
-        self._pending_hold.append(None)
 
     def _q_prepend(self, texts, metas=None):
         texts = list(texts)
         self._pending[0:0] = texts
         metas = list(metas) if metas is not None and len(metas) == len(texts) else [None] * len(texts)
         self._pending_meta[0:0] = [m if isinstance(m, dict) and m.get("qid") else None for m in metas]
-        self._pending_hold[0:0] = [None] * len(texts)
 
     def _unfeed_locked(self, texts):
         """The fed entries for `texts` (FIFO per text), popped from the ledger: their identities go back to the queue
@@ -5378,17 +5394,7 @@ class SdkSession:
         """(text, meta) at `idx`, both lists popped together — the one way a copy leaves the queue."""
         text = self._pending.pop(idx)
         meta = self._pending_meta.pop(idx) if idx < len(self._pending_meta) else None
-        if idx < len(self._pending_hold):
-            self._pending_hold.pop(idx)                     # the hold leaves with the copy
         return text, meta
-
-    def _feed_index_locked(self) -> int:
-        """The slot the input generator feeds next (under self._lock): the first copy with no hold on it, or -1 when
-        every queued copy is being edited (T306). A held copy keeps its slot; the queue behind it keeps moving."""
-        for i in range(len(self._pending)):
-            if not (self._pending_hold[i] if i < len(self._pending_hold) else None):
-                return i
-        return -1
 
     def _locate_locked(self, idx: int, expect, qid) -> int:
         """The slot a click means (under self._lock), the way unqueue reads it: the copy wearing `qid` when one is
@@ -5406,53 +5412,8 @@ class SdkSession:
         if loop is not None and wake is not None:
             loop.call_soon_threadsafe(wake.set)
 
-    def hold_queued(self, idx: int, expect, owner: str, qid: str | None = None) -> bool:
-        """Mark the queued copy at `idx` (located like unqueue: by `qid`, else by `idx` verified against `expect`, else
-        by text) as held by `owner`, the connection whose editor has its words open (T306). The feeder skips it
-        until release_queued / replace_queued / release_holds_by. False when no such copy is queued (fed already):
-        the caller's cue to refuse the edit loudly."""
-        if not owner:
-            return False                                     # a hold needs an owner to release it by
-        with self._lock:
-            i = self._locate_locked(idx, expect, qid)
-            if i < 0:
-                return False
-            while len(self._pending_hold) < len(self._pending):
-                self._pending_hold.append(None)
-            cur = self._pending_hold[i]
-            if cur and cur != owner:
-                return False                                 # another connection's editor has it: the first keeps it
-            self._pending_hold[i] = owner
-        return True
-
-    def release_queued(self, idx: int, expect, owner: str | None = None, qid: str | None = None) -> bool:
-        """Clear the hold on the copy at `idx` (located like hold_queued) when `owner` placed it (or no owner is
-        named); wakes the feeder so the freed copy goes on the next pass. False when the copy is not held by
-        that owner, or is gone."""
-        with self._lock:
-            i = self._locate_locked(idx, expect, qid)
-            cur = self._pending_hold[i] if 0 <= i < len(self._pending_hold) else None
-            if i < 0 or cur is None or (owner is not None and cur not in ("", owner)):
-                return False
-            self._pending_hold[i] = None
-        self._wake_feeder()
-        return True
-
-    def release_holds_by(self, owner: str) -> int:
-        """Every hold `owner` placed is released (its socket closed: the disconnect is the event, T306). Returns
-        how many; wakes the feeder when any."""
-        n = 0
-        with self._lock:
-            for i, h in enumerate(self._pending_hold):
-                if h is not None and h == owner:
-                    self._pending_hold[i] = None
-                    n += 1
-        if n:
-            self._wake_feeder()
-        return n
-
     def _pop_for_feed_locked(self, idx: int = 0):
-        """The copy at `idx` (the feed slot, _feed_index_locked) leaves for the CLI (the input generator, under
+        """The copy at `idx` (the feed slot, the head) leaves for the CLI (the input generator, under
         self._lock): its identity moves to the fed ledger, where the landing is paired with it. Returns (text, meta)."""
         text, meta = self._q_pop(idx)
         if meta and meta.get("qid"):
@@ -5466,10 +5427,8 @@ class SdkSession:
         with self._lock:
             if len(self._pending_meta) != len(self._pending):
                 return None
-            return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"),
-                     "held": bool(self._pending_hold[i] if i < len(self._pending_hold) else None),   # T306: an open editor…
-                     "holder": (self._pending_hold[i] if i < len(self._pending_hold) else None) or None}   # …and whose (the kernel's ownership check)
-                    for i, (t, m) in enumerate(zip(self._pending, self._pending_meta))]
+            return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"), **({"paths": m["paths"]} if isinstance(m, dict) and m.get("paths") else {})}
+                    for t, m in zip(self._pending, self._pending_meta)]
 
     def qids_for_landing(self, uuid_: str, texts, t=None):
         """The ids of the fed copies a landed user record carries, one per text block: for each block the
@@ -5521,7 +5480,7 @@ class SdkSession:
         with self._lock:
             self._fed_meta = [f for f in self._fed_meta if f.get("qid") != qid]
 
-    def enqueue(self, text: str, qid: str | None = None, qts: int | None = None):
+    def enqueue(self, text: str, qid: str | None = None, qts: int | None = None, paths: list | None = None):
         """Deliver a user turn (called from the kernel thread). Held in self._pending —
         VISIBLE to pending_queued — until the input generator releases it at turn end. Works
         before the loop is ready too (the generator drains _pending on its first pass). `qid`/`qts`:
@@ -5529,7 +5488,10 @@ class SdkSession:
         with self._lock:
             if qid:
                 self._fed_meta = [f for f in self._fed_meta if f.get("qid") != qid]   # back in the queue: not fed (a re-delivery)
-            self._q_append(text, {"qid": qid, "qts": qts} if qid else None)
+            meta = {"qid": qid, "qts": qts} if qid else None
+            if meta is not None and paths:
+                meta["paths"] = [str(x) for x in paths if isinstance(x, str) and x]   # the attachments the send carried, beside its id (T373 fold)
+            self._q_append(text, meta)
             loop, wake = self.loop, self._input_wake
         self._persist_queue()
         if loop is not None and wake is not None:
@@ -5592,26 +5554,6 @@ class SdkSession:
             self._persist_queue()
         return item
 
-    def replace_queued(self, idx: int, text: str, expect: str | None = None) -> str | None:
-        """Replace the queued turn at `idx` IN PLACE — the chat's edit of a message that has not started
-        (the user 2026-09-08): same _pending position (the queue drains front-first, so the edited message
-        still goes where it would have), new words. `expect` verifies — and, on a shifted index,
-        re-locates — the exact old text UNDER the lock, exactly as unqueue does, so the input generator
-        consuming entries between the caller's snapshot and this swap can never rewrite the wrong
-        message. Returns the OLD text, or None on a miss: the entry is gone (fed to the CLI, where no
-        recall exists) and nothing was changed."""
-        with self._lock:
-            if expect is not None and not (0 <= idx < len(self._pending) and self._pending[idx] == expect):
-                idx = next((i for i, q in enumerate(self._pending) if q == expect), -1)
-            if not (0 <= idx < len(self._pending)):
-                return None
-            old, self._pending[idx] = self._pending[idx], text
-            if idx < len(self._pending_hold):
-                self._pending_hold[idx] = None                   # the Save is the hold's release (T306)
-        self._persist_queue()
-        self._wake_feeder()                                      # the edited copy goes on the next pass
-        return old
-
     def _adopt_queue_mirror(self, reg: dict) -> None:
         """Take the registry mirror's queue as this session's, WHOLESALE, when it differs from the seed: texts
         and their identities from reg['queue'] + reg['queueMeta'], the seed's own reading. Called by _ensure
@@ -5636,7 +5578,7 @@ class SdkSession:
         with self._lock:
             snap = list(self._pending)
             metas = list(self._pending_meta)
-        qmeta = [{"text": t, "qid": m["qid"], "qts": m.get("qts")} if isinstance(m, dict) and m.get("qid") else {"text": t}
+        qmeta = [{"text": t, "qid": m["qid"], "qts": m.get("qts"), **({"paths": m["paths"]} if m.get("paths") else {})} if isinstance(m, dict) and m.get("qid") else {"text": t}
                  for t, m in zip(snap, metas)]        # every position, so the restore aligns the run as a block
         try:
             self.backend._update_reg(self.sid, queue=snap, queueMeta=qmeta)
@@ -5845,8 +5787,92 @@ class SdkSession:
                 self._q_prepend(stranded, self._unfeed_locked(stranded))   # back at the head under their own ids
             self._persist_queue()                  # the fresh inputs() drains _pending on its first pass
         elif stranded:
+            # Peer mail FIRST (2026-09-12): a bus banner has no echo for the flag path below to flip
+            # (SdkBackend.deliver: it is not composer input), so on this branch it was DROPPED outright — no
+            # queue entry, no flag, no log line, no word to the bus, whose only durable copy had been retired on
+            # `injected: true` (which means "queued in kernel memory", nothing more). Fifteen messages to two
+            # sessions vanished that way in twenty minutes, each fed to a client that a model-pin rebuild tore
+            # down before the turn resulted, every sender told "delivered". The banner names its messages; hand
+            # them back to the bus by id — _return_stranded_mail. Everything else fed keeps the flag path.
+            self._return_stranded_mail(stranded)
             self.backend._mark_dropped_echoes(self.sid, self.pending_meta() or self.pending(), refeed=False)
         self.backend._poke()
+
+    def _return_stranded_mail(self, stranded) -> None:
+        """Hand every POSTAL banner in `stranded` (fed to the abandoned client, never resulted) back to the bus by
+        message id, so the mail re-delivers under its ORIGINAL identity instead of vanishing (2026-09-12).
+
+        The bus's put-back is its `restore` — the roll-back its not-injected push already takes: cur/<mid> moves
+        back to new/, the exec row is retracted, the session is woken. It is reached through
+        SdkBackend.postal_restore, which the kernel installs (a POST to the bus's /restore). The answer is the set
+        of ids the bus put back, and it is AUTHORITATIVE about the bus's own files: a PARTIAL answer names the ids
+        gone from the bus's box (recalled by its sender, swept), which are never re-fed on this side's say-so. An
+        answer that put back NONE of them means this bus never held the banner: nothing removes a live session's
+        cur/ file (recall reads new/ only; the orphan sweep skips live boxes), so the ids are a session's whose
+        maildir sits on another host's bus, the wake-router having forwarded the banner here, and the banner text
+        is the last copy of the mail. That banner is RE-HEADED in the queue under its own id, the same as one the
+        bus could not take back at all (no hook installed, a bus that could not be reached, refused, or gave no
+        answer): the not-resumable branch's path. The resumable branch refuses re-feeds because a duplicate of the
+        person's own words is a visible defect; a banner landing twice in the resumed conversation beats a peer
+        told "delivered" for mail nobody read, and the duplicate is accepted only when the transcript scan cannot
+        rule it out: a banner _text_landed FINDS in the transcript (the CLI wrote its user record before the
+        teardown) is left where it is, since the resumed conversation carries it and a put-back would deliver the
+        same mail twice; a False or None answer proceeds, a miss being no proof of loss. Never raises; one log line
+        per banner names its ids and their fate."""
+        mail = [(t, postal_mids(t)) for t in stranded if isinstance(t, str)]
+        mail = [(t, mids) for t, mids in mail if mids]
+        if not mail:
+            return
+        hook = getattr(self.backend, "postal_restore", None)
+        rehead = []
+        for text, mids in mail:
+            # Landed before the teardown? A stream error or timeout can tear the client down AFTER the CLI wrote
+            # the banner's user record; the resumed conversation then carries it, and a put-back would deliver the
+            # same mail twice. True is definitive (the banner keys to itself, markers included, under
+            # echo_text_key); False or None proceeds, a miss being no proof of loss (the abandoned client may
+            # still have been flushing the record). Review fix, 2026-09-12.
+            seen = self.backend._text_landed(self.sid, text)
+            if seen is True:
+                self.backend._log("stranded mail (%s): a banner fed to the abandoned client landed in the transcript "
+                                  "before the teardown; the resumed conversation carries it, not handed back (%s)"
+                                  % (self.name, ", ".join(mids)))
+                continue
+            back, why = None, "no bus hook is installed"
+            if callable(hook):
+                try:
+                    res = hook(self.sid, list(mids))
+                    if res is None:
+                        why = "the bus gave no answer"
+                    else:
+                        back = set(res)
+                except Exception as e:
+                    why = "the bus could not be asked (%r)" % (e,)
+            if back is None:
+                rehead.append(text)
+                self.backend._log("stranded mail (%s): a banner fed to the abandoned client never resulted, and %s; "
+                                  "re-heading it (%s) so the new client is fed it"
+                                  % (self.name, why, ", ".join(mids)), problem=True)
+                continue
+            gone = [m for m in mids if m not in back]
+            if len(gone) == len(mids):
+                # The bus put back NONE of them. Nothing removes a live session's cur/ file (recall reads new/
+                # only; the orphan sweep skips live boxes and touches new/ only), so this bus never held them:
+                # a session whose maildir sits on another host's bus (the wake-router forwarded the banner
+                # here). The banner text is the last copy of the mail; re-head it, the no-answer path.
+                rehead.append(text)
+                self.backend._log("stranded mail (%s): a banner fed to the abandoned client never resulted, and the "
+                                  "bus holds none of its ids (%s); re-heading it so the new client is fed it"
+                                  % (self.name, ", ".join(mids)), problem=True)
+                continue
+            self.backend._log("stranded mail (%s): a banner fed to the abandoned client never resulted; handed back "
+                              "to the bus by id for re-delivery (%s)%s"
+                              % (self.name, ", ".join(m for m in mids if m in back),
+                                 ("; no longer in the bus's box, not re-fed: %s" % ", ".join(gone)) if gone else ""),
+                              problem=False)
+        if rehead:
+            with self._lock:
+                self._q_prepend(rehead, self._unfeed_locked(rehead))   # back at the head under their own ids
+            self._persist_queue()
 
     # ---- async internals (run inside the quarantined loop) ----
 
@@ -6182,6 +6208,14 @@ class SdkSession:
             return "login"
         if self.auth == "key":
             return "key"
+        # no pick of its own: the machine's EXPLICIT default when one is set and billable (T380: the Billing
+        # flyout's Default group; an unpicked session follows it, at once in the status and at its next launch),
+        # else the helper rule
+        explicit = getattr(self.backend, "explicit_default_auth", None)   # getattr: test doubles
+        if explicit:
+            side = explicit()
+            if side and not self.backend.auth_unavailable_why(side):
+                return side
         if key is None:
             key = self.backend.key_available
         return "key" if key else "login"
@@ -6336,8 +6370,7 @@ class SdkSession:
                     # turn-end events. Mid-turn forwards keep flowing (inflight > 0), so the
                     # in-flight turn can still finish; the wedged/rewind holds above are untouched.
                     blocked = blocked or (self.inflight == 0 and self.backend.drain_holding())
-                    # a copy whose editor is open is HELD (T306): the first unheld copy feeds, the held one keeps its slot
-                    fi = self._feed_index_locked() if (self._pending and not blocked) else -1
+                    fi = 0 if (self._pending and not blocked) else -1
                     item, _meta = self._pop_for_feed_locked(fi) if fi >= 0 else (None, None)
                     fresh = item is not None and self.inflight == 0     # starting from idle, not mid-turn
                     if item is not None:
@@ -9367,6 +9400,11 @@ class SdkBackend:
         self.thread_wake_model = None      # kernel-installed: model_id -> replacement or None, consulted
         #                                    ONLY when a comment THREAD is explicitly woken (T223 rider) —
         #                                    the catalog lives in the kernel; the backend never imports it
+        self.postal_restore = None         # kernel-installed: (sid, [mid, ...]) -> the set of ids the bus put back in
+        #                                    the session's new/ (kernel._bus_restore_mail → the bus's POST /restore);
+        #                                    raises when the bus could not be asked. Consulted ONLY by a resumable
+        #                                    reconnect that stranded a fed postal banner (_return_stranded_mail,
+        #                                    2026-09-12); None (a stand-in, an older kernel) → the banner is re-headed
         self._notify = notify              # notify(app, msg) -> push to clients (kernel._send_to_app)
         self._poke_cb = poke               # wake the kernel's producer/judges (optional)
         self._owns_memo: dict = {}         # sid -> ((reg mtime_ns, size), owns?) — see owns()
@@ -11972,6 +12010,13 @@ class SdkBackend:
         # once per session below); "" = the machine's own login.
         login_id = auth_login if (side == "login" and not fell) else ""
         picked = _logins.pick_value(sess.auth, auth_login)
+        if sess.auth not in ("login", "key"):
+            # NO pick of its own (T380 review): the launch follows the machine's EXPLICIT default when one is set and
+            # this box can bill it, the rule the status already uses (effective_auth / fallback_auth), so the readout
+            # and the launch agree (before, an unpicked session read Login in its status and billed the key at launch,
+            # the helper unsuppressed); without one the launch stays plain and the CLI decides, as ever
+            _exp = self.explicit_default_auth()
+            side = _exp if (_exp and not self.auth_unavailable_why(_exp)) else ""
         if side == sess.auth and sess.auth in ("login", "key") and sess._pick_unknown_said != picked:
             why = self.pick_unknown(sess.auth, auth_login)   # cannot tell just now: the pick stands, said once per session
             if why:
@@ -12459,7 +12504,7 @@ class SdkBackend:
             return s.pending_meta()
         reg = read_reg(self.state_dir, sid) or {}
         texts = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
-        return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"), "held": False}
+        return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"), **({"paths": m["paths"]} if isinstance(m, dict) and m.get("paths") else {})}
                 for t, m in zip(texts, queue_meta_from_reg(reg))]
 
     def qid_for_landing(self, sid: str, uuid_: str, text: str, t=None):
@@ -12543,58 +12588,6 @@ class SdkBackend:
             self._wake_push()                              # repaint without the echo so it stops reading as sent
         return text
 
-    def hold_queued(self, sid: str, idx: int, expect, owner: str, qid: str | None = None) -> bool:
-        """Hold the queued copy at `idx` for `owner` while its editor is open (SdkSession.hold_queued; T306). False
-        when the session is not running or the copy is gone: the kernel refuses the edit with the too-late text."""
-        with self._lock:
-            s = self.sessions.get(sid)
-        return bool(s) and s.hold_queued(idx, expect, owner, qid=qid)
-
-    def release_queued(self, sid: str, idx: int, expect, owner: str | None = None, qid: str | None = None) -> bool:
-        """Release `owner`'s hold on the copy at `idx` (SdkSession.release_queued): the editor's Cancel."""
-        with self._lock:
-            s = self.sessions.get(sid)
-        return bool(s) and s.release_queued(idx, expect, owner, qid=qid)
-
-    def release_holds_by(self, owner: str) -> int:
-        """Every hold `owner` placed in any session is released (its connection closed; T306). Returns how many."""
-        with self._lock:
-            sessions = list(self.sessions.values())
-        return sum(s.release_holds_by(owner) for s in sessions)
-
-    def edit_queued(self, sid: str, idx: int, text: str, expect: str | None = None) -> str | None:
-        """Edit the queued turn at `idx` in place for an SDK session (the kernel's editQueued route) —
-        unqueue's twin: returns the OLD text, or None on a miss the caller surfaces loudly. The message's
-        optimistic echo (send()'s blue 'you' bubble, matched by its exact old text like unqueue does) is
-        re-worded too, so the live tail shows the edited message and the landing scan matches the record
-        the transcript will write. The kernel gates the chat's ✎ on the backend having `edit_queued`."""
-        with self._lock:
-            s = self.sessions.get(sid)
-        if not s:
-            return None
-        old = s.replace_queued(idx, text, expect)
-        if old is not None:
-            with self._live_lock:
-                for a in (self._live.get(sid) or {}).values():
-                    if a.get("_echo_text") != old:
-                        continue
-                    a["_echo_text"] = text
-                    m = a.get("message")
-                    if isinstance(m, dict):
-                        c = m.get("content")
-                        if isinstance(c, list):
-                            for b in c:
-                                if isinstance(b, dict) and b.get("type") == "text":
-                                    b["text"] = text
-                                    break
-                        elif isinstance(c, str):
-                            m["content"] = text
-                    self._touch_live(sid)                  # the reworded echo is a change to the tail (see _touch_live)
-                    break                                  # one echo per edited message
-            self._persist_echoes(sid)                      # the restart mirror carries the new words
-            self._wake_push()                              # repaint with them
-        return old
-
     def queue_recallable(self, sid: str) -> bool:
         """Can a ✕ on this session's queued bubble still win? False while a turn is running UN-HELD:
         there the input generator forwards a queued send to the CLI within milliseconds, and once it's
@@ -12615,7 +12608,7 @@ class SdkBackend:
                         or getattr(s, "_ping_feeding", False)   # getattr: test doubles skip __init__
                         or (s._rewind_to and not getattr(s, "_rewind_armed", False)))
 
-    def send(self, sid: str, text: str, qid: str | None = None, user: bool = False) -> bool:
+    def send(self, sid: str, text: str, qid: str | None = None, user: bool = False, paths: list | None = None) -> bool:
         """`user`: the text is a message the USER typed (the composer, the phone, an untagged `romp send`, a comment
         reply or merge, a parked user send replayed, a compact click), the one word that retries a stood-down
         attach (T315). Romp's own automatic messages (the default: the nudge, the awaiting backstop, the debt
@@ -12659,7 +12652,7 @@ class SdkBackend:
         # writes the real user atom.
         key = qid or "echo:" + uuid.uuid4().hex
         try:
-            s.enqueue(text, qid=key, qts=int(time.time() * 1000))
+            s.enqueue(text, qid=key, qts=int(time.time() * 1000), paths=paths or None)
         except TypeError:                                    # a stand-in session that takes the text alone: an id-less copy
             s.enqueue(text)
         # optimistic input echo: show the user's own message INSTANTLY (neither the transcript nor the
@@ -14171,7 +14164,11 @@ class SdkBackend:
         # with isinstance(..., bool), so None reads as absent). authLogin: the stored login a login pick
         # names, "" for the machine's own (written as "" so a plain pick clears an earlier stored one).
         self._update_reg(sid, auth=side, authLogin=login_id, authPending=True, apiKeyAuth=None)
-        write_sdk_default(self.state_dir, auth=side, authLogin=login_id)   # the seed for the NEXT new session, like model/effort
+        # the seed for the NEXT new session, like model/effort — until the user sets the machine's default
+        # EXPLICITLY (set_auth_default, the Billing flyout's Default group, T380): from then on a per-session
+        # pick is about that session and moves no default
+        if not read_sdk_defaults(self.state_dir).get("authExplicit"):
+            write_sdk_default(self.state_dir, auth=side, authLogin=login_id)
         s = self.sessions.get(sid)
         if s:
             s.auth = side
@@ -14189,6 +14186,31 @@ class SdkBackend:
             self._ack_cmd_chip(sid, "/auth", "/auth " + value, s.resume_sid)
         return True
 
+    def set_auth_default(self, value: str) -> bool:
+        """Set the machine's DEFAULT billing (T380, the user 2026-09-12): the seed every new session and every
+        session with no pick of its own launches on (sdk-defaults.json `auth`, what spawn seeds a reg from and
+        default_auth and effective_auth fall to). Refuses a side this box cannot bill with the same reason a
+        per-session pick gets (auth_unavailable_why). Marks the default explicit (`authExplicit`), so a later
+        per-session pick no longer moves it; "auto" clears the flag and the seed (the helper rule again).
+        Touches no session's own pick: a session that follows the default shows the new side in its status at
+        once and launches on it next time."""
+        if value == "auto":
+            # back to the helper rule (the key when an apiKeyHelper is configured, else the login): the flag
+            # clears and the seed empties, so a per-session pick seeds the default again as it did before
+            write_sdk_default(self.state_dir, auth="", authExplicit=False)
+            self._log("auth: the machine's default billing is automatic again (the helper rule)")
+            return True
+        if value not in ("login", "key"):
+            return False
+        why = self.auth_unavailable_why(value)
+        if why:
+            self.last_auth_refusal = why
+            self._log("auth: the machine default cannot be %s on this box: %s" % (value, why), problem=True)
+            return False
+        write_sdk_default(self.state_dir, auth=value, authExplicit=True)
+        self._log("auth: the machine's default billing is now %s (new sessions, and sessions with no pick of their own)" % value)
+        return True
+
     def default_auth(self, reg: dict | None = None) -> str:
         """The auth a session with no live SdkSession object would launch with — the dormant twin of
         SdkSession.effective_auth(), reading the same registry field with the same fallback. An explicit
@@ -14200,10 +14222,16 @@ class SdkBackend:
         return self.fallback_auth()
 
     def fallback_auth(self) -> str:
-        """What an UNPICKED session bills on this box: the key when an apiKeyHelper is configured, else the
-        login. Falls to whichever side exists, in BOTH directions (the user 2026-09-08: no login on the box
-        means everything bills the key, never a dead login) — a box with neither still reads login, the
-        CLI's own resolution, and the launch's auth check rings on what lands."""
+        """What an UNPICKED session bills on this box. The machine's EXPLICIT default when one is set (T380: the
+        Billing flyout's Default group wrote sdk-defaults.json `auth` with `authExplicit`; a session with no pick
+        of its own FOLLOWS it, the review found only new sessions did) and this box can bill that side; else the
+        helper rule as before: the key when an apiKeyHelper is configured, else the login. Falls to whichever
+        side exists, in BOTH directions (the user 2026-09-08: no login on the box means everything bills the key,
+        never a dead login) — a box with neither still reads login, the CLI's own resolution, and the launch's
+        auth check rings on what lands."""
+        side = self.explicit_default_auth()
+        if side and not self.auth_unavailable_why(side):
+            return side
         return "key" if self.key_available else "login"
 
     @staticmethod
@@ -14220,6 +14248,25 @@ class SdkBackend:
             return ""
         rec = _logins.read_record(self.state_dir, login_id)
         return _logins.display(rec) if rec else "login %s (record missing)" % login_id
+
+    def explicit_default_auth(self) -> str:
+        """The machine default the user set explicitly (sdk-defaults.json `auth` with `authExplicit` true), else
+        "". Read per status snapshot, so cached on the file's mtime and size: one stat per call. The cache is
+        module-level, keyed by the state root, not an attribute on the backend: the perf bench's stand-in backend
+        refuses any attribute it did not anticipate (CI, 2026-09-12)."""
+        p = _defaults_path(self.state_dir)
+        try:
+            st = p.stat()
+            key = (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)   # ino and ctime too: a same-size rewrite whose mtime did not advance (review)
+        except OSError:
+            key = None
+        cache = _EXPLICIT_DEFAULT_CACHE.get(str(self.state_dir))
+        if cache is not None and cache[0] == key:
+            return cache[1]
+        d = read_sdk_defaults(self.state_dir) if key is not None else {}
+        side = d.get("auth") if (d.get("authExplicit") and d.get("auth") in ("login", "key")) else ""
+        _EXPLICIT_DEFAULT_CACHE[str(self.state_dir)] = (key, side)
+        return side
 
     def auth_unavailable_why(self, side: str, login_id: str = "") -> str:
         """Why this box cannot bill `side` ("login" | "key"), as ONE plain sentence for the refusal toast,
@@ -14727,7 +14774,7 @@ class SdkBackend:
 
         THE RULE: every site that adds, replaces, pops, flags or REWORDS an atom in `_live` calls this,
         once per call that changed something: _stash_live, _forward (its eviction included), unqueue (the
-        cancelled copy's echo), edit_queued (the echo's new words), dismiss_echo, prune_live,
+        cancelled copy's echo), dismiss_echo, prune_live,
         retire_live_work, settle_echoes (the overtaken flags, one bump per call that flagged), and the two
         flag writes _mark_dropped_echoes makes outside the lock (each takes
         the lock for its bump). tests/test_live_tail_rev.py pins the set by source, so a new queue or echo

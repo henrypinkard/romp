@@ -85,3 +85,37 @@ export function adoptArrival(order: string[], id: string, existed: boolean): boo
   order.push(id);
   return true;
 }
+
+/** The provenance a merged tabOrder frame carries (render.ts OrderReport; federation.ts emitMergedOrder): `reemit` for a
+ *  synthetic re-emission served from the manager's stored slices, `freshHost` naming the one host whose own push drove a
+ *  fresh emission ("" is the local kernel, host-prefix.ts hostOf's key for an unprefixed id). A frame the kernel sent
+ *  directly (VS Code, a page without a federation manager) carries neither. */
+export type StripReport = { reemit?: boolean; freshHost?: string } | undefined;
+
+/**
+ * Is this frame the LOCAL kernel's own strip — the one event that means "the board has been heard on this socket"?
+ * A synthetic re-emission never is: it is re-served from whatever the manager has stored, which on a fresh page is
+ * NOTHING, so its order is [] (the vanishing tab, the user 2026-09-12: a view-order storage event from another pane
+ * landed between a new chat column's bundle registering its frame handler and its kernel's first strip; the column
+ * read that empty re-emission as the board, reported its one member gone, and was closed under it while the kernel
+ * listed the session all along). Nor is another host's fresh push: its ids are that kernel's word, not this one's.
+ * No provenance at all (a frame the kernel sent directly) is the kernel's own.
+ */
+export function localStrip(report: StripReport): boolean {
+  if (!report) return true;
+  if (report.reemit) return false;
+  return report.freshHost === undefined || report.freshHost === "";
+}
+
+/** The close backstop (render.ts CLOSE_ACK_MS): how long a ✕'d tab the kernel keeps listing stays hidden before the page
+ *  says the close did not take and lets it back. Fifteen seconds, or the page's localStorage under this key — a positive
+ *  integer of milliseconds — for a lab that drives the backstop in seconds rather than waiting out fifteen
+ *  (tests/test_chat_split_served.py), the shape scroll-write.ts readScrollDiagCap gives its own knob. */
+export const CLOSE_ACK_KEY = "romp:closeAckMs";
+export const CLOSE_ACK_DEFAULT_MS = 15_000;
+export function readCloseAckMs(getItem: (key: string) => string | null): number {
+  let raw: string | null = null;
+  try { raw = getItem(CLOSE_ACK_KEY); } catch { raw = null; }
+  const n = raw == null ? NaN : Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : CLOSE_ACK_DEFAULT_MS;
+}

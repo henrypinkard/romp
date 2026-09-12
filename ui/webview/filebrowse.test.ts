@@ -451,7 +451,7 @@ function viewerUp(): Viewer {
   const body = card.children[card.children.length - 1];
   assert.equal(body.className, "fileview-body");
   const acts = bar.children.find((c) => c.classList.contains("fileview-acts"))!;
-  const btn = (label: string) => { const b = acts.children.find((c) => c.tagName === "button" && c.textContent === label); assert.ok(b !== undefined, "the " + label + " button"); return b!; };
+  const btn = (label: string) => { const walk = (n: El): El | undefined => { for (const c of n.children) { if (c.tagName === "button" && (c.textContent === label || c.getAttribute("aria-label") === label)) return c; const d = walk(c); if (d) return d; } return undefined; }; const b = walk(acts); assert.ok(b !== undefined, "the " + label + " button"); return b!; };   // T367: controls sit in groups, glyph buttons carry their word as aria-label
   return { wrap: wrap!, body, btn };
 }
 /** Click Edit (the editor chunk has no bundle to load from, so the plain textarea mounts) and type a line: the

@@ -6,22 +6,23 @@
 // lookup included), and the hover's timing (a dwell before it opens, a grace to cross into the card). render.ts owns
 // the card itself: the element, the fetch, the rendering per kind, the placement.
 
+import { hostOf, bareId } from "./host-prefix";   // pure: a remote session's sid carries its host (T364)
+
 export const PREVIEW_DWELL_MS = 350;   // a hover shorter than this is a pass-through, not a question
 export const PREVIEW_GRACE_MS = 150;   // leaving the link toward the card must not close it on the way
 
 /** The kinds a preview shows. `text` is the text-only card (a path the popover may not fetch: outside the session's
- *  folder and the user's home, unverified, a secrets-shaped name, not a kind it renders, over the caps). `term` is
- *  stage 2's glossary entry, filled by the lab team's lookup through the same shape. */
-export type PreviewKind = "markdown" | "section" | "image" | "code" | "pdf" | "text" | "term";
+ *  folder and the user's home, unverified, a secrets-shaped name, not a kind it renders, over the caps). A glossary
+ *  term previews as the glossary file's `section` (T375), no kind of its own. */
+export type PreviewKind = "markdown" | "section" | "image" | "code" | "pdf" | "text";
 
 /** THE content contract (docs/reference.md, "The file preview popover"): one shape, whoever fills it. */
 export interface PreviewContent {
   kind: PreviewKind;
-  title: string;                       // the file's name, or the term
-  subtitle?: string;                   // "#slug" for a section, the source path for a term
+  title: string;                       // the file's name
+  subtitle?: string;                   // "#slug" for a section
   body: { markdown?: string; html?: string; text?: string; url?: string; lang?: string };
   note?: string;                       // one line the card says above the body (a missing anchor, why a path is text-only)
-  open?: { label: string; path: string; frag?: string };   // the affordance to the full view
 }
 
 /** `path#slug` → the path and the anchor; a `#` inside a file name is not an anchor unless what follows reads as a
@@ -41,16 +42,27 @@ export function previewKindOf(token: string, pathPreview?: Record<string, string
   return k && /^(markdown|image|code|pdf)$/.test(k) ? k : null;
 }
 
+/** The route a preview fetch takes and the sid it carries: a session on a REMOTE host (a host-prefixed sid,
+ *  host-prefix.ts) lives on that machine's disk, so the fetch rides this kernel's /remote/<host>/file relay with the
+ *  bare sid the remote kernel knows, exactly as the inline images do (preview.ts fileUrl); a local session's fetch is
+ *  the local /file. T364: the popover asked the LOCAL origin for a remote session's file and got the wrong kernel's
+ *  answer (a 404 or a foreign session's verdict), so a laptop-hosted session's card never rendered. */
+export function previewRoute(sid: string | null): { base: string; sid: string } {
+  const host = sid ? hostOf(sid) : "";
+  return { base: host ? "/remote/" + encodeURIComponent(host) + "/file" : "/file", sid: sid ? bareId(sid) : "" };
+}
 /** GET /file?slice=1: the one fetch behind a text preview (the kernel slices the file's cached text). */
 export function sliceUrl(path: string, sid: string | null, anchor: string): string {
-  let u = "/file?path=" + encodeURIComponent(path) + "&slice=1";
-  if (sid) u += "&sid=" + encodeURIComponent(sid);
+  const r = previewRoute(sid);
+  let u = r.base + "?path=" + encodeURIComponent(path) + "&slice=1";
+  if (r.sid) u += "&sid=" + encodeURIComponent(r.sid);
   if (anchor) u += "&anchor=" + encodeURIComponent(anchor);
   return u;
 }
 /** GET /file: the bytes behind an image or a PDF preview (the route the figures already use). */
 export function fileUrl(path: string, sid: string | null): string {
-  return "/file?path=" + encodeURIComponent(path) + (sid ? "&sid=" + encodeURIComponent(sid) : "");
+  const r = previewRoute(sid);
+  return r.base + "?path=" + encodeURIComponent(path) + (r.sid ? "&sid=" + encodeURIComponent(r.sid) : "");
 }
 
 const LANG_BY_EXT: Record<string, string> = {
@@ -134,26 +146,26 @@ export function stripRemoteLoads(root: ParentNode, origin: string, base: string)
 /** The text-only card: the path as words and the way to the full view, nothing fetched. */
 export function textOnlyContent(path: string, anchor: string, why?: string): PreviewContent {
   return { kind: "text", title: baseName(path), subtitle: anchor ? "#" + anchor : undefined,
-           body: { text: path }, note: why, open: { label: "open", path, frag: anchor || undefined } };
+           body: { text: path }, note: why };
 }
 
 /** The card's content for a kind the kernel allowed, from the slice route's answer (text kinds) or from the path
  *  alone (an image or a PDF, whose bytes ride the plain route). */
 export function contentFor(path: string, anchor: string, kind: string, sid: string | null, answer: SliceAnswer | null): PreviewContent {
-  const open = { label: "open", path, frag: anchor || undefined };
+  // no open control on a file card (T369): clicking the link already opens the file at the section it names
   const title = (answer && answer.title) || baseName(path);
-  if (kind === "image") return { kind: "image", title, body: { url: fileUrl(path, sid) }, open };
-  if (kind === "pdf") return { kind: "pdf", title, subtitle: "first page", body: { url: fileUrl(path, sid) }, open };
+  if (kind === "image") return { kind: "image", title, body: { url: fileUrl(path, sid) } };
+  if (kind === "pdf") return { kind: "pdf", title, subtitle: "first page", body: { url: fileUrl(path, sid) } };
   if (!answer || answer.allowed === false) return textOnlyContent(path, anchor, answer && answer.why ? answer.why : undefined);
   const text = answer.text || "";
   if (kind === "code") {
-    return { kind: "code", title, body: { text, lang: langOf(path) }, note: answer.truncated ? "the head of the file; open for the rest" : undefined, open };
+    return { kind: "code", title, body: { text, lang: langOf(path) }, note: answer.truncated ? "the head of the file; the link opens the rest" : undefined };
   }
   const found = answer.found !== false;
   const note = anchor && !found ? 'no section "' + anchor + '" in this file; its head instead'
-             : answer.truncated ? (anchor ? "the head of the section; open for the rest" : "the head of the file; open for the rest") : undefined;
+             : answer.truncated ? (anchor ? "the head of the section; the link opens the rest" : "the head of the file; the link opens the rest") : undefined;
   return { kind: anchor && found ? "section" : "markdown", title, subtitle: anchor && found ? "#" + anchor : undefined,
-           body: { markdown: text }, note, open };
+           body: { markdown: text }, note };
 }
 
 /** The hover's timing, with the timers injected so the tests run it without a clock: `enter(link)` starts the dwell

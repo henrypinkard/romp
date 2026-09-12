@@ -2,8 +2,8 @@
 """T302 (the user 2026-09-10): the postal cards in the chat pane, rendered by the real /chat page of a hermetic
 kernel over a synthetic chat with web (the viewed session), api and tests (its peers) — every state at once.
 
-Asserted on the page: the interaction KIND is coloured text (Delegation / Coordination / Question, three positions
-sampled evenly along one line in the accent's hue, T337), never a chip; the DELIVERY STATE is one icon per state at the
+Asserted on the page: the interaction KIND is coloured text (Delegation / Coordination / Question, three hues from the
+aurora colormap's stops, green, teal-blue and purple, T371), never a chip; the DELIVERY STATE is one icon per state at the
 head's right edge with a worded title (delivered, read, parked, bounced, recalled, and sent for a message handed to the
 relay; sent / delivered / read as the circled-check ladder, the read check cut out in the page colour, T337), from what the kernel
 files (the send-time stamp, and the postal ledger's exec / relayed / bounced / recall rows joined by message id);
@@ -407,9 +407,9 @@ class ServedPostalCards(unittest.TestCase):
             else:
                 self.assertIn(c["kind"], ("Delegation", "Coordination", "Question"), c)
             self.assertFalse(c["chip"], "no chip: %r" % c)
-        self.assertEqual(card("Take the retry-loop")["kindColor"], "rgb(124, 181, 227)", "delegation: the line's middle position (T320, re-sampled T337)")
-        self.assertEqual(card("Heads-up")["kindColor"], "rgb(86, 150, 200)", "coordination: the line's start (T320, re-sampled T337)")
-        self.assertEqual(card("Which cap")["kindColor"], "rgb(162, 212, 254)", "question: the line's end (T337)")
+        self.assertEqual(card("Take the retry-loop")["kindColor"], "rgb(144, 136, 240)", "delegation: the aurora ramp's last stop, purple (T371)")
+        self.assertEqual(card("Heads-up")["kindColor"], "rgb(84, 178, 4)", "coordination: the ramp's first stop, green (T371)")
+        self.assertEqual(card("Which cap")["kindColor"], "rgb(66, 169, 176)", "question: the ramp's fourth stop, teal-blue (T371)")
         # T337 (the review): the provisional dress fades by its colours, not by an element opacity that dimmed the kind
         # word too, so every kind word reads at 4.5:1 on the ground it sits on, the provisional wash included, in both themes
         for m, name in ((wide, "dark"), (light, "light")):
@@ -562,19 +562,31 @@ class ServedPostalCards(unittest.TestCase):
             self.assertGreaterEqual(light["contrastPage"][k] or 0, 4.5, "%s reads on the bare light page too" % k)
         self.assertEqual(light["contrastOn"]["coordinate"], "box", "the first coordination word is on a boxed incoming card: the measurement that matters")
         # T320 (the user 2026-09-10): the kind word wears the prose weight, not bold, in both themes, and its three
-        # colours are ONE sequential ramp ranked coordination < delegation < question: monotone in luminance against
-        # the page (brighter with rank on the dark page, darker with rank on the light one), as the browser computes them
+        # the three kinds are three HUES from the aurora colormap (T371: the user found T337's one-hue ramp's steps alike),
+        # so as the browser computes them every pair sits a real hue distance apart in both themes, and the cream page
+        # wears the same three hues deepened (postal-kind-ramp.test.ts holds the stops against bin/romp_colormap.py)
         for m in (wide, light, r["light340"]):
             self.assertEqual({k: m["kindWeight"][k] for k in ("delegate", "coordinate", "question")},
                              {"delegate": "400", "coordinate": "400", "question": "400"}, "prose weight: %r" % m["kindWeight"])
-        def _lum(css):
+        def _hue(css):
             r, g, b = [int(x) for x in re.findall(r"\d+", css)[:3]]
-            ch = lambda c: (c / 255) / 12.92 if (c / 255) <= 0.03928 else (((c / 255) + 0.055) / 1.055) ** 2.4
-            return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
-        d = [_lum(wide["kinds"][k]) for k in ("coordinate", "delegate", "question")]
-        self.assertTrue(d[0] < d[1] < d[2], "dark page: the ramp brightens with rank: %r" % wide["kinds"])
-        lt = [_lum(light["kinds"][k]) for k in ("coordinate", "delegate", "question")]
-        self.assertTrue(lt[0] > lt[1] > lt[2], "light page: the ramp deepens with rank: %r" % light["kinds"])
+            ch = lambda c: (c / 255) / 12.92 if (c / 255) <= 0.04045 else (((c / 255) + 0.055) / 1.055) ** 2.4
+            rl, gl, bl = ch(r), ch(g), ch(b)
+            l_ = (0.4122214708 * rl + 0.5363325363 * gl + 0.0514459929 * bl) ** (1 / 3)
+            m_ = (0.2119034982 * rl + 0.6806995451 * gl + 0.1073969566 * bl) ** (1 / 3)
+            s_ = (0.0883024619 * rl + 0.2817188376 * gl + 0.6299787005 * bl) ** (1 / 3)
+            oa = 1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_
+            ob = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_
+            import math
+            return (math.degrees(math.atan2(ob, oa)) + 360) % 360
+        for theme, m in (("dark", wide), ("light", light)):
+            hues = {k: _hue(m["kinds"][k]) for k in ("coordinate", "delegate", "question")}
+            for x, y in (("coordinate", "delegate"), ("coordinate", "question"), ("delegate", "question")):
+                gap = abs(((hues[x] - hues[y] + 540) % 360) - 180)
+                self.assertGreaterEqual(gap, 50, "%s page: %s and %s sit %.0f degrees apart, two tints of one hue: %r" % (theme, x, y, gap, m["kinds"]))
+        self.assertEqual({k: light["kinds"][k] for k in ("coordinate", "delegate", "question")},
+                         {"coordinate": "rgb(56, 111, 24)", "delegate": "rgb(95, 87, 171)", "question": "rgb(13, 109, 115)"},
+                         "the cream page: the same three hues deepened (T371)")
         # the phone-width light pass reads too (the fourth screenshot the user looks at)
         for k in ("delegate", "coordinate", "question"):
             self.assertGreaterEqual(r["light340"]["contrast"][k] or 0, 4.5, "%s reads on the light page at 340 px" % k)

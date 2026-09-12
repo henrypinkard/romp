@@ -71,10 +71,26 @@ test("scroll re-windows around the viewport (steady scroll OR jump) when near a 
   assert.match(RENDER, /c\.addEventListener\("scroll", virtualizeToViewport, \{ passive: true \}\);/);
 });
 
-test("a loading pill shows while history renders, pinned top-center of the chat pane", () => {
+test("a loading pill shows while history renders, pinned top-center of the chat SECTION, never the viewport (T365)", () => {
   assert.match(RENDER, /function showLoadingPill\(\): void/);
   assert.match(RENDER, /loadingPillEl\.textContent = "Loading earlier messages…";/);
-  assert.match(CSS, /\.tx-loading-pill \{[\s\S]*position: fixed[\s\S]*\}/);
+  const fn = RENDER.slice(RENDER.indexOf("function showLoadingPill(): void"), RENDER.indexOf("function hideLoadingPill(): void"));
+  // T365 (the user 2026-09-12): a viewport-fixed pill appended to the body sat on the tabs, and on the tabs themselves
+  // once the strip wrapped; it now rides a zero-height anchor inserted right before #content, the transcript's top edge
+  assert.doesNotMatch(fn, /document\.body\.appendChild/, "the pill no longer lands in the body");
+  assert.match(fn, /anchor\.className = "tx-loading-anchor";/);
+  assert.match(fn, /content\.parentNode\.insertBefore\(anchor, content\);/, "the anchor sits right before #content, below the strip and the ledger box");
+  assert.match(fn, /if \(!loadingPillEl\.isConnected\)/, "idempotent: one anchor, re-made only if a rebuild dropped it");
+  const anchorRule = CSS.slice(CSS.indexOf(".tx-loading-anchor {")); const anchorBody = anchorRule.slice(0, anchorRule.indexOf("}"));
+  assert.match(anchorBody, /position: relative;/); assert.match(anchorBody, /height: 0;/); assert.match(anchorBody, /pointer-events: none;/);
+  const pillRule = CSS.slice(CSS.indexOf(".tx-loading-pill {")); const pillBody = pillRule.slice(0, pillRule.indexOf("}"));
+  assert.match(pillBody, /position: absolute; top: 10px; left: 50%; transform: translateX\(-50%\);/);
+  assert.doesNotMatch(pillBody, /position: fixed/);
+  // the surface is tokened for both themes (reads on cream): no hard-coded dark rgba background or border
+  assert.match(pillBody, /background: var\(--vscode-menu-background, var\(--surface-raised\)\);/);
+  assert.match(pillBody, /border: 1px solid var\(--menu-border\);/);
+  assert.doesNotMatch(pillBody, /rgba\(20, 24, 33/);
+  assert.match(pillBody, /pointer-events: none;/);
 });
 
 test("syncView: a fresh build / rewind renders the TAIL window, clamped to the last compaction boundary", () => {

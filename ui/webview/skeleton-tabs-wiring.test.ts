@@ -45,7 +45,7 @@ test("the tabOrder frame applies the skeleton list BEFORE applyTabOrder, so its 
   assert.match(note, /const changed = applyTabOrderSkeleton\(skeletonTabs, m\.skeleton, kernelOrder\);/);
   // one client-diag row per reconnect that produced a set: armed by the socket opening, spent by the first strip
   assert.match(note, /if \(skeletonDiagArmed && Array\.isArray\(m\.skeleton\) && skeletonTabs\.ids\.size\) \{\s*\n\s*skeletonDiagArmed = false;\s*\n\s*vscodeApi\?\.postMessage\(\{ type: "clientDiag", surface: "chat", what: "skeleton", data: \{ n: skeletonTabs\.ids\.size, active: activeId \} \}\);/);
-  assert.match(RENDER, /else if \(m\.type === "wsup"\) \{ onSocketUp\(skeletonTabs\); skeletonDiagArmed = true; reholdQueuedEditors\(\); \}/,
+  assert.match(RENDER, /else if \(m\.type === "wsup"\) \{ onSocketUp\(skeletonTabs\); skeletonDiagArmed = true; \}/,
     "a new socket forgets which fulls the dead one delivered and re-arms the row");
   // the tab we are ON became a skeleton (a click in the redial gap, a stale active hint) → re-show, keyed on change
   assert.match(note, /if \(changed && activeId && skeletonTabs\.ids\.has\(activeId\)\) showActive\(\);/);
@@ -290,8 +290,9 @@ type ChipApi = { showActive: () => void; updateJumpBtn: () => void; sig: () => s
 
 /** A page with two tabs: A, a loaded session whose transcript is `transcript` px tall; B, a skeleton (a stale
  *  pre-outage copy under it with an unread reply on it, its hidden view kept, its name in tabMeta). The pane is
- *  `clientHeight` px in a `innerHeight` px window. */
-function chipWorld(opts: { clientHeight: number; innerHeight: number; transcript: number }) {
+ *  `clientHeight` px in a `innerHeight` px window. `awaiting` adds a third tab the strip listed (its name in tabMeta)
+ *  whose payload has not landed: neither a session nor a skeleton, a new column's own session on its way. */
+function chipWorld(opts: { clientHeight: number; innerHeight: number; transcript: number; awaiting?: string }) {
   assert.equal(LOADER_VH, 60, "the loader's min-height rule (styles.css) is the model's premise");
   assert.match(CSS, /^#content \{[^}]*padding: 8px 0 12px;/m, "the pane's 20px of vertical padding");
   const pane = new ChipPane(opts.clientHeight, opts.innerHeight - 40);
@@ -306,12 +307,14 @@ function chipWorld(opts: { clientHeight: number; innerHeight: number; transcript
   const HOOKS: ChipHooks = { fulls: [], captions: [] };
   const jumpBtn = { hidden: true, offsetHeight: 28, style: {} as Record<string, string> };
   const replyChips = { hidden: true, style: {} as Record<string, string> };
+  const tabMeta = new Map<string, { name: string; color: null }>([["B", { name: "api", color: null }]]);
+  if (opts.awaiting) tabMeta.set(opts.awaiting, { name: "tests", color: null });
   const W = {
     sessions: new Map<string, unknown>([["A", { id: "A", events: [], status: { state: "idle" } }],
                                         ["B", { id: "B", events: [], status: { state: "working" } }]]),   // B's stale copy stays underneath
     views: new Map<string, unknown>([["A", { el: viewA, scrollTop: 0, stick: false, shown: true, stale: false, winStart: 0 }],
                                      ["B", { el: viewB, scrollTop: 0, stick: false, shown: false, stale: true, winStart: 0 }]]),
-    tabMeta: new Map([["B", { name: "api", color: null }]]),
+    tabMeta,
     skeletonTabs: { ids: new Set(["B"]) },
     // B's stale copy carries an unread open reply: with its view kept and a ready thread, the liveSession read is
     // the ONE clause of updateReplyChips' gate that hides the chips over the skeleton (the read #1226 narrowed)
@@ -386,4 +389,21 @@ test("run: the gate reads the skeleton set, not the session map; the last tab cl
   assert.deepEqual(w.HOOKS.captions, [], "no loader, so no caption");
   assert.equal(w.jumpBtn.hidden, true, "no chip over the no-sessions copy");
   assert.equal(w.replyChips.hidden, true, "no reply chip over the no-sessions copy");
+});
+
+test("run: a column's own session, listed by the strip but not among its skeletons, is shown loading and asked for by nobody while its full is in flight", () => {
+  // The second full on a new chat column's socket (a slow runner, 2026-09-12) was a kernel race, not this path
+  // (tests/test_chat_skeleton_reconnect.py test_11_d). A new column opens as a skeleton client of one session: the strip's
+  // skeleton list names every OTHER tab (the kernel excludes the active hint), and the page's restore of its wanted tab
+  // can land here between that strip and the session's full of the same burst. showActive's ask fires only for a tab the
+  // skeleton set names, so the restore shows the loader and posts nothing: the full on its way is the burst's own.
+  const w = chipWorld({ clientHeight: 600, innerHeight: 800, transcript: 4980, awaiting: "C" });
+  w.api.set({ activeId: "C" }); w.api.showActive();
+  assert.deepEqual(w.HOOKS.fulls, [], "no needFull for the session whose full the burst carries");
+  assert.deepEqual(w.HOOKS.captions, ["loading “tests”…"], "the loader over the tab, with the LOADING word");
+  const loader = w.doc.getElementById("tab-loading");
+  assert.ok(loader && loader.cls === "tab-loading-wait", "the loader is up");
+  // …the neighbouring skeleton still asks on its pick: the gate is the set, not the missing session
+  w.api.set({ activeId: "B" }); w.api.showActive();
+  assert.deepEqual(w.HOOKS.fulls, ["skeleton-click:B"]);
 });

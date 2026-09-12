@@ -1,4 +1,5 @@
 import { marked } from "marked";
+import { ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -21,7 +22,7 @@ import { applyTheme } from "./theme";
 import { installPostalWash } from "./postal-wash";   // the incoming postal card's tint lightness, measured from the page (T337c)
 import { applyDenseChrome } from "./dense-chrome";
 import { SessionViews, viewVisible, viewsKey, revealIn, viewTagUnion, viewTags, type TagUnion, type SessionTag } from "./session-views";
-import { prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore, reattachKeys } from "./chat-window";   // the uuid-anchored wire (T323 stage 4b)
+import { prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore, reattachKeys, windowLanding, olderRequestAllowed, livePausedText } from "./chat-window";   // the uuid-anchored wire (T323 stage 4b)
 import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./subagent-wait";   // the viewer's wait bound and its stall (T355)
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
@@ -55,6 +56,7 @@ import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
 import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody } from "./send-pending";
 import { reconcileHeld, heldAsQueued, type HeldCopy, type HeldQueued, type HeldMemory } from "./queued-held";
+import { rescindedComposerState } from "./queued-rescind";   // a queued message's edit pulls it back into the composer (T373)
 import { reloadHoldReason } from "./reload-hold";
 import { liveNotices, keepReloadNotices, takeReloadNotices } from "./reload-notices";
 import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional, focusResolvesProvisional } from "./provisional";
@@ -70,10 +72,11 @@ import { fileLinkRoute, browseRoute, type BrowseRoute } from "./file-route";   /
 // initFileView rides its OWN line: the import above is pinned verbatim by file-view.test.ts
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { openUrlView } from "./file-view";                 // the URL mode of the same viewer (md-url-view.test.ts)
+import { viewerPathGate } from "./file-view-links";       // the viewer's code-aware path gate, for the chat's fenced blocks (2026-09-12)
 import { isMarkdownUrl } from "./md-links";
-import { openPathLink, linkifyPathTokens, selectionOpenIn } from "./path-links";   // the path matcher the chat's links are made from (a shared module)
+import { openPathLink, linkifyPathTokens, selectionOpenIn, type PathLinkOptions } from "./path-links";   // the path matcher the chat's links are made from (a shared module)
 import { PREVIEW_DWELL_MS, PREVIEW_GRACE_MS, HoverIntent, parsePreviewLink, previewKindOf, sliceUrl, contentFor, textOnlyContent, stripRemoteLoads, type PreviewContent } from "./file-preview";
-import { buildMatcher, linkifyTerms, termContent, type GlossaryIndex, type GlossaryEntry, type TermMatcher } from "./glossary-links";   // the team's coinages, linked where written (T351 stage 2)   // the file preview popover's pure half (T351)
+import { buildMatcher, linkifyTerms, type GlossaryIndex, type TermMatcher } from "./glossary-links";   // the team's coinages, linked where written (T351 stage 2)   // the file preview popover's pure half (T351)
 import { initFileBrowse, openFileBrowse } from "./file-browse";   // the browser is pane-local here now (the user 2026-08-24)
 import { pastedFilePath } from "./paste-path";
 import { insertAtCaret } from "./composer-insert";
@@ -86,6 +89,7 @@ import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxB
 import { phParts } from "./composer-placeholder";   // the resting placeholder names the session (2026-09-09)
 import { badgeSpec } from "./session-badge";   // the statusline badge names the session (2026-09-09)
 import { retainLiveOmitted } from "./tab-order";
+import { localStrip, readCloseAckMs } from "./tab-order";
 import { userTurnShows } from "./user-turn-content";
 import { ScrollDiagBudget, classifyScroll, scrollWriteRow, tailChangeRow, tailLabel, spacerRow, readScrollDiagCap, summarizeTailMutations, tailMutRow, unitChangeRow, unitChanges, boxChanges, boxLabel, BOX_FROM_TAIL } from "./scroll-write";
 import { reloadScrollRecord, takeReloadScroll, type ReloadScroll } from "./reload-restore";
@@ -148,8 +152,8 @@ type ChatEvent = (
   // event renders as a labelled notice (renderInjected), never the user's bubble (the user 2026-09-07)
   // gist: a romp SYSTEM notice's USER-facing head, lifted by the kernel from the notice's <!-- romp-gist -->
   // marker (2026-09-08) — the body is written to the agent and never doubles as the head
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; gist?: string; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; absorbed?: boolean; sentAt?: number; hiddenByPending?: boolean; source?: InjectedSource; preamble?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string> }
-  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string> }   // pathPreview: the links a hover may preview, by kind (T351). spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; gist?: string; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; absorbed?: boolean; sentAt?: number; hiddenByPending?: boolean; source?: InjectedSource; preamble?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string>; pathPreviewWhy?: Record<string, string> }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string>; pathPreviewWhy?: Record<string, string> }   // pathPreview: the links a hover may preview, by kind (T351). spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
       kind: "tool";
@@ -227,7 +231,7 @@ type ChatEvent = (
   // `held` DOES come from the kernel (_limit_hold): the queue is stuck on the ACCOUNT rather than on this
   // session — a usage limit or a monthly spend cap holds every send — so the head names what it is waiting
   // for, and how long is left when the API reported a reset (the user 2026-07-24).
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; gist?: string; imgPaths?: string[]; lost?: string; qts?: number; qid?: string; held?: boolean; hiddenByPending?: boolean; landing?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }   // imgPaths: an optimistic echo's dragged-image attachments → thumbnails, the landed form's own renderer (the user 2026-08-25); lost: client-only, the connection dropped after this unconfirmed send; qts: on OUR optimistic copy the pending entry's identity (its press time) so the ✕ removes ITS entry, on a kernel copy its enqueue stamp (T252c); qid: the copy's identity (T252c): minted at the press on OUR copy and posted with the send, so the kernel's copy wears the same one; the ✕ names it on both (send-pending.ts)
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; goalId?: string; paths?: string[]; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; gist?: string; imgPaths?: string[]; lost?: string; qts?: number; qid?: string; hiddenByPending?: boolean; landing?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }   // imgPaths: an optimistic echo's dragged-image attachments → thumbnails, the landed form's own renderer (the user 2026-08-25); lost: client-only, the connection dropped after this unconfirmed send; qts: on OUR optimistic copy the pending entry's identity (its press time) so the ✕ removes ITS entry, on a kernel copy its enqueue stamp (T252c); qid: the copy's identity (T252c): minted at the press on OUR copy and posted with the send, so the kernel's copy wears the same one; the ✕ names it on both (send-pending.ts)
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
@@ -311,7 +315,7 @@ type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: stri
 // "login:<id>"); `label` is its display (email · organisation · kind for the machine's, the user's label plus what
 // the add flow could read for a stored one), `why` the reason it is greyed when `available` is false
 interface AuthLogin { id?: string; value?: string; label?: string; machine?: boolean; available?: boolean; why?: string; expiresSoon?: boolean }
-interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; logins?: AuthLogin[] }
+interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean; logins?: AuthLogin[] }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
 interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
@@ -357,7 +361,7 @@ interface BgTasks { count: number; tasks: BgTask[]; }
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; detached?: boolean; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; detached?: boolean; detachNav?: { t: number | null } | null; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo; }
 // A SUBAGENT VIEWER pseudo-session (plans/subagent-transcripts.md): a read-only tab whose events are one
 // agent's own transcript, fed by {type:"subagent"} frames. Client-only — the kernel never lists it in
 // tabOrder (reconcileTabOrder keeps a known, never-kernel-seen id), so it lives exactly as long as the
@@ -606,9 +610,9 @@ function hideQueuedCopy(s: Session, p: PendingSend): { held?: Extract<ChatEvent,
 // copy's id the caller minted at the press (mintQid) and posted with the send, so the kernel queues or parks the
 // copy under the id this bubble wears and the bubble, the kernel's chip and the ✕ agree from the press; a caller
 // that posts nothing (a provisional tab's send, held until the session exists) lets the entry mint its own.
-function registerOptimistic(id: string, text: string, imgPaths?: string[], qid?: string): void {
+function registerOptimistic(id: string, text: string, imgPaths?: string[], qid?: string, paths?: string[]): void {
   const arr = pendingSent.get(id) || [];
-  const p = newPending(text, imgPaths, Date.now(), qid);
+  const p = newPending(text, imgPaths, Date.now(), qid, paths);
   arr.push(p);   // the anchor (`at`) is stamped by the reconcile just below
   pendingSent.set(id, arr);
   const s = sessions.get(id);
@@ -709,8 +713,9 @@ const tabMeta = new Map<string, { name: string; color: Color | null }>();
 const closingTabs = new Map<string, number>();
 // …with a backstop for the ack that never comes. A refused/failed end leaves no failure EVENT to key on:
 // the sole evidence a close didn't take is the kernel still listing the tab long after. Past this we say
-// so and let the tab back, rather than hiding a session that's really still open.
-const CLOSE_ACK_MS = 15_000;
+// so and let the tab back, rather than hiding a session that's really still open. Fifteen seconds, or the page's
+// localStorage knob for a lab (tab-order.ts readCloseAckMs: the served split test waits past it in seconds, not fifteen).
+const CLOSE_ACK_MS = readCloseAckMs((k) => { try { return localStorage.getItem(k); } catch { return null; } });
 // Optimistic label/color edits awaiting their kernel echo — holds a stale in-flight push from
 // reverting the strip (see tab-meta.ts; the sessionViews pending machinery's reasoning).
 const pendingTabMeta = new Map<string, PendingTabMeta>();
@@ -1002,7 +1007,10 @@ function assertPeekFor(id: string): void {
 // plan and the signature, so a tab moved away is simply gone from this strip.
 const COL = colFromSearch(location.search);
 let colSets: ColSets | null = null;
-let tabOrderSeen = false;   // the kernel's first strip has landed on this socket (applyTabOrder): the emptiness post and the stale-active fallback wait for it
+let tabOrderSeen = false;   // the kernel's first strip has landed on this socket (applyTabOrder, the local kernel's own frame only — tab-order.ts localStrip): the emptiness post and the stale-active fallback wait for it
+// The ids the last applied strip's `live` set affirms (the kernel's raw liveness, T258): a member of this column the strip
+// omits while live still names it is a transient read failure, never an emptiness (noteColumnEmptiness).
+let boardLive = new Set<string>();
 function readColSets(): ColSets | null {
   try {
     if (!window.parent || window.parent === window) return null;
@@ -1332,7 +1340,7 @@ let landTrail: string[] = [];
 // count is NOT len − winStart + spacer: a unit may own more than one node (the day
 // divider that opens a new day precedes its turn), so anything mapping DOM back to
 // units reads data-unit off the node rather than counting children.
-interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
+interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
 const views = new Map<string, View>();
 
 // Pending pickers (AskUserQuestion / tool-permission) keyed by session id. These
@@ -2233,10 +2241,11 @@ function absorbFragment(link: HTMLElement): void {
 // ── the GLOSSARY (T351 stage 2, the user 2026-09-11): the team's coinages, linked where they are written ──────────
 // The kernel ships one index per session (its author group's glossary file, parsed and byte-bounded) on its own frame;
 // the matcher is compiled once per index and every message's prose is linked at render time (glossary-links.ts). A
-// term wears a quiet dotted underline in the text colour (.term-link); its card rides the file preview popover with no
-// fetch (termContent), and a click opens the glossary file in the viewer at the term's heading. Surfaces: assistant and
-// user text and mail bodies in the chat; never tool heads, the composer or the timeline. The DRESS (design A, the
-// underline and hover card, or design B, a marker and click popover) is the user's pick; the mechanics are the same.
+// term is a LINK to the glossary file's section and nothing more (T375, the user 2026-09-12): it wears the ordinary link
+// dress (.term-link: the link colour, a solid underline, the pointer), its hover rides the ordinary file-link preview
+// (the glossary path with the term's slug as the section, fetched through the slice route and rendered like any file
+// section), and a click opens the glossary file in the viewer at the term's heading. Surfaces: assistant and user text
+// and mail bodies in the chat; never tool heads, the composer or the timeline.
 const glossaries = new Map<string, GlossaryIndex>();        // by session id: the frame's index
 const termMatchers = new Map<string, TermMatcher | null>();  // compiled once per index (dropped when the frame changes)
 function termMatcherFor(sid: string | null): TermMatcher | null {
@@ -2262,9 +2271,9 @@ function linkTerms(root: HTMLElement, sid: string | null = renderingSid): number
     s.textContent = text;
     s.dataset.term = e.slug; s.dataset.gsid = sid || "";
     s.dataset.path = m.index.path; s.dataset.frag = e.slug;
-    s.title = e.plainWords ? e.term + ": " + e.plainWords : e.term;
+    s.dataset.preview = "markdown";   // the kind, from the index: the kernel parsed this file as the group's glossary (T375)
     s.tabIndex = 0;
-    armFilePreview(s);   // the hover card (the popover's dwell and grace), filled from the index without a fetch
+    armFilePreview(s);   // the ordinary file-link hover: the section at the term's heading, through the slice route (no title: one mechanism)
     return s;
   });
 }
@@ -2360,12 +2369,6 @@ function renderFilePreview(p: HTMLElement, c: PreviewContent, sid: string | null
   const head = el("div", "fp-head");
   const title = el("span", "fp-title"); title.textContent = c.title; title.title = c.title; head.appendChild(title);
   if (c.subtitle) { const s = el("span", "fp-sub"); s.textContent = c.subtitle; head.appendChild(s); }
-  if (c.open) {
-    const b = el("button", "fp-open") as HTMLButtonElement; b.type = "button"; b.textContent = c.open.label; b.title = "the whole file, in the viewer";
-    const { path, frag } = c.open;
-    b.addEventListener("click", (e) => { e.stopPropagation(); filePreviewIntent.cancel(); openPath(path, sid, e, frag || null); });
-    head.appendChild(b);
-  }
   p.appendChild(head);
   if (c.note) { const n = el("div", "fp-note"); n.textContent = c.note; p.appendChild(n); }
   const body = el("div", "fp-body fp-" + c.kind);
@@ -2404,23 +2407,6 @@ function previewMdClean(src: string): HTMLElement {
 function showFilePreview(a: HTMLElement): void {
   const open = a.dataset.path || "";
   if (!open) return;
-  if (a.dataset.term) {   // a glossary term (T351 stage 2): the card is filled from the session's index, no request
-    const ix = glossaries.get(a.dataset.gsid || "");
-    const e = ix ? ix.terms.find((x) => x.slug === a.dataset.term) : undefined;
-    if (!ix || !e) return;
-    const p = ensureFilePreview();
-    placeFilePreview(p, a);
-    p.style.display = "";
-    watchFilePreviewAnchor(a);
-    ++filePreviewSeq;
-    renderFilePreview(p, termContent(e, ix), a.dataset.gsid || activeId);
-    // a term card is a few lines: it keeps the file card's width cap but sizes its height to its content (the pane
-    // fraction stays the ceiling), so it never sits mostly empty
-    p.style.maxHeight = p.style.height; p.style.height = "auto";
-    p.style.width = Math.min(parseFloat(p.style.width) || 520, 520) + "px";
-    p.dataset.renderMs = "0"; delete p.dataset.sliceHit;
-    return;
-  }
   const sid = activeId;                          // the kernel resolves a relative path against it and confines by its folder
   const parsed = parsePreviewLink(open);
   const path = parsed.path, anchor = a.dataset.frag || parsed.anchor;   // the section: the absorbed #slug, else one inside a file:// URI
@@ -2440,7 +2426,11 @@ function showFilePreview(a: HTMLElement): void {
     if (hit !== null) p.dataset.sliceHit = hit ? "1" : "0";
   };
   if (!kind) {                                   // the kernel allowed no preview: text and the way to the file, no request
-    renderFilePreview(p, textOnlyContent(path, anchor, "shown as text: outside the session's folder and your home, or not a kind the preview shows"), sid);
+    // the card says exactly which condition refused (the kernel's why on the link, T364); a bare file:// link is opened,
+    // never judged (the kernel's path links exclude it by design), and says so; a path link with no verdict at all (an
+    // event built before the kernel judged previews, or a kernel that ships none) says that, not a guess
+    const why = /^file:/i.test(open) ? "file links are opened, not previewed" : (a.dataset.previewWhy || "no preview verdict from the kernel for this link");
+    renderFilePreview(p, textOnlyContent(path, anchor, "shown as text: " + why), sid);
     stamp(null);
     return;
   }
@@ -2478,13 +2468,21 @@ function showFilePreview(a: HTMLElement): void {
 // kernel, a cached payload) keeps today's shape-only linking rather than unlinking history.
 // file:// URIs are explicit absolute paths — never gated on the map. (The gates and the map walk are
 // path-links.ts's; the map is threaded through to it.)
+const FENCE_WALK: PathLinkOptions = {
+  inPre: true, preVerified: true, unit: ".cl",
+  accept: (tok, ctx) => !ctx.inPre || viewerPathGate(tok, ctx),   // prose keeps the chat's rules; a fenced token takes the viewer's
+};
 function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[],
-    pathLinks?: Record<string, string>, pathPins?: Record<string, string>, pathPreview?: Record<string, string>): void {
+    pathLinks?: Record<string, string>, pathPins?: Record<string, string>, pathPreview?: Record<string, string>,
+    pathPreviewWhy?: Record<string, string>): void {
   // pathPreview (T351): the kernel's word on which of these links a hover may PREVIEW, by kind; the link carries it
-  // as data-preview, and a link without it gets the text-only card with no request
+  // as data-preview, and a link without it gets the text-only card with no request. pathPreviewWhy (T364): for a link
+  // it may not, the kernel's exact refusal rides as data-preview-why, the card's words (the four-way guess went)
   const armPreview = (link: HTMLElement, tok: string, open: string) => {
     const k = previewKindOf(tok, pathPreview) || previewKindOf(open, pathPreview);
     if (k) link.dataset.preview = k; else delete link.dataset.preview;
+    const w = !k && pathPreviewWhy ? (pathPreviewWhy[tok] || pathPreviewWhy[open] || "") : "";
+    if (w) link.dataset.previewWhy = w; else delete link.dataset.previewWhy;
   };
   // A whole-backtick http(s) URL becomes a TAPPABLE link that still looks like code (the user
   // 2026-08-16, on mobile, wanting to tap through to a dashboard link a session sent). Bare URLs
@@ -2525,11 +2523,19 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
   // The token walk is the shared one (path-links.ts linkifyPathTokens): it marks every path-shaped token, the
   // kernel's pathLinks verdict narrowing it when the event carries one, and hands back the hits in document
   // order; this document binds each click and reads the hits for the figure pass below.
-  for (const { el: link, open, verified } of linkifyPathTokens(root, pathLinks)) {
+  // FENCED blocks walk too (the user 2026-09-12, whose session printed a report's path in a ``` block and got dead
+  // text): a path there links under the file viewer's code-aware gate (an import's or require()'s package, a glob's
+  // tail, a substitution, a site name stay text) and ONLY on the kernel's verdict — code is verbatim material, so a
+  // path in it links when the kernel has stat'd the file, never on shape alone as prose may. The block's rows (.cl,
+  // code-block.ts) are the units, as the viewer's rows are, so a highlight's spans never cut a line's path into pieces
+  // the scan cannot see. A fenced hit opens the file and previews on hover like any link, but renders no figure under a
+  // code sample.
+  for (const { el: link, open, verified, inPre } of linkifyPathTokens(root, pathLinks, FENCE_WALK)) {
     bindPathLink(link);
     armPreview(link, link.textContent || "", open);
     absorbFragment(link);
     if (verified) kernelVerified.add(open);   // the kernel stat'd it this build
+    if (inPre) continue;                      // no figure under a code sample
     if (previewKind(open) && !previewable.includes(open) && !(skipThumbs && skipThumbs.includes(open))) {
       previewable.push(open);
       mentionAt.set(open, link);
@@ -3731,7 +3737,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         if (more) {
           const full = el("div", "nudge-full md");
           full.innerHTML = md(raw);
-          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);
+          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview, ev.pathPreviewWhy);
           linkTerms(full);
           bubble.appendChild(full);
           bubble.classList.add("nudge-collapsible");
@@ -3747,7 +3753,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         // the user's OWN words keep their line breaks (userMd); a harness-injected note — compact
         // summary, command stdout — shares this branch and stays on the assistant grammar
         bubble.innerHTML = kind === "user" ? userMd(ev.md) : md(ev.md);
-        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);   // bare file:// URLs in a message → clickable (open in the host's default app)
+        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview, ev.pathPreviewWhy);   // bare file:// URLs in a message → clickable (open in the host's default app)
         linkTerms(bubble);   // the team's coinages, in the user's own words too (T351 stage 2)
         if (kind === "user") markMentions(bubble);   // in the user's own bubble a typed "@name" that names a live session wears that session's color; a harness note is not the user naming a session
       }
@@ -3905,7 +3911,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const body = el("div", "assistant md");
     body.innerHTML = md(ev.md);
     highlight(body);
-    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);   // bare file:// URLs + verified spaced filenames → clickable
+    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview, ev.pathPreviewWhy);   // bare file:// URLs + verified spaced filenames → clickable
     linkTerms(body);   // the team's coinages (T351 stage 2)
     turn.appendChild(body);
     return turn;
@@ -4702,7 +4708,6 @@ function renderPendingGroup(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLEle
   const sid = renderingSid || activeId || "";
   const sig = JSON.stringify(ev.texts.map((t) => [t.md, !!t.lost, t.qts, t.imgPaths || null])) + "|" + JSON.stringify(ev.held || null)
     + (ev.held && ev.held.resetsAt ? "|" + Math.floor(Date.now() / 60000) : "")   // a held countdown reads the minute: re-rendered as it ticks
-    + "|" + JSON.stringify(ev.texts.map((t) => { const e = queuedEditorFor(sid, t); return e ? [e.eid, e.open, e.text, e.note] : null; }));   // an editor on one of OUR copies (T306): the cached node predates it
   const fresh = renderQueued(ev);
   const cached = pendingGroupNode.get(sid);
   if (cached && cached.node.isConnected !== undefined) {
@@ -4857,18 +4862,6 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     }
     if (!t.romp && !isCmd) bubble.innerHTML = userMd(t.md);   // the user's words, newlines kept — byte-for-byte what the landed bubble shows
     if (!t.romp && !isCmd) markMentions(bubble);   // and a typed @name chipped, as the landed bubble wears it (renderEventInner). A statement of its own, not a brace around both: tests pin the line above verbatim (chat-md, queued-indicator)
-    // EDITING IN PLACE (T306): an open editor paints its field instead of the words; a closed one carrying the kernel's
-    // refusal says so under them; a copy another client is editing (the kernel's hold) reads "editing" beside them
-    const qsid = renderingSid || activeId || "";
-    const qed = qsid && !t.romp && !isCmd ? queuedEditorFor(qsid, t) : undefined;
-    if (qed && qed.open) { bubble.innerHTML = ""; renderQueuedEditor(bubble, qed); }
-    else if (qed && qed.note && t.held) { const n = el("div", "queued-editnote"); n.textContent = qed.note; bubble.appendChild(n); }
-    else if (qed && qed.note) queuedEditors.delete(qed.key);   // the hold the note spoke of is gone (the other client cancelled or saved): the bubble stops saying it
-    else if (t.held && !t.romp && !isCmd) {
-      bubble.classList.add("held");
-      const h = el("span", "queued-held-label"); h.textContent = "editing"; h.title = "being edited — it goes when the edit is done";
-      bubble.appendChild(h);
-    }
     // An optimistic echo's dragged images render as THUMBNAILS, not just their trailing paths (the
     // user 2026-08-25: composer preview → path-only provisional → thumbnail landing flashed). Same
     // machinery end to end: userImage with the landed form's exact "path:" shape — buildPathImg's
@@ -4879,45 +4872,46 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     }
     // CANCELABLE — an explicit ✕ on the bubble (the user 2026-07-08; the old whole-bubble click was
     // undiscoverable AND hung on a node every push rebuilds, so mid-press rebuilds silently ate the
-    // click). The ✕ carries data-act="qx" → the ONE document.body delegate (click-safe per CLAUDE.md);
-    // a MESSAGE returns to the composer to re-edit, a slash COMMAND just cancels. Covers both queues:
-    // the backend's own (idx; the SDK's) and ops
-    // PARKED during compaction/model switches (park; romp-owned on every backend).
-    if (t.cancelable && (t.idx !== undefined || t.park !== undefined || t.optimistic)) {
+    // click). The ✕ carries data-act="qx" → the ONE document.body delegate (click-safe per CLAUDE.md).
+    // Since T373 it is the control of a slash COMMAND and of romp's own queued words alone (a cancel is all
+    // they can take); a MESSAGE has one control, the ✎ below, which rescinds it to the composer. Covers both
+    // queues: the backend's own (idx; the SDK's) and ops PARKED during compaction/model switches (park;
+    // romp-owned on every backend).
+    if (t.cancelable && (isCmd || t.romp) && (t.idx !== undefined || t.park !== undefined || t.optimistic)) {
       const x = el("button", "queued-x");
       x.textContent = "✕";
-      x.title = t.rompSystem ? "cancel this queued notice" : t.romp ? "cancel this queued nudge"
-        : isCmd ? "cancel this queued command" : "cancel this queued message and move it back to the composer";
+      x.title = t.rompSystem ? "cancel this queued notice" : t.romp ? "cancel this queued nudge" : "cancel this queued command";
       x.dataset.act = "qx";
-      if (t.romp) x.dataset.qromp = "1";   // romp's words, not the user's: cancelling never restores it to the composer (T243)
       if (t.idx !== undefined) x.dataset.qidx = String(t.idx);
       if (t.park !== undefined) x.dataset.qpark = String(t.park);
       if (t.optimistic) x.dataset.qopt = "1";   // ✕ before confirmation → cancel-by-body (no park/idx yet)
       if (t.optimistic && t.qts !== undefined) x.dataset.qts = String(t.qts);   // OUR entry's identity: the ✕ removes this bubble's entry, not the first with its text
       if (t.qid) x.dataset.qid = t.qid;   // the copy's id (T252c): on a kernel copy the ✕ drops the send that owns it (a kernel copy's own qts is its enqueue stamp, not an entry); on ours it rides the cancel, so the kernel removes exactly this copy
-      if (isCmd) x.dataset.qcmd = "1";
       (x as any)._qmd = t.md;   // the bubble's body — the kernel's drift guard + the composer restore read it
       xHost.appendChild(x);
     }
-    // EDITABLE — a ✎ beside the ✕ (the user 2026-09-08): a message that has not reached the session is
-    // still the user's to change. The same three stages the ✕ covers (backend queue, parked, optimistic),
-    // and the same recall gate (cancelable); romp's own words and slash commands are not edited — a
-    // command is cancelled and typed again, and romp's notices are not the user's to reword. Delegated
-    // like the ✕ (data-act="qedit"); the bubble's text becomes a field where it sits (openQueuedEditor, T306),
-    // and its Save replaces the message in place — the composer is never touched. An open field has its own
-    // Save and Cancel, so the ✎ steps aside while it is open.
-    if (t.cancelable && !t.romp && !isCmd && (t.idx !== undefined || t.park !== undefined || t.optimistic) && !(qed && qed.open)) {
+    // EDIT (the user 2026-09-08, in place under T306, back to the composer since T373: queued messages go
+    // quickly, and a field on the bubble was more UI than the moment deserves): a message that has not reached
+    // the session is still the user's to change. The ✎ RESCINDS it: it leaves the queue (the same three stages
+    // the ✕ covers: backend queue, parked, optimistic; the same recall gate) and its words, quote citations and
+    // attachments come back into the composer, where they are changed and sent again, or cleared to drop the
+    // message. Romp's own words and slash commands are not edited (their ✕ cancels). Delegated like the ✕
+    // (data-act="qedit"); the message's ONE control, in the ✕'s corner.
+    if (t.cancelable && !t.romp && !isCmd && (t.idx !== undefined || t.park !== undefined || t.optimistic)) {
       bubble.classList.add("editable");
       const ed = el("button", "queued-edit");
       ed.textContent = "✎";
-      ed.title = "edit this queued message — it keeps its place in the queue";
+      ed.title = "edit this queued message — it leaves the queue and comes back into the message box";
       ed.dataset.act = "qedit";
       if (t.idx !== undefined) ed.dataset.qidx = String(t.idx);
       if (t.park !== undefined) ed.dataset.qpark = String(t.park);
       if (t.optimistic) ed.dataset.qopt = "1";
       if (t.optimistic && t.qts !== undefined) ed.dataset.qts = String(t.qts);   // OUR entry's identity, as on the ✕: a kernel copy's qts is its enqueue stamp, not an entry (T252c)
-      if (t.qid) ed.dataset.qid = t.qid;   // the copy's id: the hold and the edit name exactly this copy (T306)
+      if (t.qid) ed.dataset.qid = t.qid;   // the copy's id: the cancel names exactly this copy (T252c)
       (ed as any)._qmd = t.md;
+      (ed as any)._qimgs = t.imgPaths;     // the attachments the bubble shows, back as chips
+      (ed as any)._qpaths = t.paths;       // …and the kernel's record of every attachment the copy carried (images and documents alike)
+      (ed as any)._qgoal = t.goalId ? { itemId: t.goalId, title: t.goal || "" } : null;   // a follow-up's goal, back as its chip
       xHost.appendChild(ed);
     }
     turn.appendChild(bubble);
@@ -4937,12 +4931,93 @@ function restoreToComposer(text: string) {
   ta.setSelectionRange(ta.value.length, ta.value.length);
 }
 
+// A queued item leaves the queue (T373): the ✕ on a command or on romp's own words cancels it; the ✎ on a MESSAGE
+// rescinds it, and its words, quote citations and attachments come back into the composer for that session, where
+// they are changed and sent again, or cleared to drop the message (a cleared composer is the discard: one control,
+// the user 2026-09-12). Same three stages as before (backend queue, parked, optimistic), the same recall gate, the
+// same authoritative cancelResult, so a rescind on one client clears the bubble on every other exactly as the cancel
+// does. The bubble's owner (a comment thread's popover, or the chat) is the session the item belongs to.
+function rescindQueued(el: HTMLElement, toComposer: boolean): void {
+  if (!activeId || !vscodeApi) return;
+  const qmd = (el as any)._qmd as string | undefined;
+  const sidQ = owningSidOf(el) || activeId;
+  // a bubble owned by another session (a comment thread's popover): the cancel goes out as ever; only the composer half is
+  // refused, with a pointer, since the box is the active session's (the fold's low: the base cancelled here, never a dead end)
+  const restoreHere = toComposer && sidQ === activeId;
+  if (toComposer && !restoreHere) warnToast("open that session's chat to edit its queued message");
+  let ownPaths: string[] | null = null;
+  if (qmd) {
+    // EVERY control drops our own optimistic entry for the text first (the user 2026-08-30). At the
+    // optimistic stage (qopt) that is the whole client half — the kernel may not have pushed its
+    // park yet, and the reconcile would otherwise repaint the bubble the user just cut. And on a
+    // PARKED/backend control it is just as load-bearing: the kernel bubble had been SUPPRESSING our
+    // still-live entry (shownProvisional), so cancelling only the kernel op resurrected the
+    // cancelled message as a dashed bubble until the TTL (caught by this fix's served-page probe).
+    // OUR bubble's control names its entry (data-qts, the press time); a kernel bubble's names none, and
+    // drops the first pending send with the text — the one the kernel's first copy covers.
+    const list = pendingSent.get(sidQ) || [];
+    const qts = el.dataset.qts !== undefined ? Number(el.dataset.qts) : undefined;
+    const qid = el.dataset.qid || undefined;
+    const own = list.find((p) => (qid && p.qid === qid) || (qts !== undefined && p.ts === qts && p.text === qmd) || (!qid && qts === undefined && p.text === qmd));
+    const rec = own ? (own.paths && own.paths.length ? own.paths : own.imgPaths) : null;   // every attachment the press knew (the record; images alone on an older entry), before the entry goes
+    if (rec && rec.length) ownPaths = rec.slice();
+    if (dropPending(list, qmd, qts, qid)) { if (list.length) pendingSent.set(sidQ, list); else pendingSent.delete(sidQ); }
+    echoShownSig.delete(sidQ);
+  }
+  // a PROVISIONAL tab's send has never left the client (T244): forget it from the queue adoption would
+  // re-send, and post no kernel cancel — the kernel has no such session yet, and a miss there would
+  // toast "too late" for a message that was never late. A breadcrumb says which path this took.
+  const provisional = isProvisionalId(sidQ);
+  if (provisional && qmd) forgetProvisionalSend(qmd);
+  const msg: Record<string, unknown> = { type: "cancelQueued", id: sidQ, md: qmd };
+  if (el.dataset.qid) msg.qid = el.dataset.qid;   // the copy's id: the kernel cancels exactly this copy, in whichever queue it sits, never a same-words neighbour by index or body
+  if (qmd && el.dataset.qopt !== "1") noteCancelledQueued(sidQ, qmd, el.dataset.qid || undefined);   // a kernel copy: never held once it vanishes (T262i)
+  if (el.dataset.qidx !== undefined) msg.idx = Number(el.dataset.qidx);
+  if (el.dataset.qpark !== undefined) msg.park = Number(el.dataset.qpark);
+  if (!provisional) vscodeApi.postMessage(msg);
+  else vscodeApi.postMessage({ type: "clientDiag", surface: "chat", what: "cancel-provisional",
+                              data: { mdLen: qmd ? qmd.length : -1, queuedLeft: provisionalQueue.length } });
+  if (restoreHere && qmd) {
+    // the message comes back as it was composed: the typed words into the box, the quote citations and the attachments
+    // as chips (queued-rescind.ts undoes the send's composition by the RECORD: the page's own entry, else the list the
+    // kernel shipped on the copy), a follow-up's goal as its chip. The restore is optimistic — the composer's text and
+    // chips as they stood are stashed so the kernel's cancelResult ok:false undoes all of it (the fold's medium 2: a
+    // refused rescind must not leave a goal or attachments the user never asked for on their next message).
+    const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+    const before = ta ? ta.value : "";
+    const citesBefore = (composerCitations.get(sidQ) || []).slice(), filesBefore = (composerFiles.get(sidQ) || []).slice();
+    const known = ownPaths || ((el as any)._qpaths as string[] | undefined) || ((el as any)._qimgs as string[] | undefined) || null;
+    const back = rescindedComposerState(qmd, known);
+    const goal = (el as any)._qgoal as { itemId: string; title: string } | null | undefined;
+    const armedCites: string[] = [], armedFiles: string[] = [];   // what THIS press puts into the box, by identity: the refusal takes exactly these back
+    if (goal && goal.itemId) { setCitation(sidQ, { itemId: goal.itemId, title: goal.title }); armedCites.push("g:" + goal.itemId); }
+    else if (back.cites.length) { composerCitations.set(sidQ, back.cites.map((c) => ({ title: c.quote.split("\n")[0].slice(0, 80), quote: c.quote, src: c.src }))); persistDrafts(); renderComposerChips(sidQ); for (const c of back.cites) armedCites.push("q:" + c.quote + "\n" + (c.src || "")); }
+    for (const f of back.files) { addComposerFile(sidQ, f); armedFiles.push(f); }
+    restoreToComposer(back.text);
+    // a provisional rescind gets no cancelResult (nothing was posted) — no stash to consume, none kept
+    if (!provisional) pendingCancelRestores.set(activeId + " " + qmd, { before, after: ta ? ta.value : "", cites: citesBefore, files: filesBefore, armedCites, armedFiles });
+  }
+  // Optimistic; the next push rebuilds the queue without it. The GROUP is reflowed in the same breath —
+  // the bubble alone leaves its "1 queued message" header behind, still counting what just went.
+  const bub = el.closest(".queued-bubble") as HTMLElement | null;
+  const grp = bub?.closest(".turn-queued") as HTMLElement | null;
+  // a bubble leaving the tail shrinks it: a bottom reader is written to the new bottom in the same task, so the
+  // move is the pane's own (journaled), never a clamp the follow-mode latch never saw (T262h)
+  const contentX = document.getElementById("content");
+  const wasAtBottom = !!contentX && contentX.scrollHeight > contentX.clientHeight + 2 && atBottom(contentX);
+  bub?.remove();
+  if (grp) reflowQueuedGroup(grp);
+  if (contentX && wasAtBottom) writeScroll(contentX, contentX.scrollHeight, "queued-x", true);
+}
+
 // The composer state around each ✕-click's optimistic restore, keyed `sid + " " + md`, so a FAILED
 // cancel (kernel cancelResult ok:false — the message had already reached the session) can put the
 // composer back exactly as it was IF the user hasn't touched it since (the user 2026-07-20: the
 // restored copy of an un-recallable message is a double-send waiting to happen). An edited draft is
 // never touched — the toast alone covers it.
-const pendingCancelRestores = new Map<string, { before: string; after: string }>();
+const pendingCancelRestores = new Map<string, { before: string; after: string; cites: Citation[]; files: string[]; armedCites: string[]; armedFiles: string[] }>();   // + the chips as they stood and what the press armed, by identity (T373 fold, medium 2; round two, low 1)
+/** A citation's identity for the refusal's bookkeeping: a goal by its item, a quote by its words and source. */
+function citeKey(c: Citation): string { return c.itemId ? "g:" + c.itemId : "q:" + (c.quote || "") + "\n" + (c.src || ""); }
 
 // The refusal card's remedy line, ONE string: renderApiError's initial write and apiRetryTick's
 // per-second re-assert both read it, so the card and the tick can never drift into different words.
@@ -5408,8 +5483,7 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   const owed = !!intent && intent.cls === "question" && ev.direction === "in";
   const turn = notice({ src, glyph: "peer", gist: summaryText, meta, body, open: owed,
                         key: "postal:" + (ev.mid || ev.uuid || ""), rail: ev.color ? ev.color.bg : undefined,
-                        cls: "turn-postal-service postal-service-" + ev.direction,
-                        tip: kind ? "interaction type: " + kind.toLowerCase() : undefined });
+                        cls: "turn-postal-service postal-service-" + ev.direction });   // no head tooltip: the kind badge already says coordination, delegation or question (the user 2026-09-12)
   // the delivery state: an icon at the head's right edge, and — while the message has not landed (handed to the
   // relay, or parked for an unreachable host) — the SAME provisional dress the user's own pending send wears
   // (the queued bubble's class and tokens, the T302 amendment): solid again once the receipt says delivered,
@@ -5617,6 +5691,7 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   // older kernel sends no `live` and this is a no-op. One clientDiag row names any id it saves, so a kernel
   // that omits a live session is seen, never silently papered over.
   const liveSet = new Set<string>(Array.isArray(live) ? live.filter((x: any) => typeof x === "string") : []);
+  boardLive = liveSet;
   const omitted = new Set(order.filter((id) => kernelListed.has(id) && !inKernel.has(id) && !liveSet.has(id)));   // all of them first: no fallback onto one going in the same breath
   const keptLive = order.filter((id) => kernelListed.has(id) && !inKernel.has(id) && liveSet.has(id));
   if (keptLive.length && vscodeApi) vscodeApi.postMessage({ type: "clientDiag", surface: "chat", what: "live-omitted-kept", data: { ids: keptLive } });
@@ -5635,7 +5710,14 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   colSets = readColSets();   // membership is fresh for the restore below (the chat split)
   if (back && heldHere(back) && restoreIfShown(back)) { /* focus is back on the tab the pane named; nothing more to paint here. Only a tab this column holds (the chat split): another column's session is its owner's to restore, and no record of it is this column's to keep */ }
   else if (!activeId) showActive();   // the strip changed under an unfocused pane (it may have emptied), or the tab it names is listed but hidden: the body's line and the box's placeholder follow it (the review's low)
-  tabOrderSeen = true;   // the board has been heard once on this socket (the chat split's emptiness post and stale-active fallback wait for it; set after the restore above, so its render is the first that may post or fall back)
+  // The board has been heard on this socket ONLY when this frame is the local kernel's own strip (tab-order.ts localStrip):
+  // a synthetic re-emission is re-served from the manager's store, EMPTY on a fresh page (order []), and another host's
+  // fresh push says nothing about this kernel's sessions. The vanishing tab (the user 2026-09-12): a view-order storage
+  // event from another pane reached a new column between its bundle's registration and its first strip, the re-emitted []
+  // armed this flag, and the render below reported the column's one member gone (colEmpty) while the kernel listed it all
+  // along; the shell closed the column and the tab was in no column until the close backstop toasted. Set after the
+  // restore above, so its render is the first that may post or fall back.
+  if (localStrip(report)) tabOrderSeen = true;
   renderTabs();
 }
 // The tabOrder frame's `skeleton` list (2026-09-07): the tabs the kernel is withholding from this page after a
@@ -5774,13 +5856,17 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // branch row wears the ⎇ glyph in its label slot for the same consistency. Branch is the top-level
   // session field, resident even when the head system event is windowed out of the wire tail (the user
   // 2026-06-30), and the worktree row shows where the work actually lands when that differs.
-  const rows: Array<[string, string]> = [];
+  // a row's optional third member is the VALUE's colour (T372, the user 2026-09-12): a value that wears a colour on
+  // the chat footer's chips wears the SAME colour here, from the one helper the footer calls (metaColor), so the
+  // association learned on the footer is reproduced and the two cannot drift. Model and effort carry the colormap
+  // rank; the permission mode is untinted on the footer too, and the backend carries no tone, so they stay plain.
+  const rows: Array<[string, string, string?]> = [];
   if (s.cwd) rows.push(["📁", s.cwd]);
   if (s.gitBranch) rows.push(["⎇", s.gitBranch]);
   if (s.workTree) rows.push(["Worktree", s.workTree.dir + (s.workTree.branch ? "  ⎇ " + s.workTree.branch : "")]);
   if (s.status.mode) rows.push(["Mode", prettyMode(s.status.mode)]);
-  if (s.status.model) rows.push(["Model", s.status.model]);
-  if (s.status.effort) rows.push(["Effort", s.status.effort]);
+  if (s.status.model) rows.push(["Model", s.status.model, metaColor("model", s.status)]);
+  if (s.status.effort) rows.push(["Effort", s.status.effort, metaColor("effort", s.status)]);
   // Backend is a plain labelled FIELD now, under the others (the user 2026-07-08 — no longer a coloured
   // "SDK backend" badge at the top of the tooltip; it reads as one of the session's config fields).
   if (be) rows.push(["Backend", backendLabel(be)]);
@@ -5818,10 +5904,11 @@ function showTabTip(tab: HTMLElement, s: Session): void {
           + `${s.status.authLive === "key" ? "the API key" : "the login"} — this session bills that`
         : s.status.auth === "key" ? "API key"
           : (loginName(s.status) ? `Login (${loginName(s.status)})` : "Login")]);
-  for (const [k, v] of rows) {
+  for (const [k, v, color] of rows) {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
     const ve = el("span", "tab-tip-v"); ve.textContent = v;
+    if (color) ve.style.color = color;   // the footer chip's colour, the label stays dim (T372)
     r.appendChild(ke); r.appendChild(ve); tip.appendChild(r);
   }
   // context BATTERY (the same widget as the bottom bar), not a text %
@@ -6437,7 +6524,16 @@ function renderTabs() {
   // right above, so an only-filtered active tab does reach here. The pane then goes UNFOCUSED naming the hidden tab
   // (T357: never re-pointed at another session); the check at fire time reads the same predicate visibleIds does
   // (stripShows), and the tab comes back below when the filter shows it again.
-  if (activeId && ids.includes(activeId) && !visibleIds.includes(activeId)) {
+  // THE ACTIVE TAB MOVED TO ANOTHER COLUMN (the chat split; the user 2026-09-12, whose source column sat on "This tab view
+  // shows no session" after the drag): a tab the user dragged away is not hidden by a view or a filter, so the pane does
+  // not go unfocused naming it (T357 keeps the box for a tab that comes back when the filter lifts; a moved tab lives in
+  // its own column now). The box falls to this column's first visible member — deferred and re-checked at fire time like
+  // the re-point below — and the persisted tab then names a member, so a reload lands here on one of its own.
+  if (activeId && ids.includes(activeId) && !heldHere(activeId) && visibleIds.length) {
+    const moved = activeId, first = visibleIds[0];
+    setTimeout(() => { if (activeId === moved && !heldHere(moved) && stripLists(first) && stripShows(first)) setActive(first); }, 0);
+  }
+  else if (activeId && ids.includes(activeId) && !visibleIds.includes(activeId)) {
     const hid = activeId;
     setTimeout(() => { if (activeId === hid && !stripShows(hid)) unfocusHiddenByView(hid); }, 0);
   }
@@ -6853,6 +6949,46 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
   return span;
 }
 
+// The tab menu's ONE flyout gesture (T163 for Tags, the user 2026-08-28; T380 for Billing, the user
+// 2026-09-12): a hover of HOVER_INTENT_MS over the row opens the flyout (the feed's intent debounce:
+// enough to skip a graze, never a wait), a click opens it at once (byClick: a click may focus an input,
+// a hover-open must not steal the keyboard), a second click folds it, leaving the row and the flyout
+// for the same span closes it (native menus' gap tolerance: entering either surface cancels the pending
+// close), and `open` removes any other flyout first so one is up at a time. Timers here are gesture
+// DEFINITIONS (hover intent), not state proxies. No window listener: the timers and the row's own.
+const HOVER_INTENT_MS = 120;
+function wireFlyout(menu: HTMLElement, item: HTMLElement, sel: string, open: (byClick: boolean) => HTMLElement | null): void {
+  let openT: number | null = null;
+  let closeT: number | null = null;
+  const cancel = () => {
+    if (openT != null) { clearTimeout(openT); openT = null; }
+    if (closeT != null) { clearTimeout(closeT); closeT = null; }
+  };
+  const armClose = () => { cancel(); closeT = window.setTimeout(() => { closeT = null; menu.querySelector(sel)?.remove(); }, HOVER_INTENT_MS); };
+  const openNow = (byClick: boolean) => {
+    const fly = open(byClick);
+    if (fly && !fly.dataset.flyWired) {   // leave-tolerance on the flyout itself, wired once per flyout node
+      fly.dataset.flyWired = "1";
+      fly.addEventListener("pointerenter", cancel);
+      fly.addEventListener("pointerleave", armClose);
+    }
+    return fly;
+  };
+  item.addEventListener("pointerenter", () => {
+    cancel();
+    if (menu.querySelector(sel)) return;                         // already open — nothing to intend
+    openT = window.setTimeout(() => { openT = null; openNow(false); }, HOVER_INTENT_MS);
+  });
+  item.addEventListener("pointerleave", armClose);
+  item.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    cancel();
+    const fly = menu.querySelector(sel);
+    if (fly) { fly.remove(); return; }                           // second click folds the flyout
+    openNow(true);
+  });
+}
+
 function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: the group the right-clicked copy sits in (T264b), a plain string so the menu stays id-keyed
   dismissTabMenu();
   const menu = el("div", "ctx-menu");
@@ -7007,18 +7143,9 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       else postUnionEdits(nv, a, r);
     };
     // HOVER-INTENT open (T163, the user 2026-08-28: hovering down to Tags should open the submenu
-    // without another click): the feed's 120ms intent debounce — enough to skip a graze, never a
-    // wait. Click still opens instantly (and focuses the input; a hover-open must NOT steal the
-    // keyboard). Leaving is tolerant the way native menus are: the same 120ms lets the pointer
-    // cross the gap into the submenu; entering either surface cancels the close, leaving BOTH
-    // closes. Timers here are gesture DEFINITIONS (hover intent), not state proxies.
-    const HOVER_INTENT_MS = 120;
-    let hoverOpenT: number | null = null;
-    let hoverCloseT: number | null = null;
-    const cancelHoverTimers = () => {
-      if (hoverOpenT != null) { clearTimeout(hoverOpenT); hoverOpenT = null; }
-      if (hoverCloseT != null) { clearTimeout(hoverCloseT); hoverCloseT = null; }
-    };
+    // without another click), the one flyout gesture every tab-menu flyout wears since T380 (Billing
+    // too): wireFlyout below the menu builder holds the definition. Click still opens instantly (and
+    // focuses the input; a hover-open must NOT steal the keyboard).
     const openTagsFly = (focusInput: boolean) => {
       const openFly = menu.querySelector(".ctx-sub-tags");
       if (openFly) return openFly as HTMLElement;
@@ -7164,31 +7291,9 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       else sub.style.left = Math.max(8, Math.round(ir.left) - sr.width - 2) + "px";
       sub.style.top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4)) + "px";
       if (focusInput) (sub.querySelector(".ctx-tag-input") as HTMLInputElement | null)?.focus();
-      // leave-tolerance: entering either surface cancels the pending close; leaving both arms it
-      sub.addEventListener("pointerenter", cancelHoverTimers);
-      sub.addEventListener("pointerleave", armHoverClose);
       return sub;
     };
-    const armHoverClose = () => {
-      cancelHoverTimers();
-      hoverCloseT = window.setTimeout(() => {
-        hoverCloseT = null;
-        menu.querySelector(".ctx-sub-tags")?.remove();
-      }, HOVER_INTENT_MS);
-    };
-    tagsItem.addEventListener("pointerenter", () => {
-      cancelHoverTimers();
-      if (menu.querySelector(".ctx-sub-tags")) return;           // already open — nothing to intend
-      hoverOpenT = window.setTimeout(() => { hoverOpenT = null; openTagsFly(false); }, HOVER_INTENT_MS);
-    });
-    tagsItem.addEventListener("pointerleave", armHoverClose);
-    tagsItem.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      cancelHoverTimers();
-      const openFly = menu.querySelector(".ctx-sub-tags");
-      if (openFly) { openFly.remove(); return; }                 // second click folds the flyout
-      openTagsFly(true);
-    });
+    wireFlyout(menu, tagsItem, ".ctx-sub-tags", openTagsFly);
     menu.appendChild(tagsItem);
   }
   // Move to folder… sits beside Tags (the user 2026-09-01: a subproject became its own repo and the
@@ -7254,7 +7359,13 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // kernel's honest record) and the sub-line says so. The key stays labelled plainly 'API key', no
   // fragment of it anywhere. A pick posts the same setAuth the badge used (the session reconnects to
   // apply, so the sub-line says "applying…" while st.authPending rides the status). An older kernel
-  // sends no authAvail: its authBoth keeps the old both-or-nothing gate.
+  // sends no authAvail: its authBoth keeps the old both-or-nothing gate. The flyout opens on HOVER as
+  // the Tags flyout does, and on click (T380, the user 2026-09-12: one gesture, wireFlyout), and below
+  // the session's choices carries "Default for <machine>": the same choices as a radio group, the
+  // current default marked (authAvail.default, the owning kernel's seed, so a remote session's flyout
+  // shows ITS host's default), a pick posting setAuth with scope "machine", which writes the seed every
+  // NEW session and every session with no pick of its own launches on and touches no session that
+  // carries its own pick; the group's note says exactly that.
   const st = s ? s.status : null;
   if (st && st.auth && (st.authAvail || st.authBoth)) {
     const avail: AuthAvail = st.authAvail || { login: true, key: true };
@@ -7278,11 +7389,11 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     bodyEl.appendChild(sb);
     item.appendChild(bodyEl);
     const caret = el("span", "ctx-caret"); caret.textContent = "▸"; item.appendChild(caret);
-    item.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      const open = menu.querySelector(".ctx-sub");
-      if (open) { open.remove(); return; }                       // second click folds the flyout
-      const sub = el("div", "ctx-menu ctx-sub");
+    const openBillingFly = (): HTMLElement | null => {
+      const already = menu.querySelector(".ctx-sub-billing");
+      if (already) return already as HTMLElement;
+      menu.querySelector(".ctx-sub")?.remove();                    // one flyout at a time
+      const sub = el("div", "ctx-menu ctx-sub ctx-sub-billing");
       // every login this host knows plus the key (T346, authLoginChoices); an older kernel sends no `logins` and
       // keeps the two-entry list, the machine's login named by its account
       const choices = avail.logins && avail.logins.length ? authLoginChoices(avail)
@@ -7304,14 +7415,72 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
         });
         sub.appendChild(opt);
       }
+      // ── Default for this machine (T380) ── the owning kernel's seed (authAvail.default): what a NEW
+      // session, and a session with no pick of its own, launches on. The same choices as radios, the
+      // current one marked; a pick posts setAuth with scope "machine" and changes no session that carries
+      // its own pick. A remote session's flyout names ITS host, whose kernel holds the seed.
+      if (avail.default) {
+        sub.appendChild(el("div", "ctx-sep"));
+        const explicit = !!avail.defaultExplicit;
+        const head = el("div", "ctx-item ctx-item-toggle ctx-sub-head");
+        const hb = el("span", "ctx-item-body");
+        const hl = el("span", "ctx-item-label"); hl.textContent = "Default for " + (hostOf(id) || "this machine"); hb.appendChild(hl);
+        const hs = el("span", "ctx-item-sub");
+        // the sub-line says which rule holds (review): set here, or automatic (the helper rule) as before
+        hs.textContent = explicit
+          ? "set here: new and unpicked sessions follow it; a session's own pick stays"
+          : "automatic: the API key when a helper is configured, else the login; new and unpicked sessions follow it";
+        hb.appendChild(hs);
+        head.appendChild(hb); sub.appendChild(head);
+        // the same choices as radios, then Automatic (the helper rule), which clears the explicit default (review: the flag
+        // was one-way and invisible); the current mark sits on the explicit side, else on Automatic
+        const autoWord = avail.key ? "API key" : "Login";
+        // an older kernel sends no defaultExplicit and takes no "auto": its flyout marks the side it computed and offers no
+        // Automatic radio (review: the click would be swallowed there)
+        const olderKernel = avail.defaultExplicit === undefined;
+        // the machine's own login and the key only (T346 beside T380): a stored login as the machine's default is not
+        // taken by the kernel yet (its scoped arm refuses the value by name), so the group does not offer it
+        const machineChoices = choices.filter((c) => c.value === "login" || c.value === "key");
+        const radios = [...machineChoices.map((c) => ({ ...c, cur: olderKernel ? avail.default === c.value : (explicit && avail.default === c.value) })),
+                        ...(olderKernel ? [] : [{ label: `Automatic (${autoWord})`, value: "auto", why: "", cur: !explicit }])];
+        for (const c of radios) {
+          const opt = el("div", "ctx-item ctx-radio" + (c.cur ? " current" : "") + (c.why ? " disabled" : ""));
+          opt.textContent = c.label;
+          opt.dataset.scope = "machine";
+          if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
+          opt.addEventListener("click", (ev2) => {
+            ev2.stopPropagation();
+            if (c.why) return;
+            dismissTabMenu();
+            if (!c.cur && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value, scope: "machine" });
+          });
+          sub.appendChild(opt);
+        }
+      }
       // INSIDE the menu node (so dismissTabMenu and the outside-mousedown check cover it), placed
       // beside the item — .ctx-menu is position:fixed, so the coords are viewport-space, clamped
       menu.appendChild(sub);
       const ir = item.getBoundingClientRect();
       const sr = sub.getBoundingClientRect();
-      sub.style.left = Math.max(0, Math.min(ir.right + 2, window.innerWidth - sr.width - 4)) + "px";
-      sub.style.top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4)) + "px";
-    });
+      // the side rule (Tags, the model-version submenus): PREFER right; fall LEFT when the right edge would clip and
+      // the left has room; with room on neither side (a narrow window) the flyout drops BELOW the row when it fits
+      // there, else ABOVE the row's top, and only when neither fits is it clamped inside the viewport — never over
+      // the row while a place beside or beyond it exists (review: at 560 px it covered its menu and ran 33 px out;
+      // at 560 by 420 the clamp pulled the drop-below back over the row)
+      let left: number, top: number = ir.top;
+      if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
+      else if (ir.left - 2 - sr.width >= 8) left = Math.round(ir.left) - sr.width - 2;
+      else {
+        left = Math.max(8, Math.min(Math.round(ir.left), window.innerWidth - sr.width - 8));
+        if (ir.bottom + 2 + sr.height <= window.innerHeight - 4) top = ir.bottom + 2;
+        else if (ir.top - 2 - sr.height >= 0) top = ir.top - 2 - sr.height;
+        else top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4));
+      }
+      sub.style.left = left + "px";
+      sub.style.top = Math.max(0, Math.min(top, window.innerHeight - sr.height - 4)) + "px";
+      return sub;
+    };
+    wireFlyout(menu, item, ".ctx-sub-billing", () => openBillingFly());
     menu.appendChild(item);
   }
   // ── 4. FILES: Browse files (web only). A different kind of thing, it opens another surface; last and
@@ -7580,7 +7749,6 @@ function typeFromAnywhereTarget(e: Event): HTMLTextAreaElement | null {
   const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   if (!ta || ta.disabled || document.activeElement === ta) return null;   // no box / read-only session / already in the box (covers key repeat; a paste there is native)
   if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) return null;
-  for (const ed of queuedEditors.values()) if (ed.open && ed.focused) return null;   // a queued message's field owns the keys, across the tail's rebuild (T306)
   if (activeId && liveAsks.has(activeId)) return null;   // the live-ask card owns input while it is up (digits are its number keys)
   if (ctxMenuEl || document.querySelector(".picker-overlay")) return null;   // an open menu / #picker / #confirm owns the keys
   if (document.getElementById("romp-fileview") || document.getElementById("romp-filebrowse")
@@ -7933,9 +8101,15 @@ function claimSession(id: string): void {
 // EMPTINESS (the chat split): a later column none of whose members the kernel's strip lists any more — ended, or
 // closed from a tab's cross (`ids` excludes closingTabs, so the user's own cross empties the column at once: the
 // acknowledgement) — tells the shell, which prunes the gone ids and closes a column left with none. Once per
-// emptiness: the flag resets when a member is listed again. Waits for the kernel's first strip (tabOrderSeen), so
+// emptiness: the flag resets when a member is listed again. Waits for the kernel's own first strip (tabOrderSeen), so
 // a page that has not heard the board yet says nothing; `ids` keeps host-down remote tabs and live-omitted ids
-// (T258), so neither a tunnel blip nor a transient read failure closes a column.
+// (T258), and a member the strip omits while the kernel's `live` set still affirms it counts as present (boardLive:
+// on a fresh column retainLiveOmitted has no order to keep it in), so neither a tunnel blip nor a transient read
+// failure closes a column. The message names the gone members this page's own ✕ removed (`crossed`): the shell holds
+// ONLY those back in the first column, whose "Couldn't close" backstop is for a cross the kernel refused; a member
+// gone for any other reason is simply the first column's again, shown the moment its strip repaints (the vanishing
+// tab, the user 2026-09-12: a hold over a session the kernel still listed hid it for the backstop and toasted a close
+// nobody asked for).
 let colEmptyPosted = false;
 function noteColumnEmptiness(ids: readonly string[]): void {
   if (!COL || !colSets || !tabOrderSeen) return;
@@ -7944,11 +8118,13 @@ function noteColumnEmptiness(ids: readonly string[]): void {
   // text and the draft died with the document (review find 2026-09-11)
   if (provisionalId || failedProvisionals.size) return;
   const mine = colSets[COL] || [];
-  const empty = mine.length > 0 && !mine.some((id) => ids.includes(id));
+  const present = (id: string) => ids.includes(id) || (boardLive.has(id) && !closingTabs.has(id));
+  const empty = mine.length > 0 && !mine.some(present);
   if (!empty) { colEmptyPosted = false; return; }
   if (colEmptyPosted) return;
   colEmptyPosted = true;
-  try { window.parent.postMessage({ romp: "colEmpty", gone: mine.slice() }, "*"); } catch (e) { /* no shell */ }
+  const crossed = mine.filter((id) => closingTabs.has(id));
+  try { window.parent.postMessage({ romp: "colEmpty", gone: mine.slice(), crossed }, "*"); } catch (e) { /* no shell */ }
 }
 // ORPHANED STATE (the chat split, review find 2026-09-11): a draft, citations, attachments or staged messages this page
 // holds for a session it does not show — a column blob written before the partition (a v1 column was a whole chat page,
@@ -9395,7 +9571,10 @@ function applyForkSpots(sid: string, v: View): void {
     row.dataset.cut = cut;
     const fk = el("button", "msg-fork") as HTMLButtonElement;
     fk.type = "button";
-    fk.textContent = "fork";
+    // the fork glyph beside the word (T381, the user 2026-09-12: a line from the left branching into two that run
+    // on to the right), the word kept, and Fork in the accessible name; a literal glyph, no sanitize
+    fk.innerHTML = ICON_FORK + '<span class="msg-fork-word">fork</span>';
+    fk.setAttribute("aria-label", "Fork");
     fk.dataset.act = "forkspot";   // delegated (click-safe): the transcript rebuilds on every push
     fk.title = cut
       ? "Fork the session from just below this response — a new parallel session carries the conversation to here; this one is untouched"
@@ -10960,7 +11139,7 @@ function tailMutations(records: MutationRecord[]): { removedTail: string[]; adde
 // the cap is the default unless the page's localStorage says otherwise (a laptop capturing raises it; T262j)
 const scrollDiagCap = readScrollDiagCap((k) => { try { return localStorage.getItem(k); } catch { return null; } });
 const scrollDiag = new ScrollDiagBudget(scrollDiagCap);
-function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "spacer" | "tailmut" | "unitchange", data: any): void {
+function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "spacer" | "tailmut" | "unitchange" | "windowask", data: any): void {
   const v = scrollDiag.take(activeId || "", kind, Date.now());
   if (v === "drop") return;
   vscodeApi?.postMessage(v === "cap"
@@ -10971,7 +11150,7 @@ function writeScroll(content: HTMLElement, top: number, writer: string, stick = 
   const before = content.scrollTop;
   content.scrollTop = top;
   const after = content.scrollTop;
-  lastScrollWriteAfter = after;
+  if (after !== before) lastScrollWriteAfter = after;   // a write that moved the view owes exactly one scroll event, its echo; one that did not move owes none, and must not eat a later gesture landing near its target (verifier low, round two)
   lastKnownSh = content.scrollHeight;
   if (after !== before) scrollDiagRow("scrollwrite", scrollWriteRow(activeId || "", writer, before, after, stick, content.scrollHeight, content.clientHeight));
 }
@@ -11283,36 +11462,12 @@ function ensureToastBox(): HTMLElement {
   }
   return box;
 }
-// A toast that never fades and carries the words: for typed words that have nowhere else to live (a queued message's
-// edit refused after the copy left the queue, T306 review). No timers; dismissed by its ✕, Escape or a click on its
-// text; the Copy button puts the words on the clipboard and stays put.
-function stickyToast(msg: string, copyText: string): HTMLElement {
-  const box = ensureToastBox();
-  const t = el("div", "warn-toast sticky");
-  const txt = el("span", "warn-toast-msg");
-  txt.textContent = msg;
-  const c = el("button", "warn-toast-copy");
-  c.textContent = "Copy";
-  c.title = "copy the words to the clipboard";
-  c.addEventListener("click", (e) => {
-    e.stopPropagation();
-    try { navigator.clipboard?.writeText(copyText); c.textContent = "Copied"; } catch (_) { c.textContent = "Select the text above"; }
-  });
-  const x = el("button", "warn-toast-x");
-  x.setAttribute("aria-label", "Dismiss");
-  x.title = "dismiss (Esc)";
-  x.textContent = "✕";
-  t.append(txt, c, x);
-  box.appendChild(t);
-  return t;
-}
 // A toast the page that follows a reload must not repeat: a refusal that reports a STATE rather than an event. The
 // staged sends' "Can't send yet" says the session's host is unreachable (hostIsDown, a remote host's tunnel) or its tab
 // is still being created (isProvisionalId); the plain send's refusal on a disconnected host (sendComposer's deliver)
 // says the same host is unreachable and that romp is re-dialing it; the send into a tab whose create failed (deliver
-// too) says the session never started; the queued edit's send (sendComposer, ahead of deliver) says the session cannot
-// be reached, so the edit was not sent; the staging refusals (stageComposer) say a picker is waiting on the composer,
-// an edit is in progress (to a past message, or to a queued one) or attachments are on the composer; the branch jump's
+// too) says the session never started; the staging refusals (stageComposer) say a picker is waiting on the composer,
+// an edit of a past message is in progress or attachments are on the composer; the branch jump's
 // refusal (branchjump) says the session is not on this dashboard. The fresh page shows each state for itself (the host
 // mark and the transcript foot, from the kernel's tunnel health, which the page reads afresh into a disconnected set
 // that starts empty; the staged strip; the picker, the attachments and the roster come back from the kernel and the
@@ -12616,10 +12771,18 @@ function showActive(keep?: { uuid: string; y: number } | null) {
 // screen). When the direct restore misses, the deep-link land takes over with the kept offset: it renders a
 // window AROUND the anchor's unit (or fetches older history and re-lands on arrival) and writes "keep-offset",
 // the anchor's exact on-screen position — the same machinery a jump into folded history uses.
+// True only while keepPlaceAcrossWindow lands the reader's own row across a rebuild (T366): the one window ask that is no
+// navigation. The reload restore arms the same keep offset (the reader's saved place, which they want back), the durable
+// seek, a card, a notch and a deep link arm an anchor of their own; every one of those lands (verifier medium 1: keying
+// the refusal on the keep offset refused the reload restore too, and a reader reloaded while reading older history lost
+// their place)
+let relandAsk = false;
 function keepPlaceAcrossWindow(content: HTMLElement, v: View, keep: { uuid: string; y: number }): boolean {
   if (restoreScrollAnchor(content, v, keep)) return true;
   pendingAnchor = keep.uuid; pendingAnchorKeepY = keep.y;
-  const landed = scrollToAnchor(keep.uuid);
+  relandAsk = true;
+  let landed = false;
+  try { landed = scrollToAnchor(keep.uuid); } finally { relandAsk = false; }
   if (!anchorPendingOlder) { pendingAnchor = null; pendingAnchorKeepY = null; }   // an older-history fetch keeps them armed for chatHead's re-land
   return landed;
 }
@@ -12730,7 +12893,17 @@ function landActive(content: HTMLElement | null, v: View): void {
         // deep-link land, whose window-around-unit and fetch-older paths bring the anchor turn back to its exact
         // offset (review find, 2026-09-08)
         writeScroll(content, rs.top, "reload-restore");
-        if (rs.anchor) { pendingAnchor = rs.anchor.uuid; pendingAnchorKeepY = rs.anchor.y; }
+        if (rs.anchor) {
+          pendingAnchor = rs.anchor.uuid; pendingAnchorKeepY = rs.anchor.y;
+          // …and run that land NOW (T374, the verifier of 2026-09-12 executed the gap on both heads): this pass made its own
+          // landing attempt above, before the restore armed anything, and the next pass comes only with a frame that changes
+          // the run, which an idle session never sends, so a saved row outside the fresh window (mid-run: its raw top not in
+          // the top band, no older ask either) parked the reader at a raw pixel offset for good. Resident → lands here;
+          // outside the run → asks its window here (chatWindow lands it on arrival, the arm stays for that reply).
+          landTrail = [];
+          const landedNow = scrollToAnchor(rs.anchor.uuid);
+          if (landedNow || !anchorPendingOlder) { pendingAnchor = null; pendingAnchorKeepY = null; }
+        }
       }
     }
     else if (!v.shown || v.stick) writeScroll(content, content.scrollHeight, "land-bottom", true);
@@ -13093,8 +13266,11 @@ function updateReplyChips(): void {
     followReader(activeId ? views.get(activeId) : null, c.scrollTop, atBottom(c), pendingBuildRaf != null);
     // the scroll nobody's code asked for is the user's (T262): filed so a recording lines up with the journal;
     // a write's own echo (within a pixel of the value written) is consumed here and never read as a gesture
-    if (classifyScroll(c.scrollTop, lastScrollWriteAfter) === "write-echo") lastScrollWriteAfter = null;
-    else scrollDiagRow("scrollgesture", { sid: activeId || "", top: c.scrollTop, gesture: true, sh: c.scrollHeight, ch: c.clientHeight });
+    const cls = classifyScroll(c.scrollTop, lastScrollWriteAfter);
+    const gv = activeId ? views.get(activeId) : null;
+    if (gv) gv.gestureScroll = cls === "gesture";   // read once by the edge check this event runs next (T366): a write's echo is no gesture
+    lastScrollWriteAfter = null;   // one-shot: the first event after a write consumes its marker, echo or not (a gesture that lands within a pixel of an older write's target is a gesture)
+    if (cls !== "write-echo") scrollDiagRow("scrollgesture", { sid: activeId || "", top: c.scrollTop, gesture: true, sh: c.scrollHeight, ch: c.clientHeight });
     lastKnownSh = c.scrollHeight;   // sh/ch: a clamp reads top == sh - ch after sh dropped (T262e)
   }, { passive: true });
 }
@@ -13316,9 +13492,19 @@ function virtualizeToViewport(): void {
   const topH = topEl ? topEl.offsetHeight : 0;
   const renderedBottom = botEl ? botEl.getBoundingClientRect().top - cRectTop + content.scrollTop : content.scrollHeight;
   const st = content.scrollTop, vh = content.clientHeight;
+  // the gesture's direction (T366): an older-history ask needs an upward or unchanged move OF THE READER'S OWN; a reader
+  // heading DOWN never asks, whatever the spacer estimate says about the top band (chat-window.ts olderRequestAllowed).
+  // The page's compensating writes (a re-window's, a land's) move scrollTop too and echo as scroll events, so the
+  // direction is read only on a gesture event (the scroll listener marks it) and the last verdict holds across the page's
+  // own writes: a one-write jump to the top asks once at the head as it always did (verifier medium 2)
+  const gesture = v.gestureScroll === true;
+  v.gestureScroll = undefined;
+  if (gesture) v.edgeUp = olderRequestAllowed(v.edgeTop, st);
+  v.edgeTop = st;
+  const upward = v.edgeUp !== false;
   // At the top of the RESIDENT events with older history still on the server → fetch the previous chunk
   // (loadOlder → chatHead). winStart 0 ⇒ no top spacer left to expand into; topH is 0 so this is "near 0".
-  if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx) { requestOlder(activeId, v, content); return; }
+  if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx && upward) { requestOlder(activeId, v, content); return; }
   // At the bottom of a DETACHED proto-2 window (an older window with more after it) → the next page (loadNewer → chatMore)
   if (s.detached && (v.winEnd ?? total) >= total && st + vh > renderedBottom - edgePx) { requestNewer(activeId); return; }
   const nearTopEdge = (v.winStart ?? 0) > 0 && st < topH + edgePx;
@@ -13359,21 +13545,35 @@ function virtualizeToViewport(): void {
   if (c) c.addEventListener("scroll", virtualizeToViewport, { passive: true });
 }
 
-// A small "Loading earlier messages…" pill at the top-center of the chat pane, shown while a window
+// A small "Loading earlier messages…" pill at the top-center of the CHAT SECTION, shown while a window
 // expand/jump is rendering so a scroll into un-rendered history reads as loading-in-progress, not frozen
-// (the user 2026-06-25). Lives in the chat iframe's body; idempotent.
+// (the user 2026-06-25). Anchored to the section, never the viewport (T365, the user 2026-09-12, whose strip
+// wraps onto several rows: the viewport-fixed pill sat on the tabs): the first show inserts a zero-height
+// .tx-loading-anchor right before #content, which the page's flex column places exactly where the transcript
+// starts, below the tab strip and the ledger box, so the pill's top follows the strip's bottom by layout
+// alone, whatever the row count and however it changes while the pill shows. Idempotent; no pointer events.
 let loadingPillEl: HTMLElement | null = null;
 function showLoadingPill(): void {
   if (revealProgress) return;   // the reveal progress line is the one message for that wait (T336)
+  const content = document.getElementById("content");
+  if (!content || !content.parentNode) return;   // no chat section on this page: nothing to anchor to
   if (!loadingPillEl) {
     loadingPillEl = document.createElement("div");
     loadingPillEl.className = "tx-loading-pill";
     loadingPillEl.textContent = "Loading earlier messages…";
-    document.body.appendChild(loadingPillEl);
+  }
+  if (!loadingPillEl.isConnected) {   // the first show, or a rebuild that dropped the anchor
+    const anchor = document.createElement("div");
+    anchor.className = "tx-loading-anchor";
+    anchor.appendChild(loadingPillEl);
+    content.parentNode.insertBefore(anchor, content);
   }
   loadingPillEl.style.display = "";
 }
 function hideLoadingPill(): void { if (loadingPillEl) loadingPillEl.style.display = "none"; }
+// the served geometry lab (tests/test_loading_pill_anchor_browser.py) shows the pill on demand: its real
+// showings last the span of a fetch, too brief to measure against the strip
+if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLoadingPill(); else hideLoadingPill(); };
 
 // ---- ledger box (rolling per-session digest, just below the tabs) ----
 
@@ -15460,7 +15660,6 @@ window.addEventListener("romp:wsup", () => {
 window.addEventListener("romp:hostRelayUp", (e) => {
   const h = String((((e as CustomEvent).detail || {}) as any).host || "");
   if (h) reshipPendingUploads([h]);
-  if (h) reholdQueuedEditors(true);   // the remote kernel released this page's holds with the old relay socket (T306)
   // …and the figure previews parked on that host's link (T291): the relay socket's open is the reconnect-class
   // event a remote kernel's restart produces (it fires neither romp:wsup nor hostUp), so settled previews
   // make their one attempt here as well
@@ -15614,7 +15813,7 @@ try { stagedMsgs.restore(((vscodeApi?.getState?.() || {}) as any).staged); } cat
 // One routing owner for a user message (deliver speaks it through flushStaged, once per post of the
 // release): a goal chip rides askFollowUp, quote chips wrap client-side, a bare message is a plain send
 // with the optimistic bubble (chip sends have their own kernel-side echo).
-function routeUserMessage(sid: string, text: string, cites: Citation[] | undefined, imgPaths?: string[]): void {
+function routeUserMessage(sid: string, text: string, cites: Citation[] | undefined, imgPaths?: string[], paths?: string[]): void {
   if (!vscodeApi) return;
   const goalCite = cites?.find((c) => c.itemId);
   const quoteCites = cites ? cites.filter((c) => c.quote) : [];
@@ -15628,9 +15827,12 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
   // the same one: the kernel queues or parks the copy under it, so the two never have to be paired by text
   // (send-pending.ts). The post still goes first: the paint that follows can never cost the send.
   const qid = mintQid();
-  if (goalCite?.itemId) { vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid, qid }); registerOptimistic(sid, text, imgPaths, qid); }
-  else if (quoteCites.length) { const body = quoteReplyBody(quoteCites, text); vscodeApi.postMessage({ type: "sendMessage", id: sid, text: body, qid }); registerOptimistic(sid, body, imgPaths, qid); }
-  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text, qid }); registerOptimistic(sid, text, imgPaths, qid); }
+  // `paths`: every attachment the trailing line carries, on the frame (the kernel keeps it beside the copy's id and ships
+  // it on the queued copy) and on the record, so a rescind gives back exactly what went out (T373 fold, medium 1)
+  const att = paths && paths.length ? { paths } : {};
+  if (goalCite?.itemId) { vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid, qid, ...att }); registerOptimistic(sid, text, imgPaths, qid, paths); }
+  else if (quoteCites.length) { const body = quoteReplyBody(quoteCites, text); vscodeApi.postMessage({ type: "sendMessage", id: sid, text: body, qid, ...att }); registerOptimistic(sid, body, imgPaths, qid, paths); }
+  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text, qid, ...att }); registerOptimistic(sid, text, imgPaths, qid, paths); }
   // One breadcrumb per composer send (client-diag.jsonl): sid, when, how long, which route — never the
   // text. A send that "vanished" can then be traced from the press through the kernel's own logs
   // instead of reconstructed from memory.
@@ -15648,9 +15850,9 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
  *  the comments after it as its argument). With nothing staged the typed message routes exactly as
  *  before. Deliver's guards (host down, provisional) run before this in the send path; Send now
  *  re-checks reachability itself. Returns how many staged items went. */
-function flushStaged(sid: string, typed?: { text: string; cites?: Citation[]; imgPaths?: string[] }): number {
+function flushStaged(sid: string, typed?: { text: string; cites?: Citation[]; imgPaths?: string[]; paths?: string[] }): number {
   const run = stagedMsgs.takeAll(sid);
-  for (const p of stagedPosts(run, typed)) routeUserMessage(sid, p.text, p.cites as Citation[] | undefined, p.imgPaths);
+  for (const p of stagedPosts(run, typed)) routeUserMessage(sid, p.text, p.cites as Citation[] | undefined, p.imgPaths, p.paths);
   if (run.length) { persistDrafts(); renderStagedStrip(sid); }
   return run.length;
 }
@@ -15767,213 +15969,6 @@ function flushStaged(sid: string, typed?: { text: string; cites?: Citation[]; im
   });
   strip.appendChild(list);
   list.scrollTop = opts?.reveal === "last" ? list.scrollHeight : (stagedScroll.get(id) || 0);
-}
-
-// ---- editing a QUEUED message IN PLACE (T306, the user 2026-09-10) --------------------------------------
-// A message that has not reached the session yet — parked in romp's FIFO, held in the SDK backend's own queue, or
-// still at the optimistic "sending…" stage — is the user's to change until it goes. The ✎ on its bubble turns the
-// bubble's text into a field where it sits (the same width, the dashed provisional look kept) with Save and Cancel;
-// the composer is never touched (the 2026-09-08 design pulled the text into the composer, where a message that went
-// meanwhile left its words behind as a stray context chip). While the field is open the entry is HELD: the open
-// posts holdQueued and the kernel's drains skip the entry until the Save (the editQueued itself releases it), the
-// Cancel (holdQueued hold:false) or this page's socket closing releases it. Save posts editQueued with the new words
-// and the kernel replaces the entry in place (same slot, a follow-up's wrapper kept), answering editResult: ok:false
-// on a Save means the message left the queue meanwhile — the optimistic repaint is reversed and the typed words ride
-// a sticky toast, never the composer; ok:false on the hold (the entry fed before the field could hold it) closes the
-// field and the bubble says so. The editor's state is keyed by the entry (session + body + the copy's id and stamp)
-// and lives in memory, so the tail's rebuild on every push repaints the field from it — text, caret and focus — and
-// a fresh page has no edit in progress (the kernel released the hold with the old socket).
-type QueuedEditRef = { md: string; idx?: number; park?: number; qts?: number; qid?: string; optimistic?: boolean };
-type QueuedEditor = { eid: number; sid: string; key: string; ref: QueuedEditRef; text: string; sel: [number, number] | null;
-                      focused: boolean; open: boolean; note: string; width: number; height: number };
-const queuedEditors = new Map<string, QueuedEditor>();   // sid + the entry's key → its editor (open, or a closed one carrying a note)
-let queuedEditorSeq = 0;
-// the typed text + the entry it replaced, keyed sid + " " + old body, so a refused Save can undo the optimistic
-// repaint and hand the words back (one-shot, ok or not — pendingCancelRestores' twin)
-const pendingEditRestores = new Map<string, { typed: string; ref: QueuedEditRef }>();
-// the copy's identity: its id when it has one (every kernel copy, and every press this page minted), else the press
-// stamp (an id-less optimistic copy of ours) — never the stamp BESIDE an id: a kernel copy's stamp is its enqueue time,
-// which the ✎ does not carry, so keying on it left the field unfindable and the copy held (review find)
-const queuedEditorKey = (sid: string, t: { md: string; qid?: string; qts?: number }): string =>
-  sid + "\u0001" + t.md + "\u0001" + (t.qid ? "id:" + t.qid : "ts:" + (t.qts === undefined ? "" : String(t.qts)));
-function queuedEditorFor(sid: string, t: { md: string; qid?: string; qts?: number }): QueuedEditor | undefined {
-  return queuedEditors.get(queuedEditorKey(sid, t));
-}
-function queuedEditorByEid(eid: number): QueuedEditor | undefined {
-  for (const ed of queuedEditors.values()) if (ed.eid === eid) return ed;
-  return undefined;
-}
-function repaintQueuedFor(sid: string): void {
-  if (sid !== activeId) return;
-  const v = views.get(sid);
-  if (v) { v.stale = true; appendActive(); }
-}
-function holdQueuedMsg(sid: string, ref: QueuedEditRef, hold: boolean): Record<string, unknown> {
-  const m: Record<string, unknown> = { type: "holdQueued", id: sid, md: ref.md, hold };
-  if (ref.idx !== undefined) m.idx = ref.idx;
-  if (ref.park !== undefined) m.park = ref.park;
-  if (ref.qid) m.qid = ref.qid;
-  return m;
-}
-// the ✎: the field opens where the bubble is (the acknowledgement), and the hold goes out with it. A session that
-// cannot be reached (a down host, a provisional tab) gets no hold posted: there is no kernel entry to hold yet, and the
-// Save's own guard says so if it is still unreachable then.
-let queuedEditorListenersOn = false;
-// the field's focus is tracked by the USER's own acts, never by blur: the tail's rebuild removes the focused field (a
-// blur Chromium fires before the node reads as disconnected, after the container is cleared), so a blur listener and a
-// render-time snapshot both read the rebuild as the user leaving. A pointer press outside the field, or focus landing on
-// some other element, is the user leaving; nothing else clears the flag, and the rebuilt field takes focus back
-// (preventScroll: the tail's scroll position is the reader's).
-function installQueuedEditorListeners(): void {
-  if (queuedEditorListenersOn) return;
-  queuedEditorListenersOn = true;
-  const isField = (t: EventTarget | null, ed: QueuedEditor) =>
-    !!t && t instanceof HTMLElement && t.classList.contains("queued-editbox") && (t as any)._eid === ed.eid;
-  const insideBox = (t: EventTarget | null, ed: QueuedEditor) =>
-    !!t && t instanceof Node && !!(t as HTMLElement).closest?.(".queued-editor") && ((t as HTMLElement).closest(".queued-editor") as any)?._eid === ed.eid;
-  document.addEventListener("pointerdown", (e) => {
-    for (const ed of queuedEditors.values()) if (ed.open && ed.focused && !insideBox(e.target, ed)) ed.focused = false;
-  }, true);
-  document.addEventListener("focusin", (e) => {
-    for (const ed of queuedEditors.values()) if (ed.open && ed.focused && !isField(e.target, ed) && !insideBox(e.target, ed)) ed.focused = false;
-  }, true);
-}
-function openQueuedEditor(sid: string, ref: QueuedEditRef, width = 0): void {
-  installQueuedEditorListeners();
-  const key = queuedEditorKey(sid, ref);
-  const cur = queuedEditors.get(key);
-  if (cur && cur.open) return;
-  // the bubble's width as it stood (measured at the click): the field keeps it, so the words do not re-wrap in a
-  // box that shrank to the textarea's own size; the editor carries it across the tail's rebuilds
-  queuedEditors.set(key, { eid: ++queuedEditorSeq, sid, key, ref, text: ref.md, sel: [ref.md.length, ref.md.length],
-                           focused: true, open: true, note: "", width: Math.round(width), height: 0 });
-  if (!isProvisionalId(sid) && !hostIsDown(sid)) vscodeApi?.postMessage(holdQueuedMsg(sid, ref, true));
-  repaintQueuedFor(sid);
-}
-// Cancel (the button, Esc): the field goes, the bubble is as it was, the hold is released
-function cancelQueuedEditor(ed: QueuedEditor): void {
-  queuedEditors.delete(ed.key);
-  if (!isProvisionalId(ed.sid) && !hostIsDown(ed.sid)) vscodeApi?.postMessage(holdQueuedMsg(ed.sid, ed.ref, false));
-  repaintQueuedFor(ed.sid);
-}
-// a closed tab takes its editors with it and RELEASES their holds: the session and its queue live on, and so does this
-// page's socket, so the kernel's socket-close release would never come (review find)
-function closeQueuedEditorsFor(sid: string): void {
-  for (const [k, ed] of queuedEditors) {
-    if (ed.sid !== sid) continue;
-    if (ed.open && !isProvisionalId(sid) && !hostIsDown(sid)) vscodeApi?.postMessage(holdQueuedMsg(sid, ed.ref, false));
-    queuedEditors.delete(k);
-  }
-}
-// the socket came back (a kernel restart, a dropped link, a relay re-dial): the kernel released the old socket's holds
-// with it, so every field still open re-holds its entry; a copy that fed meanwhile answers ok:false (op hold) and the
-// field closes with the words in the toast (review find: the kernel's comments promised this and nothing did it)
-function reholdQueuedEditors(remoteOnly = false): void {
-  for (const ed of queuedEditors.values()) {
-    if (!ed.open || isProvisionalId(ed.sid) || hostIsDown(ed.sid)) continue;
-    if (remoteOnly && !String(ed.sid).includes(":")) continue;
-    vscodeApi?.postMessage(holdQueuedMsg(ed.sid, ed.ref, true));
-  }
-}
-// Save (the button, Enter): editQueued with the new words; the kernel replaces the entry in place and drops the hold
-// with the edit. Three refusals leave the field exactly as it is: an empty edit (to drop the message, use its ✕), a
-// slash command (the kernel would deliver it as text, skipping the routing every typed command gets — it refuses too),
-// and a session that cannot be reached (deliver()'s guard: a down host drops the frame and no editResult would ever
-// come back). None of them touches the composer.
-function saveQueuedEditor(ed: QueuedEditor): void {
-  const typed = ed.text.trim();
-  if (!typed) { ephemeralWarnToast("Nothing to send — to drop the message, use its ✕."); return; }
-  if (SLASH_CMD_RE.test(typed)) { warnToast("A queued message cannot become a command. Cancel it with its ✕ and type the command."); return; }
-  if (hostIsDown(ed.sid) || isProvisionalId(ed.sid)) {
-    if (hostIsDown(ed.sid)) vscodeApi?.postMessage({ type: "redial", host: String(ed.sid).slice(0, String(ed.sid).indexOf(":")) });
-    ephemeralWarnToast("Can't reach the session right now, so the edit wasn't saved. It's still in the message: save again when the link is back.");
-    return;
-  }
-  const qmsg: Record<string, unknown> = { type: "editQueued", id: ed.sid, md: ed.ref.md, text: typed };
-  if (ed.ref.idx !== undefined) qmsg.idx = ed.ref.idx;
-  if (ed.ref.park !== undefined) qmsg.park = ed.ref.park;
-  if (ed.ref.qid) qmsg.qid = ed.ref.qid;
-  vscodeApi?.postMessage(qmsg);
-  pendingEditRestores.set(ed.sid + " " + ed.ref.md, { typed, ref: ed.ref });
-  queuedEditors.delete(ed.key);
-  applyQueuedEditLocally(ed.sid, ed.ref, typed);   // the bubble shows the new words at once (acknowledge the click)
-}
-// the field the bubble wears while its editor is open: the text, then Save and Cancel (delegated: qsave / qcancel).
-// Enter saves, Shift+Enter breaks a line, Escape cancels. The tail rebuilds on every push, so the field is repainted
-// from the editor's state — its words, its caret and its focus — instead of losing them to the rebuild.
-function renderQueuedEditor(bubble: HTMLElement, ed: QueuedEditor): void {
-  bubble.classList.add("editing");
-  if (ed.width > 0) bubble.style.width = ed.width + "px";   // the same width as the bubble it replaces (max-width still caps it)
-  // whether THIS editor's previous field holds the focus right now: read off the DOM before the rebuild swaps it out,
-  // because the old field's blur fires during its removal, before it reads as disconnected, and would otherwise cancel
-  // the refocus on every push (the served-page harness lost focus within a second)
-  const prev = document.activeElement as HTMLElement | null;
-  const wasFocused = !!prev && prev.classList.contains("queued-editbox") && (prev as any)._eid === ed.eid;
-  const box = el("div", "queued-editor");
-  (box as any)._eid = ed.eid;
-  const field = document.createElement("textarea");
-  (field as any)._eid = ed.eid;
-  field.className = "queued-editbox";
-  field.value = ed.text;
-  field.rows = Math.max(1, ed.text.split("\n").length);   // sized on the spot: the rebuild must not paint one row and grow a frame later
-  if (ed.height > 0) field.style.height = ed.height + "px";
-  field.setAttribute("aria-label", "edit the queued message");
-  const grow = () => { field.style.height = "auto"; field.style.height = field.scrollHeight + "px"; ed.height = field.scrollHeight; };
-  const remember = () => { ed.sel = [field.selectionStart, field.selectionEnd]; };
-  field.addEventListener("input", () => { ed.text = field.value; remember(); grow(); });
-  field.addEventListener("select", remember);
-  field.addEventListener("keyup", remember);
-  field.addEventListener("focus", () => { ed.focused = true; });   // (no blur listener: see installQueuedEditorListeners)
-  field.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveQueuedEditor(ed); }
-    else if (e.key === "Escape") { e.preventDefault(); cancelQueuedEditor(ed); }
-  });
-  box.appendChild(field);
-  if (ed.note) { const n = el("div", "queued-editnote"); n.textContent = ed.note; box.appendChild(n); }   // a refused Save's reason, beside the words it kept
-  const btns = el("div", "queued-editbtns");
-  const cancel = el("button", "queued-editbtn");
-  cancel.textContent = "Cancel"; cancel.title = "leave the message as it was (Esc)";
-  cancel.dataset.act = "qcancel"; cancel.dataset.eid = String(ed.eid);
-  const save = el("button", "queued-editbtn save");
-  save.textContent = "Save"; save.title = "replace the queued message with these words (Enter)";
-  save.dataset.act = "qsave"; save.dataset.eid = String(ed.eid);
-  btns.appendChild(cancel);
-  btns.appendChild(save);
-  box.appendChild(btns);
-  bubble.appendChild(box);
-  if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => {
-    grow();
-    if ((wasFocused || ed.focused) && document.body.contains(field)) { ed.focused = true; field.focus({ preventScroll: true }); if (ed.sel) field.setSelectionRange(ed.sel[0], ed.sel[1]); }
-  });
-}
-
-// The optimistic half of an edit: the queued bubble shows the NEW words at once (the acknowledge-the-click
-// rule) — in the client's copy of the kernel events and in our own pending-send entry, so neither the next
-// re-render nor the pending reconcile paints the old text back before the kernel's push confirms. `back`
-// reverses it (editResult ok:false: the session has the old words).
-function applyQueuedEditLocally(sid: string, ref: QueuedEditRef, text: string, back = false): void {
-  const from = back ? text : ref.md, to = back ? ref.md : text;
-  for (const p of pendingSent.get(sid) || []) {
-    if (p.text === from && (ref.qts === undefined || p.ts === ref.qts)) { p.text = to; p.body = pendingBody(to, p.imgPaths); }
-  }
-  const s = sessions.get(sid);
-  if (s) {
-    for (let i = s.events.length - 1, n = 0; i >= 0 && n < 10; i--, n++) {   // a queued group only ever sits at the tail
-      const e = s.events[i];
-      if (e.kind !== "queued") continue;
-      for (const t of e.texts) {
-        if (t.md !== from) continue;
-        if (ref.idx !== undefined && t.idx !== undefined && t.idx !== ref.idx) continue;
-        if (ref.park !== undefined && t.park !== undefined && t.park !== ref.park) continue;
-        t.md = to;
-      }
-    }
-  }
-  // the held-copy memory follows too (T262i): reconcileHeld keys an id-less copy by TEXT, so a previous-push copy
-  // left with the old words would read as vanished on the next push and be held as a phantom of them
-  const mem = heldQueued.get(sid);
-  if (mem) for (const c of mem.prev) if (c.md === from) c.md = to;
-  if (sid === activeId) { const v = views.get(sid); if (v) { v.stale = true; appendActive(); } }
 }
 
 function beginComposerEdit(sid: string, uuid: string, orig: string): void {
@@ -17079,9 +17074,25 @@ function olderOnServer(s: Session): boolean {
 }
 // A deep-link anchor past the resident run: ONE round trip for a window around it (chatWindow), instead of the
 // index wire's fetch-older-until-resident loop. False when nothing can be asked (an index session, a request in flight).
+// sid -> the window was asked by a NAVIGATION (a card, a notch, a deep link, a seek, a reload's restore of the reader's
+// saved place: every anchor landing but one), not by the keep-offset RE-LAND of the reader's own row across a rebuild
+// (relandAsk), the one ask that exists only to keep their row on screen and must never move them off the live run (T366:
+// a window landing mid-flick detached a reader; a navigation's window may, a re-land's never); `named` says the ask was a
+// CLICK of the reader's (a card, a lane, a deep link, a notch, a reply chip, a comment tick: any anchor landing with no keep
+// offset), which the strip names as the message they opened, with its time when the frame carried one; the reload restore
+// of their own saved place arms a keep offset and keeps the plain sentence (verifier low, round two)
+const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null }>();
 function requestAround(sid: string, uuid: string): boolean {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || loadingOlder.has(sid)) return false;
+  const nav = !relandAsk;
+  const kind = pendingAnchorKind ?? pendingAnchorIntent ?? null;
+  pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null });
+  // every window ask leaves a diagnostic row (T366: the rows of the report had the reply's landing but nothing said
+  // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked;
+  // under the same per-minute budget as the other scroll rows (verifier low 5)
+  const cAsk = document.getElementById("content");
+  scrollDiagRow("windowask", { sid, nav, kind, keep: pendingAnchorKeepY != null, reland: relandAsk, trail: landTrail.slice(-4), detached: !!s.detached, atBottom: !!cAsk && atBottom(cAsk) });
   pendingOlderAnchor.set(sid, uuid);
   pendingOlderKeepY.delete(sid);
   loadingOlder.add(sid);
@@ -17113,18 +17124,38 @@ function chatWindow(msg: any) {
   stripOptimistic(s);
   const heldLast = s.lastUuid, wasDetached = !!s.detached;
   const r = mergeWindow(s.events as { uuid?: string }[], msg.events as { uuid?: string }[]);
-  s.events = r.events as ChatEvent[];
-  s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
-  s.lastUuid = keyOf(s.events[s.events.length - 1] as { uuid?: string; key?: string } | undefined) ?? null;
+  const newLast = keyOf(r.events[r.events.length - 1] as { uuid?: string; key?: string } | undefined) ?? null;
   // detached only when the merged run's newest event is not the live tail the page held: a window that overlaps the
   // resident tail merges into one contiguous run through it and stays attached (review find G; the kernel says so
   // too, `connected`); a client detached BEFORE the window stays so on the merge clause (round 2, item 2)
-  s.detached = windowDetached(!!msg.moreAfter, !!msg.connected, wasDetached, r.mode, heldLast, s.lastUuid);
+  const detached = windowDetached(!!msg.moreAfter, !!msg.connected, wasDetached, r.mode, heldLast, newLast);
+  // …but a detaching window that lands on the active view of a run that was ATTACHED, asked by no navigation of the
+  // reader's own (the re-land of their row after a rebuild), never takes them off it (T366, the user 2026-09-12: the
+  // paused strip mid-flick toward the bottom): the window is not adopted, and the kernel, whose base for this client
+  // moved to the window, is asked to re-base it on the tail (a full frame that merges into the held run)
+  const ask = pendingWindowNav.get(msg.id) ?? null;
+  const landing = windowLanding(detached, msg.id === activeId && !wasDetached, ask?.nav ?? false);
+  pendingWindowNav.delete(msg.id);
+  if (landing === "reattach") {
+    // the kernel's base for this client is the window until the re-attach lands; a tail it pushes meanwhile misses its
+    // afterUuid here and asks for a full frame as a gap, which requestFullSession drops while the re-attach ask is in
+    // flight (awaitingFull), so the pending reason stays reattach and the frame MERGES into the held run (verifier low 4)
+    reconcileOptimistic(s);
+    if (msg.id === activeId) { if (pendingAnchor === anchorUuid) { pendingAnchor = null; pendingAnchorKeepY = null; } anchorPendingOlder = false; landTrail.push("window-not-adopted"); }
+    reattachLive(msg.id, true);
+    updateLivePaused();
+    return;
+  }
+  s.events = r.events as ChatEvent[];
+  s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
+  s.lastUuid = newLast;
+  s.detached = detached;
+  s.detachNav = detached && ask?.named ? { t: ask.t } : null;   // the strip names a detach by a card, lane or deep link (T366); read only while detached
   if (msg.moreBefore === false) s.headKnown = true;
   s.headTotal = s.headKnown && !s.detached ? s.events.length : null;   // a count only when the whole is resident
   reconcileOptimistic(s);
   const v = views.get(msg.id);
-  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.stale = true; }
+  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) return;
   const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
   if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
@@ -17176,6 +17207,7 @@ function chatMore(msg: any) {
 // returns too. The return is a full frame (needFull "reattach"): upsert merges it into the held run when they
 // overlap, so the pages the reader walked stay resident.
 let livePausedEl: HTMLElement | null = null;
+let livePausedTxt: HTMLElement | null = null;   // the strip's sentence, re-said on every evaluation (T366)
 function updateLivePaused(): void {
   const s = activeId ? liveSession(activeId) : null;
   const on = !!(s && s.proto === 2 && s.detached);
@@ -17183,19 +17215,22 @@ function updateLivePaused(): void {
   if (!livePausedEl) {
     livePausedEl = el("div", "live-paused");
     livePausedEl.id = "live-paused";
-    const txt = el("span", "live-paused-text"); txt.textContent = "Live updates are paused while you read older history.";
+    livePausedTxt = el("span", "live-paused-text");
     const btn = document.createElement("button"); btn.className = "live-paused-btn"; btn.type = "button"; btn.textContent = "Return to live";
     btn.onclick = () => { if (activeId) reattachLive(activeId); };
-    livePausedEl.appendChild(txt); livePausedEl.appendChild(btn);
+    livePausedEl.appendChild(livePausedTxt); livePausedEl.appendChild(btn);
     document.body.appendChild(livePausedEl);
   }
+  // the sentence names a navigation's detach (a card or lane click with the message's time) and keeps the plain one
+  // otherwise (T366): a jump landing mid-scroll must not read as the scroll pausing the page
+  if (livePausedTxt) livePausedTxt.textContent = livePausedText(!!s.detachNav, s.detachNav ? s.detachNav.t : null, clockOf);
   livePausedEl.hidden = false;
   const c = document.getElementById("content");
   if (c) livePausedEl.style.bottom = (Math.max(0, window.innerHeight - c.getBoundingClientRect().bottom) + 40) + "px";
 }
-function reattachLive(sid: string): void {
+function reattachLive(sid: string, force = false): void {
   const s = sessions.get(sid);
-  if (!s || s.proto !== 2 || !s.detached) return;
+  if (!s || s.proto !== 2 || (!s.detached && !force)) return;   // force: a window the client did not adopt moved the KERNEL's base for it (T366)
   vscodeApi?.postMessage({ type: "reattachKeys", id: sid, keys: reattachKeys(s.events as { uuid?: string; key?: string }[]) });   // the run as held, for the kernel's shared clause
   requestFullSession(sid, "reattach");   // the kernel's full tail frame re-bases this client; upsert merges it into the held run
 }
@@ -17397,7 +17432,6 @@ function dismissSession(id: string, why: DismissWhy, doomed?: ReadonlySet<string
     // closed session was ACTIVE: the shared chip strip above the composer still shows its chip until
     // someone repaints it, and that stale chip's ✕ targets the dead id (whose map entry is gone), so the
     // click early-returns and the chip can't even be dismissed — hence the repaint below.
-    closeQueuedEditorsFor(id);   // its in-place queued editors go with the tab; the kernel releases their holds with the socket (T306)
     drafts.delete(id); composerCitations.delete(id); composerEdits.delete(id); composerFiles.delete(id); persistDrafts();
   } else {
     persistDrafts();   // a host drop / omission KEEPS it all (see DismissWhy) — the stash above may have updated the copy
@@ -17523,7 +17557,9 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   if (m.romp === "adopt") { adoptSessionState(m.sid, m.state); return; }
   // the shell closed a later column whose members the kernel's strip no longer lists (colEmpty): they return to this,
   // the first column, but the kernel may still list one closed from its own cross for a push or two — held back here
-  // (closingTabs, retired by the kernel's next strip as any ✕ is) so no tab flashes into this strip on its way out
+  // (closingTabs, retired by the kernel's next strip as any ✕ is) so no tab flashes into this strip on its way out. The
+  // shell names ONLY the ids that page's own cross removed (colEmpty's `crossed`): the backstop behind this hold toasts
+  // "Couldn't close", which is right for a refused cross and wrong for anything else (the vanishing tab, 2026-09-12)
   if (m.romp === "closing") { if (Array.isArray(m.ids)) for (const id of m.ids) { if (typeof id === "string" && id) closingTabs.set(id, Date.now()); } renderTabs(); return; }
   // the shell's pane set, which panes are on screen by key: the cache openPath routes file links by (panesOn
   // above; the shell posts it on every toggle, on this iframe's load and on a phone's tab switch). Whole-set
@@ -17574,7 +17610,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "chatEpisode") chatEpisode(m);
   else if (m.type === "subagent") applySubagentFrame(m);
   else if (m.type === "update") update(m);
-  else if (m.type === "wsup") { onSocketUp(skeletonTabs); skeletonDiagArmed = true; reholdQueuedEditors(); }   // the shim's socket-flip marker, in FRAME order: the dead socket's frames may still be draining from the FIFO when onopen fires (review find 2026-09-07)
+  else if (m.type === "wsup") { onSocketUp(skeletonTabs); skeletonDiagArmed = true; }   // the shim's socket-flip marker, in FRAME order: the dead socket's frames may still be draining from the FIFO when onopen fires (review find 2026-09-07)
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "glossary" && typeof m.id === "string") {   // the session's glossary index (T351 stage 2): a new one re-links the view
     glossaries.set(m.id, m as GlossaryIndex);
@@ -17697,7 +17733,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // session was already asked to raise its question again.
   else if (m.type === "askLost" && typeof m.text === "string") warnToast(m.text);
   else if (m.type === "cancelResult" && typeof m.id === "string") {
-    const key = m.id + " " + (typeof m.md === "string" ? m.md : "");
+    const key = m.id + " " + (typeof m.md === "string" ? m.md : "");   // the same separator the rescind stores under (a NUL byte sat here, unreadable in any text view, so no refusal ever found its stash; the T373 fold lab caught it)
     const stash = pendingCancelRestores.get(key);
     pendingCancelRestores.delete(key);
     if (!m.ok) {
@@ -17713,6 +17749,21 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
           ta.value = stash.before;
           ta.dispatchEvent(new Event("input", { bubbles: true }));
         }
+        // the chips the rescind armed go, typed or not: a goal, quote chips or attachments the user never asked for must not
+        // ride their next message (the T373 fold's medium 2). Only what the PRESS put in, and only if it was not already there
+        // before it: a file or chip the user added since the pencil stays, as their typed words do (round two's low 1); a
+        // chip the press displaced (a goal chip replaces the strip) comes back. Persisted with the draft.
+        if (stash.armedCites.length || stash.armedFiles.length) {
+          const beforeC = new Set(stash.cites.map(citeKey)), armedC = new Set(stash.armedCites);
+          const cites = (composerCitations.get(m.id) || []).filter((c) => !(armedC.has(citeKey(c)) && !beforeC.has(citeKey(c))));
+          for (const c of stash.cites) if (!cites.some((x) => citeKey(x) === citeKey(c))) cites.push(c);
+          if (cites.length) composerCitations.set(m.id, cites); else composerCitations.delete(m.id);
+          const beforeF = new Set(stash.files), armedF = new Set(stash.armedFiles);
+          const files = (composerFiles.get(m.id) || []).filter((f) => !(armedF.has(f) && !beforeF.has(f)));
+          for (const f of stash.files) if (!files.includes(f)) files.push(f);
+          if (files.length) composerFiles.set(m.id, files); else composerFiles.delete(m.id);
+          persistDrafts(); renderComposerChips(m.id); renderComposerFiles(m.id);
+        }
       }
       // …and put the BUBBLE back (the user 2026-07-24). The ✕ deletes it optimistically, but a miss means the
       // message is still going through — and the kernel's build never changed, so its next delta carries no
@@ -17720,46 +17771,6 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
       // anyway, contradicting the toast we just raised. Repaint from the kernel's events, which still hold it.
       const rv = m.id === activeId && activeId ? views.get(activeId) : null;
       if (rv) { rv.stale = true; appendActive(); }
-    }
-  }
-  // The kernel's verdict on an editQueued or a holdQueued (T306) — cancelResult's twin. A refused SAVE (ok:false, the
-  // message left the queue before the edit reached it): the optimistic repaint is reversed, the queue repaints from the
-  // kernel's events, and the typed words ride a sticky toast — never the composer, which this flow does not touch. A
-  // refused HOLD (op "hold": the entry fed before the field could hold it): the field closes and the bubble says so
-  // until the kernel's push retires it, with the same words in a toast so the reason is not missed.
-  else if (m.type === "editResult" && typeof m.id === "string") {
-    const md = typeof m.md === "string" ? m.md : "";
-    const key = m.id + " " + md;
-    const isSave = m.op !== "hold" && m.op !== "release";   // a hold's or a release's acknowledgement carries the same body: it must not consume a Save's stash
-    const stash = isSave ? pendingEditRestores.get(key) : undefined;
-    if (isSave) pendingEditRestores.delete(key);
-    if (!m.ok) {
-      const why = typeof m.text === "string" && m.text ? m.text : "";
-      if (m.op === "hold") {
-        let edited = "";
-        for (const ed of queuedEditors.values()) {
-          if (ed.sid !== m.id || ed.ref.md !== md || !ed.open) continue;
-          if (typeof m.qid === "string" && m.qid && ed.ref.qid && ed.ref.qid !== m.qid) continue;   // two same-words copies: only the refused one closes
-          ed.open = false; ed.note = why || "too late to edit — the message already reached the session as it was";
-          if (ed.text.trim() && ed.text !== ed.ref.md) edited = ed.text;
-        }
-        if (edited) stickyToast((why || "The message could not be held for editing.") + " Your edit: " + edited, edited);   // never fades: the words live here now
-        else if (why) warnToast(why);
-      } else if (m.op !== "release") {
-        if (stash) applyQueuedEditLocally(m.id, stash.ref, stash.typed, true);
-        if (stash && m.gone) {
-          // the copy left the queue (fed already): no bubble to hold a field, so the words go to a toast that never fades
-          stickyToast((why || "The edit was not applied.") + " Your edit: " + stash.typed, stash.typed);
-        } else if (stash) {
-          // the copy is still queued (another client holds it, the words were a command, the session is not running):
-          // the field reopens with the typed words and the refusal beside them, so nothing typed is lost (review find)
-          const key = queuedEditorKey(m.id, stash.ref);
-          queuedEditors.set(key, { eid: ++queuedEditorSeq, sid: m.id, key, ref: stash.ref, text: stash.typed, sel: [stash.typed.length, stash.typed.length],
-                                   focused: true, open: true, note: why || "The edit was not applied.", width: 0, height: 0 });
-          if (!isProvisionalId(m.id) && !hostIsDown(m.id)) vscodeApi?.postMessage(holdQueuedMsg(m.id, stash.ref, true));
-        } else if (why) warnToast(why);
-      }
-      repaintQueuedFor(m.id);
     }
   }
   // The identity palette changed (gear → Session colors): refresh the right-click menu's swatch set so a
@@ -18421,7 +18432,7 @@ function setupComposer() {
           return;
         }
         provisionalQueue.push(text);
-        registerOptimistic(sid, text, attached.filter((p) => previewKind(p) === "img"));
+        registerOptimistic(sid, text, attached.filter((p) => previewKind(p) === "img"), undefined, attached);
         sendOnShip.delete(sid);                       // a send happened — any held one is superseded
         histWalk.delete(sid);                         // …and the history walk starts fresh
         if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }
@@ -18449,7 +18460,7 @@ function setupComposer() {
       // uuid — nothing sent, no error, the card flashing to Working and back. The kernel keeps deriving
       // its sid from itemId, so this is inert locally; every other card op carries the sid the same way.
       const cites = composerCitations.get(activeId);
-      flushStaged(sid, { text, cites, imgPaths: attached.filter((p) => previewKind(p) === "img") });
+      flushStaged(sid, { text, cites, imgPaths: attached.filter((p) => previewKind(p) === "img"), paths: attached });
       // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
       if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
       sendOnShip.delete(sid);                       // a send happened — any held one is superseded
@@ -19058,31 +19069,38 @@ function setupComposer() {
   ta.addEventListener("dragleave", () => ta.classList.remove("drop-target"));
   ta.addEventListener("drop", (e) => {
     e.preventDefault(); e.stopPropagation();
-    ta.classList.remove("drop-target");
-    const dt = e.dataTransfer;
-    if (!dt) return;
-    const remote = hostOf(activeId || "");
-    const uris = (dt.getData("text/uri-list") || "").split(/\r?\n/).filter((u) => u && !u.startsWith("#"));
-    const fromUri = (u: string) => addComposerFile(activeId, decodeURIComponent(u.replace(/^file:\/\//, "")));
-    const files = Array.from(dt.files || []);
-    if (!files.length) {
-      // a path-only drag (no File objects) can't be shipped — a browser can't read file:// bytes.
-      // For a remote session that is a dead end, and it must be said, not silently mis-attached.
-      for (const u of uris) if (u.startsWith("file://")) {
-        if (remote) warnToast("That drag carried only this machine's path, which " + remote
-          + " can't read — drop the file itself (or paste it) and the bytes will be shipped over.");
-        else fromUri(u);
-      }
-      return;
-    }
-    files.forEach((f, i) => {
-      if (!remote) {
-        const p = (f as any).path as string | undefined;
-        if (p) { addComposerFile(activeId, p); return; }
-        if (uris[i] && uris[i].startsWith("file://")) { fromUri(uris[i]); return; }
-      }
-      shipFileToHost(f);
-    });
+    ta.classList.remove("drop-target"); paneDropOver(false);
+    if (e.dataTransfer) acceptDroppedTransfer(e.dataTransfer);
+  });
+  // The WHOLE pane takes a file drop (the user 2026-09-12: an image dropped beside the box replaced the page with the
+  // image — the browser's default for an unhandled drop navigates the pane, or the shell, to the file). A drop anywhere
+  // in this document lands the file in the box of the session this column shows; each split column is its own document,
+  // so each column is its own drop area. While an OS file drag is over the pane, the pane wears a dashed ring and the box
+  // its drop-target outline, so the landing spot reads. Only OS FILE drags (`types` holds "Files"): a tab drag, a text
+  // selection and the strip's own drags carry none and keep their handlers. The box's own listeners above stop
+  // propagation, so a drop on it is taken once. Enter/leave are counted rather than trusted one by one: a dragleave fires
+  // at every element edge inside the document (and its relatedTarget is not reliable across browsers), so the ring is
+  // dropped only when the count falls to zero — the pointer has left the pane — or a drop lands. The shell and the other
+  // panes REFUSE a file drag instead (kernel _LANDING_FOCUS_JS, _shim), so a miss never navigates anywhere.
+  let dragDepth = 0;
+  const paneDropOver = (on: boolean): void => {
+    if (!on) dragDepth = 0;
+    document.body.classList.toggle("drop-over", on);
+    ta.classList.toggle("drop-target", on);
+  };
+  document.addEventListener("dragenter", (e) => { if (!fileDrag(e)) return; dragDepth++; paneDropOver(true); });
+  document.addEventListener("dragover", (e) => {
+    if (!fileDrag(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    if (!dragDepth) { dragDepth = 1; paneDropOver(true); }
+  });
+  document.addEventListener("dragleave", (e) => { if (!fileDrag(e)) return; if (--dragDepth <= 0) paneDropOver(false); });
+  document.addEventListener("drop", (e) => {
+    if (!fileDrag(e)) return;
+    e.preventDefault();
+    paneDropOver(false);
+    if (e.dataTransfer) acceptDroppedTransfer(e.dataTransfer);
   });
 
   // Cmd+V a copied file (Finder "Copy") or a clipboard screenshot → insert its
@@ -19197,6 +19215,41 @@ function setupComposer() {
 // agent on THAT machine, so bytes saved on any other kernel would hand the agent
 // a path that does not exist there.
 const SHIP_MAX_BYTES = 50 * 1024 * 1024;   // payload ceiling for shipped attachment bytes
+// An OS file drag: `types` holds "Files" (a dragged tab, a text selection, the strip's own drags carry none).
+function fileDrag(e: DragEvent): boolean {
+  return !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+}
+
+// What a drop hands the active session's box — from the box itself, or from anywhere in the pane (setupComposer). Best path
+// source first, but ONLY for a session this machine owns: File.path (Electron, when exposed), then text/uri-list file://
+// entries (explorer drags), else the bytes go to the owning kernel, which saves them and posts the saved path back
+// ("droppedPath"). A REMOTE host's session (hostOf) never takes the path branches: a path on this machine means nothing on
+// that kernel's disk (the user 2026-08-11); its drops ship the BYTES, the same dropFile route federation carries.
+function acceptDroppedTransfer(dt: DataTransfer): void {
+  const remote = hostOf(activeId || "");
+  const uris = (dt.getData("text/uri-list") || "").split(/\r?\n/).filter((u) => u && !u.startsWith("#"));
+  const fromUri = (u: string) => addComposerFile(activeId, decodeURIComponent(u.replace(/^file:\/\//, "")));
+  const files = Array.from(dt.files || []);
+  if (!files.length) {
+    // a path-only drag (no File objects) can't be shipped — a browser can't read file:// bytes.
+    // For a remote session that is a dead end, and it must be said, not silently mis-attached.
+    for (const u of uris) if (u.startsWith("file://")) {
+      if (remote) warnToast("That drag carried only this machine's path, which " + remote
+        + " can't read — drop the file itself (or paste it) and the bytes will be shipped over.");
+      else fromUri(u);
+    }
+    return;
+  }
+  files.forEach((f, i) => {
+    if (!remote) {
+      const p = (f as any).path as string | undefined;
+      if (p) { addComposerFile(activeId, p); return; }
+      if (uris[i] && uris[i].startsWith("file://")) { fromUri(uris[i]); return; }
+    }
+    shipFileToHost(f);
+  });
+}
+
 function shipFileToHost(f: File, sidAt: string | null = activeId) {
   if (f.size > SHIP_MAX_BYTES) {
     // an oversize file must be REFUSED VISIBLY, never dropped silently — name the
@@ -19414,88 +19467,8 @@ setupSettings();
     // a rebuilt node eats a mid-press click (the "had to click it several times" class; CLAUDE.md).
     // The md body rides along so the kernel can verify it's still cancelling the RIGHT entry even if
     // the queue shifted between the push and the click.
-    qx: (el) => {
-      if (!activeId || !vscodeApi) return;
-      const qmd = (el as any)._qmd as string | undefined;
-      const sidQ = owningSidOf(el) || activeId;
-      if (qmd) {
-        // EVERY ✕ drops our own optimistic entry for the text first (the user 2026-08-30). At the
-        // optimistic stage (qopt) that is the whole client half — the kernel may not have pushed its
-        // park yet, and the reconcile would otherwise repaint the bubble the user just cut. And on a
-        // PARKED/backend ✕ it is just as load-bearing: the kernel bubble had been SUPPRESSING our
-        // still-live entry (shownProvisional), so cancelling only the kernel op resurrected the
-        // cancelled message as a dashed bubble until the TTL (caught by this fix's served-page probe).
-        // OUR bubble's ✕ names its entry (data-qts, the press time); a kernel bubble's ✕ names none, and
-        // drops the first pending send with the text — the one the kernel's first copy covers.
-        const list = pendingSent.get(sidQ) || [];
-        const qts = el.dataset.qts !== undefined ? Number(el.dataset.qts) : undefined;
-        const qid = el.dataset.qid || undefined;
-        if (dropPending(list, qmd, qts, qid)) { if (list.length) pendingSent.set(sidQ, list); else pendingSent.delete(sidQ); }
-        echoShownSig.delete(sidQ);
-      }
-      // a PROVISIONAL tab's send has never left the client (T244): forget it from the queue adoption would
-      // re-send, and post no kernel cancel — the kernel has no such session yet, and a miss there would
-      // toast "too late" for a message that was never late. A breadcrumb says which path this ✕ took.
-      const provisional = isProvisionalId(sidQ);
-      if (provisional && qmd) forgetProvisionalSend(qmd);
-      const msg: Record<string, unknown> = { type: "cancelQueued", id: sidQ, md: qmd };
-      if (el.dataset.qid) msg.qid = el.dataset.qid;   // the copy's id: the kernel cancels exactly this copy, in whichever queue it sits, never a same-words neighbour by index or body
-      if (qmd && el.dataset.qopt !== "1") noteCancelledQueued(sidQ, qmd, el.dataset.qid || undefined);   // a kernel copy: never held once it vanishes (T262i)
-      if (el.dataset.qidx !== undefined) msg.idx = Number(el.dataset.qidx);
-      if (el.dataset.qpark !== undefined) msg.park = Number(el.dataset.qpark);
-      if (!provisional) vscodeApi.postMessage(msg);
-      else vscodeApi.postMessage({ type: "clientDiag", surface: "chat", what: "cancel-provisional",
-                                  data: { mdLen: qmd ? qmd.length : -1, queuedLeft: provisionalQueue.length } });
-      if (qmd && el.dataset.qcmd !== "1" && el.dataset.qromp !== "1") {
-        // a message returns to the composer; a command just cancels. The restore is optimistic — stash
-        // the composer's before/after so the kernel's cancelResult ok:false can undo it (untouched only).
-        const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-        const before = ta ? ta.value : "";
-        // a field open on this bubble (T306): the editor goes with the entry, and the words the user was working on are
-        // what comes back, not the message as it stood (review find)
-        const edx = queuedEditorFor(sidQ, { md: qmd, qid: el.dataset.qid || undefined, qts: el.dataset.qts !== undefined ? Number(el.dataset.qts) : undefined });
-        if (edx) queuedEditors.delete(edx.key);
-        restoreToComposer(edx && edx.open && edx.text.trim() ? edx.text : qmd);
-        // a provisional ✕ gets no cancelResult (nothing was posted) — no stash to consume, none kept
-        if (!provisional) pendingCancelRestores.set(activeId + " " + qmd, { before, after: ta ? ta.value : "" });
-      }
-      // Optimistic; the next push rebuilds the queue without it. The GROUP is reflowed in the same breath —
-      // the bubble alone leaves its "1 queued message" header behind, still counting what just went.
-      const bub = el.closest(".queued-bubble") as HTMLElement | null;
-      const grp = bub?.closest(".turn-queued") as HTMLElement | null;
-      // a bubble leaving the tail shrinks it: a bottom reader is written to the new bottom in the same task, so the
-      // move is the pane's own (journaled), never a clamp the follow-mode latch never saw (T262h)
-      const contentX = document.getElementById("content");
-      const wasAtBottom = !!contentX && contentX.scrollHeight > contentX.clientHeight + 2 && atBottom(contentX);
-      bub?.remove();
-      if (grp) reflowQueuedGroup(grp);
-      if (contentX && wasAtBottom) writeScroll(contentX, contentX.scrollHeight, "queued-x", true);
-    },
-    // ✎ on a queued bubble (the user 2026-09-08; in place since T306): the bubble's text becomes a field where it
-    // sits, the hold goes out, and the composer is never touched. Delegated like the ✕ (the tail rebuilds every push);
-    // the bubble's owner (a comment thread's popover, or the chat) is the session the edit belongs to.
-    qedit: (el) => {
-      const qmd = (el as any)._qmd as string | undefined;
-      if (!qmd) return;
-      const sidQ = owningSidOf(el) || activeId;
-      if (!sidQ) return;
-      if (sidQ !== activeId) { warnToast("open that session's chat to edit its queued message"); return; }   // the field is painted by the active chat's render; a bubble owned elsewhere gets a pointer, not a silent hold
-      const ref: QueuedEditRef = { md: qmd };
-      if (el.dataset.qidx !== undefined) ref.idx = Number(el.dataset.qidx);
-      if (el.dataset.qpark !== undefined) ref.park = Number(el.dataset.qpark);
-      if (el.dataset.qts !== undefined) ref.qts = Number(el.dataset.qts);
-      if (el.dataset.qid) ref.qid = el.dataset.qid;
-      if (el.dataset.qopt === "1") ref.optimistic = true;
-      const bub = el.closest(".queued-bubble") as HTMLElement | null;
-      openQueuedEditor(sidQ, ref, bub ? bub.getBoundingClientRect().width : 0);
-    },
-    // the field's Save and Cancel (T306): delegated too, keyed by the editor's id (the field is rebuilt every push)
-    qsave: (el) => { const ed = queuedEditorByEid(Number(el.dataset.eid)); if (ed) saveQueuedEditor(ed); },
-    qcancel: (el) => { const ed = queuedEditorByEid(Number(el.dataset.eid)); if (ed) cancelQueuedEditor(ed); },
-    // a comment highlight or its turn badge (the user 2026-08-13): open the thread's popover at the
-    // click. Delegated — marks and badges are re-created on every transcript rebuild — and so is
-    // every popover BUTTON below: the popover's conversation refreshes on comments frames, and a
-    // per-render listener would eat the mid-press click (the click-safety rule).
+    qx: (el) => rescindQueued(el, false),       // ✕: a command's or romp's own queued words leave the queue
+    qedit: (el) => rescindQueued(el, true),     // ✎: a message leaves the queue and comes back into the composer (T373)
     cmtopen: (elx) => {
       if (!activeId) return;
       // the ring you click opens the thread that owns the ring (the user 2026-09-10): two threads on one
@@ -19797,7 +19770,7 @@ setupSettings();
     // (in `others`, zero width) already opened the trail's row, and marking the tab too put two openers on that row —
     // which the simulation now tolerates (dragslot.ts: a zero-width box fills nothing), but one opener per row is the
     // strip's own shape (the user 2026-09-11, whose drops on the untagged row all landed at its head in the themed strip)
-    const boxes = others.map((t) => ({ id: t.dataset.id || " head:" + (t.dataset.group || ""),
+    const boxes = others.map((t) => ({ id: t.dataset.id || "\0head:" + (t.dataset.group || ""),
                                        w: isBreak(t) ? 0 : (t.dataset.id ? dragGeom!.widths.get(t.dataset.id) : undefined) ?? t.getBoundingClientRect().width,
                                        br: isBreak(t) || (t.classList.contains("tab-group-head") && isBreak(before(t))) }));
     const br = tabs.getBoundingClientRect();

@@ -76,6 +76,7 @@ export type PendingSend = {
                        //   loading), so the stamp is taken at the first frame — which may already hold this
                        //   send's own echo or landing; stampBase then reads the events' own stamps
   imgPaths?: string[]; // dragged images → the bubble's thumbnails, and the image-aware landing match
+  paths?: string[];    // EVERY attachment the send's trailing line carried (images and documents alike): the rescind's exact record (T373 fold)
   lost?: string;       // an event after the press that makes non-delivery LIKELY ("connection": the
                        //   socket dropped) — the bubble says "not confirmed" instead of "sending…"
   qid?: string;        // this send's IDENTITY, minted at the press (newPending) and posted with the send: the kernel's
@@ -148,8 +149,8 @@ export function mintQid(): string {
 
 /** A fresh entry, wearing the id the press minted: the caller's (render.ts mints it first and posts it with the send,
  *  so the kernel's copy and this entry wear one id), or a new one. */
-export function newPending(text: string, imgPaths?: string[], now: number = Date.now(), qid: string = mintQid()): PendingSend {
-  return { text, body: pendingBody(text, imgPaths), ts: now, imgPaths, qid };
+export function newPending(text: string, imgPaths?: string[], now: number = Date.now(), qid: string = mintQid(), paths?: string[]): PendingSend {
+  return { text, body: pendingBody(text, imgPaths), ts: now, imgPaths, qid, ...(paths && paths.length ? { paths } : {}) };
 }
 
 /** EXACT text match, trimmed: the composer trims what it sends and the kernel strips what it lands

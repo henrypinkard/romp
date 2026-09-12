@@ -306,9 +306,32 @@ used to exist only when both were real): the choice this machine cannot bill
 is greyed and inert, with the reason in its hover, `no Claude login signed in
 on this machine`, `no apiKeyHelper configured`, or `the apiKeyHelper is set in
 managed settings, login cannot apply`. The status payload carries the same
-availability as `authAvail` (`authBoth` rides beside it for older clients).
-Switching reconnects the session to apply, with the same switching-dots the
-effort badge wears.
+availability as `authAvail` (`authBoth` rides beside it for older clients),
+and the machine's default beside it. The flyout opens on hover over the
+Billing row, as the Tags flyout does (one gesture: a short hover opens, a
+click opens at once, leaving both the row and the flyout closes it), and on
+click. Switching reconnects the session to apply, with the same switching-dots
+the effort badge wears.
+
+Below the session's choices the flyout carries **Default for this machine**:
+the same choices as a radio group, the current default marked. That default is
+the seed every new session, and every session with no pick of its own, launches
+on; it lives in the state root's `sdk-defaults.json` as `auth` (never a token),
+and a pick there changes no session that carries its own pick; a session
+with no pick of its own follows it, in its status at once and at its next
+launch. A third choice, Automatic, is the rule that held before: the API key
+when a helper is configured, else the login; it clears the explicit default,
+and the group's sub-line says which rule holds. Until the default is set here,
+the last per-session pick seeds it (as a model or effort pick does); once set
+here, a per-session pick is about that session alone and moves no default. A
+remote session's flyout names its host, and the pick sets that host's default
+(the op routes to the session's owning kernel). The judges follow the same
+resolution: a judge on a session with no pick of its own bills the machine's
+default when the machine can bill it, else the helper rule, exactly as the
+launch does. The flyout places itself to the right of its row, to the left
+when the right would clip and the left has room, below the row when neither
+side has room, above it when below does not fit, and only then clamped inside
+the window; it never covers its row while a place beside or beyond it exists.
 
 On a one-auth box the picker never chooses the missing side. The remembered
 default falls to the side that exists, in both directions: a remembered login
@@ -1156,12 +1179,64 @@ that never settles again; the pass is bounded per cycle (`ROMP_CKPT_CONVERGE_MS`
 default 150 ms of wall, and `ROMP_CKPT_CONVERGE_MB`, default 8 MB of documents
 written plus leaf bytes read for a heal), heals a legacy bare cursor under the
 same budget, and never rewrites a document that already carries every fold
-that ran. A leaf unchanged for longer than the reader keeps a quiescent
+that ran. The settle's own write primes the transcript's queue-ledger and
+wake-tail folds beside the leaf's five when the leaf's whole entry is resident,
+once per read, so a live leaf whose document lacked them is no longer refolded
+whole at every boot's first echo settle or wake (`refolds` names any that still
+are). An idle session's leaf, which no settle reaches and the pass must
+refuse, converges at the reader's quiescence drop instead: when a fold that
+drops quiescent files ends over a file unchanged for two minutes, its document
+is written from the entry in memory (the boot's own read, whichever fold made
+it) if a write would improve it with a state the process holds (the pass's
+rule, `_path_needs_write`; a dirty path counts here and not for the pass, and a
+fold cold for want of a state counts for the pass, which heals it, and not
+here, where it would only be written cold again), before the entry is popped,
+and on a hit or a restore at the witness the entry stays as it always has. The
+write is charged to the pusher cycle's byte budget, which the kernel begins at
+each cycle's start and the pass shares near its end; over the budget the write
+and the drop wait with the entry held (`converge.dropDeferred`), the drop then
+owed and paid at the next cycle's start with the room that cycle has, oldest
+first, or by the next fold over the file, whichever comes first. A document
+already whole is never rewritten at a later drop (`converge.dropWrites` counts
+the writes), and a dropped file's next fold restores its cursor from the
+document over a tail read instead of reading the file whole, provided the
+document's cursor carries a state: against a state the process holds, a cursor
+without one (an over-cap, cold or legacy bare write) is refused and the fold
+reads whole as before, so a complete state is never replaced by a tail-only one.
+The knobs: `ROMP_CKPT_CONVERGE_MS=0` turns the pass off and the drop write with
+it (the drop then pops as it did before the write existed); `ROMP_CKPT_CONVERGE_MB`
+is the cycle budget both charge, and `0` turns the drop write off the same way
+rather than deferring every drop; both are read where the drop lives, so they
+hold from the first fold, before the first pusher cycle begins. The pass also
+writes the ASSEMBLY document of an idle leaf that has none (the assembly
+document is otherwise written only at a settle, which an idle session never
+reaches, so the parse read those leaves whole at every boot: 31 of 60 on the
+devbox, about 2.5 GB): from the whole assembly entry the boot's own parse built,
+through the settle's writer, while the reader's whole record entry is still
+resident (the writer takes its record offsets from it), so for a leaf the fold
+half handles the assembly write runs inside the same hold, before the held drop
+pops that entry, and both documents come from the one read; no read of records,
+charged to the same cycle budget. A leaf is looked at once per file state:
+written, or refused for a property of its cut, it is done; a blip is tried
+twice (a blip inside the fold half's hold gets its second try over the entry
+the paid drop popped, so that leaf waits for the next boot's read); a leaf with
+no whole entry to write from is re-examined each cycle and counted once. `ROMP_ASM_CONVERGE=0` turns that step off, and so do the pass's
+own switch and a zero byte budget, as for the drop write. The owed table
+is bounded: over it the oldest owed drop is paid by its pop alone, and an owed
+file since deleted has its entry popped when the cycle pays. A leaf unchanged for longer than the reader keeps a quiescent
 file's whole entry (two minutes) is refused by the pass and counted under
 `quiescent`: its heal would read the file whole every cycle and the write
-would find no entry (the boot's cold refold or the next settle converges it);
+would find no entry; the one exception, with the drop write on, is a leaf
+whose whole entry from the boot's own read is still resident: the pass heals
+and primes it in memory with its quiescence drops held, then pays them once,
+so the launch fold's drop writes the document from that read (`viaDrop`, counted
+only for a write that happened) and pops the entry when a fold stepped records
+(a restore at the witness leaves it resident), after which the converged leaf
+simply leaves the candidate set;
 a path the pass refused or whose write produced nothing is skipped until its
-file changes (`skipped`); `ROMP_CKPT_CONVERGE_MS=0` turns the pass off. Every
+file changes under the reader (`skipped` counts each such hold once, per file
+state, and the check reads the reader's own entry rather than stat the file
+while one is held); `ROMP_CKPT_CONVERGE_MS=0` turns the pass off. Every
 write merges the on-disk document's states for folds the
 writing process never ran (verified by that document's stat and guard as a
 restore would), so a rewrite from one process's cursors strips no state an
@@ -1218,7 +1293,12 @@ each mean a whole parse, counted per reason in `/perf` and said once. The
 agent files (the subagents' transcripts) get no document yet; that is the next
 stage's. The gain is one tree per session, about
 a quarter of the record cost the T311 report measured (0.25 GB of 6.6); the
-record cache itself, the bulk, is the checkpoint work's target.
+record cache itself, the bulk, is the checkpoint work's target. The goal planner reads placement first (T377): a unit the
+store already places is yielded with its key and scalars and no text or quote
+(no pre-cut body read), the rest read their text after the placement check;
+the lookup is an index built once per planner call with the episode floor
+taken once per pass, and a consumer that plans a unit yielded as placed reads
+its text then.
 
 What the CLI itself does when its parent goes quiet was measured on Claude Code
 2.1.257 (2026-09-10, the restart-surviving sessions program's stage 3 probe, run
@@ -1575,7 +1655,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   frame marks a cycle busy).
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
-  `swept` (checkpoints of vanished files removed at boot), `skippedFolds`
+  `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
+  name, refolds that read: a fold with no cursor and nothing to restore, over a
+  tail entry or from zero, the boot's first whole read of a file included, with
+  count and the bytes the call read, an appended tail's among them), `skippedFolds`
   (fold states the codec could not encode), `oversizeFolds` (per fold name,
   states over the cap: the document keeps that fold's cursor without its
   state, with the state's KB as the reason, and the next kernel starts the fold
@@ -1587,7 +1670,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   whose cursor it dropped so its next run reads the file whole once, and
   `docReadBytes`, the documents the pass's writes read for their carry,
   `quiescent` for leaves refused as quiescent, `skipped` for candidates held
-  off until their file changes), `coldWrites` (per fold name, writes that kept such a tail-only state
+  off until their file changes, once per hold, `dropWrites` and `dropDeferred`
+  for the documents written at the reader's quiescence drop and the drops
+  deferred a cycle for the shared budget, `viaDrop` for the resident quiescent
+  leaves the pass primed and the drop wrote), `coldWrites` (per fold name, writes that kept such a tail-only state
   out of the document so no later kernel restores it as complete), `droppedRestores` (a
   restore lost to a read that replaced the entry under it; the reader
   serializes reads per path, so this should stay at zero), `documentBytes`
@@ -1605,7 +1691,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
   `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
-  a cut) and `hydratedBy` (those bytes per calling function).
+  a cut), `hydratedBy` (those bytes per calling function), and `converge`: the
+  pass's writes of idle leaves' documents from the boot's own parse
+  (`candidates`, `writes`, `bytes`, `deferred`, `skipped` per the writer's
+  reason).
 - `asmIndex`: the lazy index (T323 stage 4c) a restored session's pre-cut turns
   come from: `materialized` atoms built from the document's rows since boot,
   `materializedBy` (per consumer), `resident` (the process-wide LRU, `cap`
@@ -1892,8 +1981,9 @@ names, after a short dwell; it closes when the pointer leaves (with a grace to
 cross into the card), on Escape, on a scroll, on a click elsewhere and at every
 tab-strip rebuild. The card is the comment popover's card (its surface and its
 fractions of the pane) and is never draggable or resizable; the romp loader shows
-first and the text replaces it the moment it lands. "open" opens the full file
-viewer, scrolled to the section.
+first and the text replaces it the moment it lands. The card carries no open
+control: clicking the link itself opens the full file viewer, scrolled to the
+section the link names.
 
 **What a hover may fetch.** A hover is a gesture the user did not choose, so the
 popover is stricter than the viewer (whose own rule, that any path the agent
@@ -1905,8 +1995,8 @@ and a link whose own name claims another kind than its target is refused; a hard
 link is another name for the same bytes and no path check can see its other
 names, so a `notes.md` hard-linked onto a `.env` passes the name rules and is
 caught only by the content belt below). A
-link absent from the map gets the text-only card (the path as words plus "open")
-and **no request**: a path outside the session's folder and the user's home, one
+link absent from the map gets the text-only card (the path as words, the link
+still opening the file) and **no request**: a path outside the session's folder and the user's home, one
 the kernel could not verify, a secrets-shaped name (the `.env` family, `.netrc`,
 `.npmrc`, `.pypirc`, any name carrying `credential`, `token`, `secret` or
 `password`, `id_*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, key stores, and any file
@@ -1915,7 +2005,24 @@ under `.ssh`, `.gnupg`, `.aws`, `.docker`, `.kube`, `.azure`, `.gcloud`,
 kind the card cannot show, or a file over the caps (2 MB of text, 50 MB of
 media). Under the name rules sits a content belt: a text shaped like a
 credential (a private-key block, a key or token assignment, a provider token, a
-JWT) is refused with "looks like a secret". The belt reads the file's first
+JWT) is refused with "looks like a secret". For every verified link the kernel
+does **not** allow, it ships the exact condition beside the kinds, as
+`pathPreviewWhy` (token to why), and the text card says it: "shown as text: a
+secrets-shaped name", "shown as text: looks like a secret", "shown as text:
+outside the session's folder and your home", and so on; a link the kernel
+shipped no verdict for at all says that instead. `pathPreview` rides every
+message with verified links (empty when none previews), so a message sealed
+before the kernel judged previews is rebuilt once and gains its verdicts.
+
+**A session on another host.** A remote session's files live on that
+machine's disk, so the card's fetches (the text slice and the image or PDF
+bytes) ride this kernel's `/remote/<host>/file` relay with the bare session id,
+exactly as the inline images do; the remote kernel builds that session's
+messages and judges its own files, and the relay is available only while the
+host is attached (a host reached through a relay alone shows the text card
+until it attaches).
+
+The belt reads the file's first
 64 KB at load (so at warm time): a hit there means the file is never cached and
 the link ships without a preview kind. It reads the served slice again on the
 route: a secret past the first 64 KB passes the load-time read, so that file's
@@ -1964,8 +2071,9 @@ the same card:
 
 Stage 1 fills it from the slice route (`markdown`, `section`, `code`) and the
 bytes route (`image` at its natural size capped to the card, `pdf` as its first
-page), or with the text-only card; stage 2 fills it with the `term` kind from the
-glossary index below, no fetch. A previewed document renders on the
+page), or with the text-only card; a glossary term (below) is a path link to the
+glossary file's section and previews as one, through the same slice route. A
+previewed document renders on the
 sanitizer's inert DOM and is stripped of every remote load there, before its
 nodes join the page: an image's `src` or `srcset`, a picture's sources, a video's
 poster or source, an audio, an SVG image, in any spelling the URL parser
@@ -1985,7 +2093,11 @@ anchor}` that fills the `term` kind of the same card.
 
 ## The glossary
 
-A team's coinages, linked where they are written. One file per romp tag group,
+A team's coinages, linked where they are written. A linked term is an ordinary
+link to the glossary file's section (the link colour, a solid underline, the
+pointer): hovering it shows that section through the file preview, exactly as
+hovering any file link with a section does, and clicking it opens the glossary
+in the viewer at the heading; there is no term card of its own. One file per romp tag group,
 `~/.claude/glossaries/<group>.md` (under `CLAUDE_CONFIG_DIR` when set), in the
 grammar of that folder's README: an opening `## Not coinages` list of words never
 linked (each bullet's bold lead, or the text before its colon, read as words), then

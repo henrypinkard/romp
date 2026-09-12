@@ -95,8 +95,9 @@ class Proto2Wire(A.RestartOverACheckpointedSession):
             self.assertEqual(f2["firstUuid"], f2["events"][0]["uuid"]); self.assertEqual(f2["lastUuid"], f2["events"][-1]["uuid"])
             # the frame's build read no pre-cut body (the judges' first pass over a fresh store reads the unjudged
             # segments' text through the same memo, under their own caller names; the chat's callers stay at zero)
-            self.assertFalse({"build_session", "_atom_md"} & set(asm["hydratedBy"]), "the first open hydrated for the chat: %s" % asm["hydratedBy"])
-            self.assertLessEqual(set(asm["hydratedBy"]), {"_unit_text", "_atom_text", "_seg_anchors", "_atom_user_text", "_human_prompt_record", "_has_asst_work", "_seg_launches"},
+            readers = {k.split("<-")[0] for k in asm["hydratedBy"]}   # a shared reader's key carries its caller (reader<-caller, T377)
+            self.assertFalse({"build_session", "_atom_md"} & readers, "the first open hydrated for the chat: %s" % asm["hydratedBy"])
+            self.assertLessEqual(readers, {"_unit_text", "_atom_text", "_seg_anchors", "_atom_user_text", "_human_prompt_record", "_has_asst_work", "_seg_launches"},
                                  "only the judges' readers: %s" % asm["hydratedBy"])
             by = perf["checkpoints"]["readByPath"]
             leaf_read0 = by.get(os.path.realpath(self.leaf), by.get(self.leaf, 0))

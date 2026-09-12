@@ -765,8 +765,11 @@ _CKPT_V = 1
 _CKPT_DIR_FN = None               # () -> Path of the checkpoint directory; None = checkpoints off
 _CKPT_STATS = {"restored": 0, "writes": 0, "swept": 0, "skippedFolds": 0, "fallbacks": {}, "restoredFolds": {}, "droppedRestores": 0,
                "oversizeFolds": {}, "coldFolds": {}, "coldWrites": {},
+               "refolds": {},         # per fold name: {"count", "bytes"} of whole refolds that READ (a fold with no cursor and nothing to
+#                                       restore over a tail entry reads the file whole; T377 named the boot's whole reads this way)
                "converge": {"passes": 0, "writes": 0, "bytes": 0, "heals": 0, "healBytes": 0, "primed": 0, "deferred": 0,
-                            "failed": 0, "unhealed": 0, "docReadBytes": 0, "quiescent": 0, "skipped": 0}}   # T360, T361
+                            "failed": 0, "unhealed": 0, "docReadBytes": 0, "quiescent": 0, "skipped": 0,
+                            "dropWrites": 0, "dropDeferred": 0, "viaDrop": 0}}   # T360, T361, T362
 _CKPT_DOC_FOLDS = {}              # path -> {fold name: "state" | "over" | "cold" | "bare"}: the document on disk as last written or
 #                                   loaded in this process, so the converge pass can tell a document lacking a state without a read
 _COLD = object()                  # a restored cursor with no state (its fold was oversize): fold_records inits it and steps the tail
@@ -824,6 +827,30 @@ _CKPT_FOLD_CAP = _env_or("ROMP_CKPT_FOLD_CAP_KB", 8 * 1024 * 1024, 1024)
 #                                   44 MB world). Such a fold is left out, counted per name, and cold-folds at first touch; the folds
 #                                   whose state is bounded (the gist's capped steps, the running tasks, the newest rows) are the ones
 #                                   the checkpoint pays for. A bounded projection for the growing ones is a later stage's item.
+_CKPT_CYCLE_CAP_DEFAULT = _env_or("ROMP_CKPT_CONVERGE_MB", 8 * 1024 * 1024, 1024 * 1024)   # the pusher cycle's byte budget for
+#                                   checkpoint work (documents written and read, leaves read for a heal), shared by the converge pass
+#                                   and the quiescence drop's write (T362); the kernel's knobs read these defaults, so they reach
+#                                   the drop write before the first cycle begins (round two, low 3)
+try:
+    _CKPT_CONVERGE_MS_DEFAULT = float(os.environ.get("ROMP_CKPT_CONVERGE_MS", "150"))   # the pass's wall budget; 0 turns the pass
+except ValueError:                                                                        #  off and the drop write with it
+    _CKPT_CONVERGE_MS_DEFAULT = 150.0
+
+
+def _ckpt_cycle_default_cap():
+    """The cycle budget that stands before any pusher cycle has begun, and in a process that never begins one (the judges):
+    the byte knob, or 0 (the drop write off) when either knob is zero."""
+    return _CKPT_CYCLE_CAP_DEFAULT if _CKPT_CONVERGE_MS_DEFAULT > 0 and _CKPT_CYCLE_CAP_DEFAULT > 0 else 0
+
+
+_CKPT_CYCLE = {"cap": _ckpt_cycle_default_cap(), "spent": 0}   # the cycle in progress: the kernel begins each pusher cycle at
+#                                   its START (so the boot's first builds are capped where the volume is); before any cycle the
+#                                   default above stands; a cap of 0 turns the drop write off (the drop pops as before T362)
+_DROP_OWED = {}                   # path -> when its quiescence drop was deferred for the cycle's budget (T362): paid at the next
+#                                   cycle's start with the room it has, oldest first, or by the next fold over the file
+_DROP_OWED_MAX = 4096             # over it the OLDEST owed entry is popped unwritten (its memory released), never the table cleared
+_DROP_HOLD = threading.local()    # the converge pass holds this thread's quiescence drops while it heals and primes a leaf, then pays
+#                                   them once (T362 follow-up review, low 2): {path: pop} of the drops held, or absent
 _CKPT_LOCK = threading.Lock()
 _CKPT_PENDING = {}                # path -> {"count": N, "gen": g, "folds": {name: {"count", "state"}}} restores not yet taken
 _CKPT_SEQ = {}                    # path -> the seq of the last checkpoint read or written for it
@@ -897,7 +924,8 @@ def set_checkpoint_dir(fn):
     global _CKPT_DIR_FN
     _CKPT_DIR_FN = fn
     with _CKPT_LOCK:
-        _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear()
+        _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear(); _DROP_OWED.clear()
+        _CKPT_CYCLE["cap"] = _ckpt_cycle_default_cap(); _CKPT_CYCLE["spent"] = 0
 
 
 def _ckpt_dir():
@@ -1071,6 +1099,15 @@ def _ckpt_pending(path, ent):
     return pend
 
 
+def _document_carries_state(key, name, ent):
+    """Whether the document's pending restore for `key` carries a complete state for fold `name` (a cursor with `state`), as
+    a stale-generation fold asks before taking it over a state it holds (T362 round one, medium). Consults the same pending
+    record the restore would, taking nothing."""
+    pend = _ckpt_pending(key, ent)
+    f = pend["folds"].get(name) if pend is not None else None
+    return isinstance(f, dict) and "state" in f
+
+
 def _restored_cursor(key, name, ent):
     """The fold cursor (count, gen, state) a checkpoint carries for fold `name` of `key`, when it stands at a count
     the current entry can resume from; None otherwise. Each fold's restore is taken once."""
@@ -1126,6 +1163,143 @@ def _lag_ok(count, c):
     return count - c <= max(_CKPT_LAG_FLOOR, count // 8)
 
 
+def _count_recordable(base, total, c):
+    """Whether a fold count `c` can be recorded against an entry holding records base..total: inside the held records and not
+    further behind than the lag bound. The ONE count rule of the writer, the carry, the candidate check and the drop (T362)."""
+    return base <= c <= total and _lag_ok(total, c)
+
+
+def _cursor_recordable(cur, gen, base, total):
+    """Whether a fold's cursor `cur` (count, gen, state) is one the writer records at this entry."""
+    return cur is not None and cur[1] == gen and _count_recordable(base, total, cur[0])
+
+
+def _path_needs_write(key, ent, at_drop=False):
+    """Whether a write now would improve `key`'s document on disk with something this process holds (T360's candidate rule,
+    T362's one rule): a recordable cursor whose fold holds a complete state here and has none in the document (missing, a bare
+    cursor, a tail-only one). For the converge pass, a fold cold for want of a state too (the pass heals it: a whole refold,
+    then the write). At the drop (`at_drop`): a dirty path too (a file about to leave memory whose folds moved since its
+    document; never for the pass, for which a live leaf is dirty every turn and is written at its settle), and a cold fold
+    never (the drop cannot heal it, and a write would record it cold again: no improvement, so a quiescent file whose document
+    holds the dropping fold's cursor without a state is not rewritten at every fold; round one, low 1). False for a whole
+    document over a clean path: nothing to write."""
+    with _CKPT_LOCK:
+        if at_drop and key in _FOLD_DIRTY:
+            return True
+        cold = {n for k, n in _COLD_FOLDS if k == key}
+        if not at_drop and any(_COLD_REASONS.get((key, n), "cold") == "cold" for n in cold):
+            return True
+    shapes = _CKPT_DOC_FOLDS.get(key, {})
+    base, gen, total = ent[5], ent[6], ent[5] + len(ent[4])
+    for name, cache in list(_FOLD_REG.items()):
+        if name in cold:
+            continue                                      # a tail-only state is written as a cursor without one: nothing gained
+        if _cursor_recordable(cache.get(key), gen, base, total) and shapes.get(name) not in ("state", "over"):
+            return True
+    return False
+
+
+def checkpoint_cycle_begin(cap):
+    """The pusher's cycle begins: the checkpoint byte budget `cap` (documents written and read, leaves read for a heal) is
+    whole again; the converge pass and the quiescence drop's writes charge it (T362). A cap of 0 (the pass off, or a zero
+    byte knob) turns the drop write off: the drop pops as before, holding nothing."""
+    with _CKPT_LOCK:
+        _CKPT_CYCLE["cap"] = int(cap); _CKPT_CYCLE["spent"] = 0
+
+
+def checkpoint_cycle_take(n):
+    """Take `n` bytes of the cycle's budget in ONE step (the room check and the charge under one lock, so concurrent folds
+    cannot each pass a check the other's charge would fail): True and charged when they fit, False and uncharged otherwise."""
+    with _CKPT_LOCK:
+        if _CKPT_CYCLE["spent"] + int(n) > _CKPT_CYCLE["cap"]:
+            return False
+        _CKPT_CYCLE["spent"] += int(n)
+        return True
+
+
+def checkpoint_drop_writes_on():
+    """Whether the quiescence drop writes documents this cycle (a cap above zero)."""
+    with _CKPT_LOCK:
+        return _CKPT_CYCLE["cap"] > 0
+
+
+def _pop_owed_entry(key):
+    """Release `key`'s cached entry unwritten (an owed drop paid by the pop alone), under the reader's lock only."""
+    with _JSONL_CACHE_LOCK:
+        w = _cache_pop_locked(key)
+        if w:
+            _RECORD_CACHE_STATS["dropped"] += 1
+            _RECORD_CACHE_STATS["droppedBytes"] += w
+
+
+class hold_quiescent_drops:
+    """`with hold_quiescent_drops():` on this thread a quiescent-drop fold neither writes nor pops at its end; the drop is held
+    (with whether it would have popped) for pay_held_drops, so a pass that heals and primes a leaf over its resident entry
+    writes the document ONCE, after every fold is current, and pops once (a heal whose last fold was the launch fold popped the
+    entry mid-heal before, and the folds never called stayed out of the document)."""
+    def __enter__(self):
+        _DROP_HOLD.held = {}
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            _DROP_HOLD.held = None                        # a raise inside the block: nothing stays held on this thread (an unpaid
+        return False                                      #  hold would hold every later drop here; the entries fall to the reader's LRU)
+
+
+def pay_held_drops():
+    """Pay the drops held on this thread (see hold_quiescent_drops): {path: True when its document was written}. Each is paid
+    as the fold would have (the write when the rule says so, the pop when a fold stepped records), against the cycle's budget."""
+    held = getattr(_DROP_HOLD, "held", None)
+    _DROP_HOLD.held = None
+    out = {}
+    for key, pop in (held or {}).items():
+        with _JSONL_CACHE_LOCK:
+            ent = _JSONL_CACHE.get(key)
+        if ent is None:
+            continue
+        out[key] = bool(_drop_quiescent_entry(key, ent, pop=pop))
+    return out
+
+
+def checkpoint_pay_owed_drops():
+    """The cycle's start (T362 round one, low 2): the drops deferred for an earlier cycle's budget are paid now, oldest first,
+    with the room this cycle has, since the files this serves (a returned subagent's transcript) may never be folded again and
+    their whole entries would otherwise stay resident for the kernel's life. An owed path whose entry or file is gone is
+    forgotten. Returns the drops paid (written or popped)."""
+    with _CKPT_LOCK:
+        owed = list(_DROP_OWED)
+    paid = 0
+    for key in owed:
+        with _JSONL_CACHE_LOCK:
+            ent = _JSONL_CACHE.get(key)
+        if ent is None or not os.path.exists(key):
+            with _CKPT_LOCK:
+                _DROP_OWED.pop(key, None)
+            if ent is not None:                           # the file is gone: nothing to write, everything to release (round two,
+                _pop_owed_entry(key)                      #  low 2: the memory the drop was owed for)
+            continue
+        _drop_quiescent_entry(key, ent, pop=True)         # takes the owed mark itself; over the budget again it re-defers
+        with _CKPT_LOCK:
+            if key not in _DROP_OWED:
+                paid += 1
+    return paid
+
+
+def checkpoint_cycle_charge(n):
+    """Charge `n` bytes to the cycle's budget (the pass's reads and writes, known only after the fact; a true-up may be
+    negative); True while the cycle stays within it."""
+    with _CKPT_LOCK:
+        _CKPT_CYCLE["spent"] += int(n)
+        return _CKPT_CYCLE["spent"] <= _CKPT_CYCLE["cap"]
+
+
+def checkpoint_cycle_room(n):
+    """Whether `n` more bytes would stay within the cycle's budget (the pass's gate between candidates)."""
+    with _CKPT_LOCK:
+        return _CKPT_CYCLE["spent"] + int(n) <= _CKPT_CYCLE["cap"]
+
+
 def _carry_forward_states(key, folds, base, count, size, mtime):
     """The on-disk document's entries for folds this process holds no cursor for (a fold that never ran here, such as the
     transcript's wake-tail or queue-ledger folds beside the five leaf folds), carried into the next write so a write from
@@ -1164,7 +1338,7 @@ def _carry_forward_states(key, folds, base, count, size, mtime):
             c = int(f["count"])
         except (KeyError, TypeError, ValueError):
             continue
-        if base <= c <= count and _lag_ok(count, c):          # a carried count too far behind would drag the cut (the bound above)
+        if _count_recordable(base, count, c):                 # a carried count too far behind would drag the cut (the bound above)
             out[name] = f
     return out
 
@@ -1185,7 +1359,7 @@ def checkpoint_write(path, force=False):
     folds = {}
     for name, cache in list(_FOLD_REG.items()):
         cur = cache.get(key)
-        if cur is None or cur[1] != gen or not base <= cur[0] <= count or not _lag_ok(count, cur[0]):
+        if not _cursor_recordable(cur, gen, base, count):
             continue                                      # no cursor at this entry, one outside its held records, or one too far
         #                                                   behind to be written at its count without dragging the cut (_lag_ok)
         fcount = cur[0]                                   # the fold's OWN count (T359): a fold stepped by builds, not by the settle,
@@ -1291,16 +1465,8 @@ def checkpoint_converge_candidates():
             ent = _JSONL_CACHE.get(key)
         if ent is None:
             continue
-        shapes = _CKPT_DOC_FOLDS.get(key, {})
-        total = ent[5] + len(ent[4])
-        for name, cache in list(_FOLD_REG.items()):
-            if (key, name) in cold:
-                out.append(key); break
-            cur = cache.get(key)
-            if cur is None or cur[1] != ent[6] or not ent[5] <= cur[0] <= total or not _lag_ok(total, cur[0]):
-                continue                                  # no cursor the writer would record: a fold stopped beyond the lag bound
-            if shapes.get(name) not in ("state", "over"):   #  is left out by the writer and refused by the carry, so it is no
-                out.append(key); break                    #  candidate either (it refolds once when it runs, then is written current)
+        if _path_needs_write(key, ent):                   # the one rule (T362): dirty, cold for want of a state, or a recordable
+            out.append(key)                               #  cursor whose fold has no complete state in the document
     return out
 
 
@@ -1385,6 +1551,7 @@ def checkpoint_stats():
         out = dict(_CKPT_STATS); out["fallbacks"] = dict(_CKPT_STATS["fallbacks"]); out["restoredFolds"] = dict(_CKPT_STATS["restoredFolds"])
         out["oversizeFolds"] = dict(_CKPT_STATS["oversizeFolds"]); out["coldFolds"] = dict(_CKPT_STATS["coldFolds"])
         out["coldWrites"] = dict(_CKPT_STATS["coldWrites"]); out["converge"] = dict(_CKPT_STATS["converge"])
+        out["refolds"] = {k: dict(v) for k, v in _CKPT_STATS["refolds"].items()}
     d = _ckpt_dir()
     with _READ_BYTES_LOCK:
         out["documentBytes"] = sum(n for p_, n in _READ_BYTES.items() if d is not None and p_.startswith(str(d) + os.sep))
@@ -1628,6 +1795,8 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
     Lives here (moved from the kernel, 2026-09-03) so the judge's readers can fold too — the
     background-task pairing below is shared by both."""
     key = str(path)
+    with _READ_BYTES_LOCK:
+        r0 = _READ_BYTES.get(key, 0)                      # what this call reads of the file shows under refolds (T377)
     if ckpt is None:
         ckpt = _FOLD_NAME_OF.get(id(cache))               # a cache named once (name_fold_cache)
     if ckpt is not None:
@@ -1653,9 +1822,16 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
     total = base + len(recs)
     hit = cache.get(key)
     kind = None
-    if hit is None and ckpt is not None and ent is not None:
-        hit = _restored_cursor(key, ckpt, ent)
-        if hit is not None:
+    if ckpt is not None and ent is not None and (hit is None or hit[1] != gen):
+        # no cursor, or one at an entry that left memory (the quiescence drop, an eviction) while the file stood: the reader's
+        # new entry came from the file's document when it stands, and the document's cursor for this fold serves the fold at
+        # that entry (T362: a dropped file's later fold is a tail read, not a whole one); with nothing to restore, a refold.
+        # Against a HELD state the document's cursor is taken only when it carries a state of its own (round one, medium): a
+        # cursor without one (an over-cap, cold or bare legacy write) would replace the complete state this process holds
+        # with a tail-only one that answers empty, and for an idle file nothing would ever heal it; the fold reads whole instead
+        restored = _restored_cursor(key, ckpt, ent) if hit is None or _document_carries_state(key, ckpt, ent) else None
+        if restored is not None:
+            hit = restored
             kind = "restore"
             if hit[2] is _COLD:                           # the cursor without its state: the fold starts at the entry's
                 hit = (base, hit[1], init()); kind = "cold"   #  base and steps the tail it holds
@@ -1668,6 +1844,9 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
                 on("hit" if kind is None else kind)
             if kind is not None:
                 cache[key] = hit                          # a restore at the witness: the cursor stands, nothing stepped
+            if drop_after == "quiescent" and ent is not None:
+                _drop_quiescent_entry(key, ent, pop=False)   # T362: the document is written here too; the entry stays, since
+            #                                                   nothing was stepped (unless a deferred drop is owed)
             return _fold_eof_fragment(key, ent, state0, step)   # unchanged records; a newline-less tail may still sit past them
         if g0 == gen and base <= n0 < total:
             state, start = copy.deepcopy(state0), n0 - base
@@ -1688,9 +1867,15 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
             total = len(recs)
         state, start, kind = init(), 0, "refold"
         if ckpt is not None:
+            with _READ_BYTES_LOCK:
+                got = _READ_BYTES.get(key, 0) - r0
             with _CKPT_LOCK:
                 _COLD_FOLDS.discard((key, ckpt))          # every record stepped: the state is complete again
                 _COLD_REASONS.pop((key, ckpt), None); _COLD_OVER_KB.pop((key, ckpt), None)
+                if got > 0:                               # a refold that read (the whole file, over a tail entry or from zero): named
+                    rf = _CKPT_STATS["refolds"].setdefault(ckpt, {"count": 0, "bytes": 0})   #  and weighed per fold on /perf (T377).
+                    rf["count"] += 1; rf["bytes"] += got   #  Diagnostic: the delta is over the path's process-wide counter, so another
+        #                                                    thread's read of the same file inside this call lands in it
     for r in recs[start:]:
         if isinstance(r, dict):
             state = step(state, r)
@@ -1708,22 +1893,75 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
     return out
 
 
-def _drop_quiescent_entry(key, ent):
+def _drop_quiescent_entry(key, ent, pop=True):
     """drop_after="quiescent" (the kernel memory work, 2026-09-11): a file unchanged for _DROP_AFTER_QUIESCENT_S is one
     whose writer has finished (a subagent that returned), and its records are not kept in the shared reader's cache
     once a fold has stepped them: the fold's cursor (and its checkpoint) stands, the file's bytes leave memory. Only the
     very entry this fold read is dropped (another thread's newer entry is left alone); a file still changing keeps its
-    records, since its next append would otherwise re-read it whole."""
+    records, since its next append would otherwise re-read it whole. Without `pop` (a fold that stepped nothing: a hit or
+    a restore at the witness) only the T362 write below runs and the entry stays, as it always has on that path. Returns
+    True when the document was written here."""
     try:
         if time.time() - float(ent[0]) < _DROP_AFTER_QUIESCENT_S:
-            return
+            return False
     except Exception:
-        return
+        return False
+    held = getattr(_DROP_HOLD, "held", None)
+    if held is not None:                                  # the converge pass is healing and priming this leaf on this thread: held,
+        held[key] = held.get(key, False) or pop           #  paid once after (pay_held_drops), with the pop if any fold stepped
+        return False
+    with _CKPT_LOCK:
+        if key in _DROP_OWED:                             # a drop deferred for the budget is taken at the next fold over the file
+            _DROP_OWED.pop(key, None); pop = True         #  (whichever path that fold takes) or at the next cycle's start
+    # T362: the entry a quiescent-drop fold ends over is a read that already happened (the boot's, by whichever fold read the
+    # file whole); if the file's document lacks something this process holds (the one rule), it is written NOW, before any
+    # pop, from that read: the idle sessions' documents converge here, where no settle reaches them and the converge pass must
+    # refuse them (a heal on the cycle re-read them whole). The write runs with neither lock held (checkpoint_write takes
+    # _CKPT_LOCK and _JSONL_CACHE_LOCK itself); it charges the pusher cycle's byte budget shared with the pass, and over the
+    # budget the write AND the drop are deferred by one cycle (the entry stays; the read is not lost), counted under
+    # checkpoints.converge.dropDeferred.
+    try:
+        needs = checkpoint_drop_writes_on() and _path_needs_write(key, ent, at_drop=True)   # off (a cap of 0): the pop alone
+    except Exception:
+        needs = False
+    wrote = False
+    if needs:
+        cp = _ckpt_file(key)
+        try:
+            est = cp.stat().st_size if cp is not None and cp.exists() else 0
+        except OSError:
+            est = 0
+        if est <= 0:                                      # no previous document (a first write, or one the fallback removed): an
+            est = max(4096, int(ent[1]) // 8)             #  estimate from the file, never a free pass against the budget
+        if not checkpoint_cycle_take(2 * est):           # the previous document read for the carry, and about as much written:
+            oldest = None                                 #  taken in one step, or deferred (the drop owed) when it does not fit
+            with _CKPT_LOCK:
+                _CKPT_STATS["converge"]["dropDeferred"] += 1
+                if pop:
+                    _DROP_OWED[key] = time.time()
+                    if len(_DROP_OWED) > _DROP_OWED_MAX:  # over the bound the OLDEST owed drop is paid by its pop alone (round
+                        oldest = next(iter(_DROP_OWED))   #  two, low 1: a cleared mark left its entry neither paid nor popped)
+                        _DROP_OWED.pop(oldest, None)
+            if oldest is not None:
+                _pop_owed_entry(oldest)                   # outside _CKPT_LOCK: the reader's lock alone
+            return False
+        if checkpoint_write(key):
+            try:
+                written = cp.stat().st_size if cp is not None else 0
+            except OSError:
+                written = 0
+            checkpoint_cycle_charge(written - est)       # the true-up: what was written against the estimate taken above
+            wrote = True
+            with _CKPT_LOCK:
+                _CKPT_STATS["converge"]["dropWrites"] += 1
+    if not pop:
+        return wrote
     with _JSONL_CACHE_LOCK:
         if _JSONL_CACHE.get(key) is ent:
             w = _cache_pop_locked(key)
             _RECORD_CACHE_STATS["dropped"] += 1
             _RECORD_CACHE_STATS["droppedBytes"] += w
+    return wrote
 
 
 _UNPINNED = object()
@@ -4610,7 +4848,10 @@ def asm_index_stats():
                 "restoredTurns": _ASM_INDEX_STATS["restoredTurns"], "rowDecodes": _ASM_INDEX_STATS["rowDecodes"]}
 _ASM_CKPT_CAP = 16 * 1024 * 1024   # a document past this is not written (counted): that session parses whole as today
 _ASM_CKPT_STATS = {"written": 0, "restored": 0, "fallbacks": {}, "skipped": {}, "hydratedBytes": 0, "hydratedAtoms": 0,
-                   "hydratedBy": {}}     # bytes per calling function: a whole-tree hydration anywhere shows here
+                   "hydratedBy": {},     # bytes per calling function: a whole-tree hydration anywhere shows here
+                   "converge": {"writes": 0, "bytes": 0, "deferred": 0, "candidates": 0, "skipped": {}}}   # the pass's writes for
+#                                          idle leaves from the boot's own parse (T376): looked at, written, deferred for the budget,
+#                                          skipped per the writer's reason
 _ASM_CKPT_LOCK = threading.Lock()
 _ASM_CKPT_SAID = set()             # (path, reason) said once per process
 _LAZY_FILES = {}                   # rompuuid -> {fsid: path}: where hydrate finds a lazy atom's record
@@ -4659,7 +4900,31 @@ def asm_checkpoint_stats():
     with _ASM_CKPT_LOCK:
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
         out["hydratedBy"] = dict(out["hydratedBy"])
+        cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
     return out
+
+
+def asm_converge_stat(name, n=1):
+    """Count the converge pass's assembly work under asmCheckpoint.converge (T376)."""
+    with _ASM_CKPT_LOCK:
+        cv = _ASM_CKPT_STATS["converge"]
+        cv[name] = cv.get(name, 0) + n
+
+
+def asm_converge_skip(reason):
+    with _ASM_CKPT_LOCK:
+        sk = _ASM_CKPT_STATS["converge"]["skipped"]
+        sk[reason] = sk.get(reason, 0) + 1
+
+
+def asm_entry_whole(leaf_path, rompuuid, sdk_human=False):
+    """Whether this process holds a WHOLE (unrestored) assembly entry for the session over `leaf_path`: the boot's own parse,
+    which the converge pass writes an idle leaf's document from (T376); a restored entry's document already stands, and no
+    entry means no write (never a parse of the pass's own)."""
+    key = (os.path.realpath(str(leaf_path)), str(rompuuid), bool(sdk_human))
+    with _ASM_LOCK:
+        entry = _ASM_CACHE.get(key)
+    return entry is not None and not entry.get("prefix") and not entry.get("preTurns")
 
 
 def _atom_kind(a):
@@ -4744,50 +5009,55 @@ def _tree_key(tree):
     return (id(tree), len(turns), turns[-1].get("id") if turns else None)
 
 
-def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None):
+def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason_out=None, who="settle"):
     """Write the leaf's assembly checkpoint from its WHOLE assembly entry. False when there is nothing to write: no
     entry, an entry restored from a document (its cut stands until a compaction moves it), no compaction boundary in
     the tree (the whole file would be the tail), a cut that would not split the chronological order the fold's gate
-    needs (garbled stamps), or a document past the cap; each counted under asmCheckpoint.skipped."""
+    needs (garbled stamps), or a document past the cap; each counted under asmCheckpoint.skipped, and appended to
+    `reason_out` when a list is given (the converge pass reads its refusal there; T376 review). `who` names the caller
+    in the blip line (the settle, the converge pass), said once per leaf and reason."""
     cp = _asm_ckpt_file(leaf_path)
     if cp is None:
         return False
+
+    def _skip(reason):
+        if reason_out is not None:
+            reason_out.append(reason)
+        return _asm_ckpt_skip(reason)
     key = (os.path.realpath(str(leaf_path)), str(rompuuid), bool(sdk_human))
     with _asm_key_lock(key):
         with _ASM_LOCK:
             entry = _ASM_CACHE.get(key)
         if entry is None:
-            return _asm_ckpt_skip("noEntry")
+            return _skip("noEntry")
         if entry.get("prefix") or entry.get("preTurns"):
-            return _asm_ckpt_skip("restored")            # the document it came from stands
+            return _skip("restored")            # the document it came from stands
         if entry.get("docWritten") and cp.exists() and (tree is None or entry.get("docTurns")
                                                           or entry.get("docNoTurns") == _tree_key(tree)):
-            return _asm_ckpt_skip("written")             # this entry's pre-cut part has not moved (a fold appends after the cut);
+            return _skip("written")             # this entry's pre-cut part has not moved (a fold appends after the cut);
         #                                                  a document written without a tree is written again once one is given,
         #                                                  one whose tree yielded no section is not, for that tree (review low 4)
         ad = entry["ad"]
         atoms = entry["atoms"]
         bounds = [a for a in atoms if a.get("type") == "system" and a.get("subtype") == "compact_boundary"]
         if not bounds:
-            return _asm_ckpt_skip("noBoundary")
+            return _skip("noBoundary")
         active = ad.active_path()
         verdicts = ad.chain_verdicts(active)
         turns = segment_turns([dict(a) for a in atoms], rompuuid)
         last_b = max(bounds, key=lambda a: (a["t"], a.get("_seq", 0)))
         memo = entry.get("docSkip")
         if memo is not None and memo[0] == last_b["uuid"]:
-            return _asm_ckpt_skip(memo[1])               # this cut already failed to write: nothing rebuilt until it moves
+            return _skip(memo[1])               # this cut already failed to write: nothing rebuilt until it moves
 
         def skip(reason):
             if reason in _ASM_SKIP_STRUCTURAL:            # a property of this cut: memoized like a success (docWritten),
                 entry["docSkip"] = (last_b["uuid"], reason)   #  re-armed when the cut moves
                 _say_once("assembly checkpoint: %s not written: %s (said once until its cut moves)" % (leaf_path, reason))
             else:                                         # a blip (a stat or a write failing, a record landing between the
-                try:                                      #  parse and the offsets): said each time, tried again next settle
-                    sys.stderr.write("assembly checkpoint: %s not written this settle: %s\n" % (leaf_path, reason))
-                except Exception:
-                    pass
-            return _asm_ckpt_skip(reason)
+                _say_once("assembly checkpoint: %s not written by the %s: %s (said once per leaf; tried again at the next %s)"
+                          % (leaf_path, who, reason, who))   #  parse and the offsets): named for its caller, once per leaf
+            return _skip(reason)
         bi = next(i for i, t in enumerate(turns) if any(a.get("uuid") == last_b["uuid"] for a in t["atoms"]))
         if last_b["uuid"] in ad._adopted and bi > 0:
             bi -= 1                                       # an adopted manual compact: its /compact episode is the turn before
@@ -5424,6 +5694,9 @@ def _hydrate_one(a, rec):
     a.pop("lazy", None)
 
 
+_HYDRATE_TEXT_READERS = ("_unit_text", "_prompt_text", "_atom_text")   # the judges' shared text readers: attributed with their caller
+
+
 def hydrate(atoms, rompuuid=None, by=None):
     """Fill the bodies of the lazy atoms among `atoms` (a list, a turn's atoms, a whole session's turns) from their
     records on disk, one open per file and one seek-read per atom, through a byte-capped memo; returns how many
@@ -5437,7 +5710,12 @@ def hydrate(atoms, rompuuid=None, by=None):
         return 0
     if by is None:
         try:
-            by = sys._getframe(1).f_code.co_name
+            f = sys._getframe(1); by = f.f_code.co_name
+            if by in _HYDRATE_TEXT_READERS:               # a text reader every walker shares says nothing about WHO walked: the
+                g = f.f_back                              #  first caller outside the shared readers is recorded with it (T377:
+                while g is not None and g.f_code.co_name in _HYDRATE_TEXT_READERS:   #  naming the boot's reader; a reader reached
+                    g = g.f_back                          #  through another reader still names the walker)
+                by = "%s<-%s" % (by, g.f_code.co_name if g is not None else "?")
         except Exception:
             by = "?"
     filled, by_file = 0, {}

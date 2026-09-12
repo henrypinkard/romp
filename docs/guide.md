@@ -23,6 +23,11 @@ complementary views of what the agents are doing:
 
 ![Tool calls fold into runs; each expands to one line per call](assets/guide/chat-detail.png){ width="100%" }
 
+**Dropping a file.** Drop an image or any file anywhere on the chat pane and it attaches to
+the message box of the session you are looking at; a dashed ring shows the pane is the target
+while you drag, and in a split each column takes its own drops. Dropped anywhere else on the
+dashboard, a file is refused (the cursor says so) rather than opened in place of the page.
+
 **Reviewing a document.** Select any passage in the file viewer and it lands in the
 composer as a quote chip, labeled with the file and the line the passage lives on. Type
 what should change and press **⌘⏎** to set the note aside; keep reading, select the next
@@ -73,13 +78,16 @@ copy of it.
 **A message that has not gone yet.** Send to a busy session and your message waits as a
 dashed bubble under an hourglass until the session takes it — while it compacts, while a
 turn runs, or in the beat before the kernel confirms the send. Until then it is still
-yours: the **✕** in its corner pulls it back into the composer, and the **✎** beside it turns
-the bubble's text into a field where it sits, so you can change your mind without losing
-your place in the queue. While the field is open the message holds: it does not go until you
-are done. Enter (or Save) replaces the message where it was, a follow-up keeps its context,
-and Esc (or Cancel) leaves it as it was; the composer is not involved. If the session took
-the message before you could hold it, the bubble says so, and if an edit cannot be applied
-romp gives your words back in a notice rather than sending them twice.
+yours: the **✎** in its corner takes it out of the queue and puts it back into the message
+box — the words, the quote chips it was written against and its attachments — so you can
+change it and send it again, or clear the box to drop it. A queued slash command, and a
+notice romp itself queued, carry a **✕** instead: there is nothing to reword, so they just
+cancel. If the session took the message before you pressed, the bubble says so and the
+box is left as it was, so nothing is sent twice. One narrow window: a chat page from
+before an update, still open while the kernel restarts on the new one, presses a pencil
+the new kernel no longer knows as an edit; the bubble reverts and the message stays
+queued. The page reloads itself on the new kernel within moments, which keeps that
+window short.
 
 **Opening a markdown document.** A markdown link in the chat opens in the file viewer,
 rendered, with **Raw** one click away — a path on the session's machine, or a link to a
@@ -147,7 +155,8 @@ same document scrolls to it when the document has a heading or an anchor by that
 click, since a section of the shown file has no tab of its own. One click does one thing: a plain
 click acts in the dashboard, and a Cmd-click (Ctrl on Windows and Linux) or a middle-click opens
 the link in a browser tab of its own. Inside a file the test for a path is stricter than the one
-a chat message gets: a path links only when it has a slash and a file extension, starts on its
+a chat message's prose gets, and a fenced code block in a chat message follows the file's test
+too, linking a path only once the kernel has verified it is a file: a path links only when it has a slash and a file extension, starts on its
 own, at the start of a line or after a space, a quote, a bracket, a comma, a semicolon, an
 equals sign, a pipe or Markdown's `*` (so `$HOME/docs/a.md`, `@scope/pkg/index.js` and
 `C:/Users/x.txt` stay text), is not part of a web address, does not start with a site name

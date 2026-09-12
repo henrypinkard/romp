@@ -251,7 +251,7 @@ class StaleEchoPlacement(unittest.TestCase):
         self.assertFalse(merged["turns"][-1]["ended"])
 
     def test_a_send_the_cli_still_owes_keeps_the_tail_however_old_its_stamp(self):
-        # a held copy (T306) keeps its send stamp while the queue behind it feeds: on release it is older than
+        # a copy queued behind a busy turn keeps its send stamp while that turn runs: when it feeds it is older than
         # the last turn's start but still pending, listed by the CLI's queue ledger, and rides the tail
         saved = km._pending_ledger
         km._path_of = lambda sid, now=None: "/nonexistent/notes-api/%s.jsonl" % SID

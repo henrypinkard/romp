@@ -33,7 +33,14 @@ driver run walks the whole story in order, each step landing in its own assertio
      dragged from column 2 onto column 1's pane wears the cue there and, dropped, comes home and column 2 closes;
  10. a column blob from BEFORE the partition (a v1 store, its column-2 blob naming B and holding a draft for A, as a
      whole chat page's blob could) reloads into column 2 on B, and A's draft reaches column 1's box: the page offers
-     state for a session it no longer shows to the shell, which hands it to the column that does.
+     state for a session it no longer shows to the shell, which hands it to the column that does;
+ 11. THE VANISHING TAB (the user 2026-09-12): B, column 1's ACTIVE tab, dragged into the edge while another pane's
+     arrangement write reaches the new column ahead of the kernel's first strip (column 2's kernel frames held at the
+     wire until the shell has rewritten romp:vieworder): column 2 stands and lists B once its strip lands, no colEmpty
+     is posted, column 1 re-points to a member of its own, and past the close backstop (shortened for the lab) a strip
+     change raises no "Couldn't close" toast;
+ 12. the hold behind that toast is for the user's own cross: a colEmpty naming a session the kernel still lists, with no
+     cross, closes the column and B is on column 1's strip at once, no toast.
 Skips LOUDLY when the extension deps or a playwright browser are absent (CI installs none). Synthetic only:
 placeholder sids, invented notes-api prompt text, no real session data."""
 import json
@@ -80,6 +87,7 @@ FILLERS = [("11111111-2222-4333-8444-00000000030%d" % k, name, k)
 BOARD = 2 + len(FILLERS)
 DRAG_PX = 200
 SLACK_PX = 40
+CLOSE_ACK_MS_LAB = 1500   # render.ts CLOSE_ACK_MS for the lab (the romp:closeAckMs knob): the wait past the backstop in steps 11 and 12 is short
 DRAFT = "a half-typed note for the api session, kept across the move"
 ORPHAN_DRAFT = "a note for the web session, left in a column blob from before the partition"
 
@@ -130,11 +138,42 @@ const out = { t0: Date.now() };
 // Column 2's asks, read at the socket layer (the browser reports every frame's sockets): a needFull from a column opened
 // as a view of one session is the fingerprint of the board loading behind the view. 2026-09-11: seven `nobase` asks per
 // open, one per withheld tab, when the shim's FIFO delivered the status frames ahead of the strip that named their set.
+// …read at the WIRE (page.routeWebSocket sees every frame's sockets, the column iframes' included), which also lets step 11
+// HOLD the kernel's frames to column 2 from its connect until the driver releases them: the window between the new
+// column's bundle evaluating and its first strip landing is then held open for as long as the step needs, never raced.
 const col2Asks = [];
-page.on("websocket", (ws) => {
-  if (!/[?&]col=2(?:&|$)/.test(ws.url())) return;
-  ws.on("framesent", (f) => { try { const m = JSON.parse(f.payload); if (m && m.type === "needFull") col2Asks.push([m.id, m.why || ""]); } catch (e) { /* a non-JSON frame */ } });
+let holdCol2 = false, col2Held = [], col2Wire = null;
+// what column 2's OWN socket receives (the /perf counters are kernel-wide: another pane's frames land inside the window on a
+// slow runner): full session frames and status frames, counted as the kernel sends them, from the socket's connect
+let col2Fulls = 0, col2Statuses = 0, col2StatusNeed = 0, col2StatusResolve = null;
+const col2Count = (m) => { try { const f = JSON.parse(m); if (f && f.type === "session") col2Fulls++; else if (f && f.type === "status") { col2Statuses++; if (col2StatusResolve && col2Statuses >= col2StatusNeed) { col2StatusResolve(); col2StatusResolve = null; } } } catch (e) { /* a non-JSON frame */ } };
+const col2StatusesReach = (need, ms) => new Promise((r) => { col2StatusNeed = need; if (col2Statuses >= need) return r(); col2StatusResolve = r; setTimeout(r, ms); });   // bounded: the wait ends at the count or the cap
+await page.routeWebSocket((u) => /[?&]col=2(?:&|$)/.test(u.href), (ws) => {
+  const server = ws.connectToServer();
+  col2Wire = ws; col2Held = []; col2Fulls = 0; col2Statuses = 0;
+  ws.onMessage((m) => { try { const f = JSON.parse(m); if (f && f.type === "needFull") col2Asks.push([f.id, f.why || ""]); } catch (e) { /* a non-JSON frame */ } server.send(m); });
+  server.onMessage((m) => { col2Count(m); if (holdCol2) { col2Held.push(m); if (heldOnceResolve) { heldOnceResolve(); heldOnceResolve = null; } } else ws.send(m); });   // the first held frame resolves heldOnce: step 11 writes the arrangement only once the kernel's burst is in hand
+  server.onClose(() => ws.close()); ws.onClose(() => server.close());
 });
+let heldOnceResolve = null, heldOnce = Promise.resolve();   // armed with the hold (below): resolves on the first frame held at the wire
+const armHeldOnce = () => { heldOnce = new Promise((r) => { heldOnceResolve = r; }); };
+const releaseCol2 = () => { holdCol2 = false; const held = col2Held.splice(0); for (const m of held) { try { col2Wire.send(m); } catch (e) { /* the column closed under the hold */ } } return held.length; };
+// The shell's log (the top document: every column's posts land there, and the store's writes are the shell's own): the
+// split's colEmpty traffic with its source frame, and every write of romp-chat-cols, stamped. And the lab's knob: the
+// close backstop (render.ts CLOSE_ACK_MS, read from localStorage at a page's boot) at 1.5 s, so step 11's wait past it
+// is short. An init script runs in the top document before its scripts; the column iframes read the same storage.
+await page.addInitScript((ackMs) => {
+  if (window !== window.top) return;
+  try { localStorage.setItem("romp:closeAckMs", String(ackMs)); } catch (e) { /* */ }
+  window.__shellLog = [];
+  window.addEventListener("message", (e) => {
+    const m = e && e.data; if (!m || typeof m !== "object" || m.romp !== "colEmpty") return;
+    let src = null; try { const f = window.__rompFrameOfWin && window.__rompFrameOfWin(e.source); src = f ? f.id : null; } catch (err) { /* */ }
+    window.__shellLog.push({ t: Date.now(), romp: m.romp, src, gone: m.gone, crossed: m.crossed });
+  }, true);
+  const setItem = Storage.prototype.setItem;
+  Storage.prototype.setItem = function (k, v) { if (k === "romp-chat-cols") window.__shellLog.push({ t: Date.now(), store: v }); return setItem.call(this, k, v); };
+}, cfg.ackMs);
 const die = async (why) => {
   out.ms = Date.now() - out.t0;
   fs.writeSync(1, "RESULT:" + JSON.stringify({ ...out, died: why }) + "\n");
@@ -196,6 +235,7 @@ const sends = (p, slot) => (((p || {}).sends || {}).full || {})[slot]?.count || 
 await page.goto(cfg.url);
 await waitTabs("f-chat", [cfg.sidA, cfg.sidB, cfg.sidC]);
 await waitBootGone();
+const board = (await tabsIn("f-chat")).length;   // the board: the status frames a skeleton column receives are one per OTHER tab
 if ((await activeIn("f-chat")) !== cfg.sidA) { await clickTab("f-chat", cfg.sidA); await waitActive("f-chat", cfg.sidA); }
 out.col1Before = await activeIn("f-chat");
 
@@ -236,11 +276,18 @@ await waitTabs("f-chat-2", [cfg.sidB]);
 await waitActive("f-chat-2", cfg.sidB);
 await waitNoTabs("f-chat", [cfg.sidB]);
 await waitFn(() => window.__obs && (window.__obs.done || window.__obs.timedOut), null, "column 2 never painted B's transcript");
+const col2FullsAtPaint = col2Fulls;   // read as the paint is seen: the column's socket has carried B's full and nothing else's
 const perfAtPaint = await page.evaluate(() => window.__obs.perfAtPaint ? window.__obs.perfAtPaint : null);
 out.s1.col2Active = await activeIn("f-chat-2"); out.s1.col1After = await activeIn("f-chat");
 out.s1.col2Tabs = await tabsIn("f-chat-2"); out.s1.col1Tabs = await tabsIn("f-chat");
 out.s1.obs = await page.evaluate(() => { const { perfAtPaint, ...rest } = window.__obs; return rest; });
-out.s1.fullChatDelta = sends(perfAtPaint, "chat") - sends(perf0, "chat"); out.s1.statusDelta = sends(perfAtPaint, "status") - sends(perf0, "status");
+// the diet, measured on column 2's OWN socket (kernel-wide /perf counters mix in other panes' frames on a slow runner):
+// the fulls the column received by the paint, and the statuses once they reach a frame per other tab (they trail the one
+// full in the ready arm's push: strip, the full, then the statuses), bounded
+out.s1.fullChatDelta = col2FullsAtPaint;
+await col2StatusesReach(board - 1, T);
+out.s1.statusDelta = col2Statuses;
+out.s1.perfFullDelta = sends(perfAtPaint, "chat") - sends(perf0, "chat"); out.s1.perfStatusDelta = sends(await perf(), "status") - sends(perf0, "status");   // the kernel-wide view, for the record
 out.s1.col2Asks = col2Asks.slice();
 out.s1.targetB = await targetOf(cfg.sidB); out.s1.targetA = await targetOf(cfg.sidA); out.s1.targetX = await targetOf(cfg.sidX);
 
@@ -404,6 +451,84 @@ await waitActive("f-chat", cfg.sidA);
 await waitFn(([fid, draft]) => { const d = document.getElementById(fid).contentDocument; const ta = d && d.getElementById("composer-input"); return !!ta && ta.value === draft; }, ["f-chat", cfg.orphan], "column 1's box never showed the draft column 2's blob held for A");
 out.s10.draftInCol1 = await composerIn("f-chat");
 out.s10.blob2 = await page.evaluate(() => JSON.parse(localStorage.getItem("romp-vscode-state-chat:2") || "null"));
+out.msStory = Date.now() - out.t0;
+try {   // steps 11 and 12 record their own failure rather than taking the story's record with them
+// ---- 11. THE VANISHING TAB (the user 2026-09-12): the ACTIVE tab dragged into the edge while another pane's arrangement write reaches the new column ahead of the kernel's strip ----
+// Column 2 (step 10) closes from its cross; B comes home and is made column 1's ACTIVE tab (the user's case). Column 2's
+// kernel frames are HELD at the wire from its connect, so the window between the new column's bundle evaluating (its frame
+// handler registered with the federation manager) and the kernel's first strip landing stays open; in it the shell rewrites
+// romp:vieworder (the same list, a new spelling: what another chat pane's absorbHostReport, a drag elsewhere or another
+// dashboard window does on a busy board), a real cross-context storage event in every column. Before the fix column 2's
+// manager re-emitted the merged order from its EMPTY store, the page took that as the board and posted colEmpty for B,
+// the shell closed the column and told column 1 to hold B back: no column showed B, and fifteen seconds later the
+// "Couldn't close" toast let it back into column 1.
+const toastsIn = (fid) => page.evaluate((fid) => { const f = document.getElementById(fid); const d = f && f.contentDocument; return d ? Array.from(d.querySelectorAll(".warn-toast-msg")).map((e) => e.textContent) : null; }, fid);
+const emptyLineIn = (fid) => page.evaluate((fid) => { const f = document.getElementById(fid); const d = f && f.contentDocument; if (!d) return null; const es = d.getElementById("empty-state"); return es && es.style.display !== "none" ? (es.textContent || "").trim().slice(0, 120) : null; }, fid);
+const listsIn = (fid, sid, timeout) => page.waitForFunction(([fid, sid]) => { const f = document.getElementById(fid); const d = f && f.contentDocument; return !!d && Array.from(d.querySelectorAll("#tabs .tab[data-id]")).some((t) => t.dataset.id === sid); }, [fid, sid], { timeout }).then(() => true).catch(() => false);
+const rename = (sid, name) => page.evaluate(async ([sid, name]) => { const r = await fetch("/rename", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: sid, name }) }); return r.status; }, [sid, name]);
+const labelSeen = (sid, name) => page.waitForFunction(([sid, name]) => { const d = document.getElementById("f-chat").contentDocument; const t = d && d.querySelector('#tabs .tab[data-id="' + sid + '"] .tab-label'); return !!t && (t.textContent || "").includes(name); }, [sid, name], { timeout: T }).then(() => true).catch(() => false);
+const shellLog = () => page.evaluate(() => window.__shellLog.slice());
+await page.evaluate(() => document.querySelector("#chat-pane-2 .col-x").click());
+await waitGone("chat-pane-2");
+await waitTabs("f-chat", [cfg.sidA, cfg.sidB, cfg.sidC]);
+await clickTab("f-chat", cfg.sidB); await waitActive("f-chat", cfg.sidB);
+await page.evaluate(() => { window.__shellLog = []; });
+holdCol2 = true; armHeldOnce();
+await dragStart("f-chat", cfg.sidB);
+await waitFn(() => !!document.querySelector(".col-drop.col-drop-edge"), null, "step 11: the edge zone never mounted");
+const edge11 = await page.evaluate(() => { const z = document.querySelector(".col-drop.col-drop-edge"); const r = z.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+await page.mouse.move(edge11.x, edge11.y, { steps: 8 });
+await waitFn(() => document.getElementById("col-ghost").classList.contains("on"), null, "step 11: the rectangle never showed");
+const t11 = Date.now();
+await page.mouse.up();
+out.s11 = { storeAtDrop: await page.evaluate(() => localStorage.getItem("romp-chat-cols")) };
+// the window: the column's bundle has evaluated (its page functions are published) while its kernel frames are still held
+out.s11.bundleUp = await page.waitForFunction(() => { const f = document.getElementById("f-chat-2"); try { return !!(f && f.contentWindow && typeof f.contentWindow.__rompTakeSessionState === "function"); } catch (e) { return false; } }, null, { timeout: T }).then(() => true).catch(() => false);
+// …and the kernel's connect burst has reached the wire (held there): on a slow runner the burst can trail the bundle by more
+// than the bundle's own evaluation, so the write waits for the first held frame, bounded, rather than assuming it
+await Promise.race([heldOnce, new Promise((r) => setTimeout(r, T))]);
+out.s11.heldAtWrite = col2Held.length;
+await page.evaluate(() => { const cur = localStorage.getItem("romp:vieworder") || "[]"; const next = cur.includes(", ") ? cur.replace(/, /g, ",") : cur.replace(/,/g, ", "); localStorage.setItem("romp:vieworder", next === cur ? cur + " " : next); });
+// the page's reaction to the event settles in its own task, the shell's (a colEmpty) one message hop later: one bounded beat
+await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+out.s11.beforeRelease = { frames: await page.evaluate(() => window.__rompChatFrameIds()), cols: await page.evaluate(() => localStorage.getItem("romp-chat-cols")), log: await shellLog() };
+out.s11.released = releaseCol2();
+out.s11.col2ListsB = await listsIn("f-chat-2", cfg.sidB, T);
+out.s11.col2Active = await activeIn("f-chat-2");
+out.s11.col1Tabs = await tabsIn("f-chat"); out.s11.col2Tabs = await tabsIn("f-chat-2");
+out.s11.after = await shell();
+// the source column was ON B: it re-points to a member of its own, never the view line
+out.s11.col1Active = await activeIn("f-chat"); out.s11.col1Empty = await emptyLineIn("f-chat");
+// past the close backstop, a strip change (a rename of another session) runs column 1's applyTabOrder → ackClosingTabs: a hold left standing would toast here
+const left11 = t11 + cfg.ackMs + 500 - Date.now(); if (left11 > 0) await page.waitForTimeout(left11);
+out.s11.rename = await rename(cfg.sidC, "tests-renamed");
+out.s11.renamedSeen = await labelSeen(cfg.sidC, "tests-renamed");
+out.s11.toasts1 = await toastsIn("f-chat"); out.s11.toasts2 = await toastsIn("f-chat-2");
+out.s11.log = await shellLog();
+out.s11.final = { col1Tabs: await tabsIn("f-chat"), col2Tabs: await tabsIn("f-chat-2"), col1Active: await activeIn("f-chat"), col2Active: await activeIn("f-chat-2"), frames: (await shell()).frameIds };
+
+// ---- 12. the hold is for the user's own cross: a column closed for emptiness over a session the kernel still lists returns it to the first column at once ----
+// A colEmpty naming B with no cross, from column 2's own window (what a page misled by a stale frame would post): the shell
+// prunes the entry and closes the column, and B is column 1's the moment its strip repaints. Before, the shell told column
+// 1 to hold B back as a closing tab: B was in no column until the backstop, and the "Couldn't close" toast let it back.
+if (!(await page.$("#f-chat-2"))) {   // step 11 lost the column (the defect): this step stands on its own, so a column on B is opened again
+  await page.evaluate((sidB) => window.__rompMoveTab(sidB, "new"), cfg.sidB);
+  await waitTabs("f-chat-2", [cfg.sidB]); await waitActive("f-chat-2", cfg.sidB);
+}
+const f2 = await (await page.$("#f-chat-2")).contentFrame();
+await page.evaluate(() => { window.__shellLog = []; });
+const t12 = Date.now();
+await f2.evaluate((sid) => window.parent.postMessage({ romp: "colEmpty", gone: [sid] }, "*"), cfg.sidB);
+out.s12 = { colGone: await page.waitForFunction(() => !document.getElementById("chat-pane-2"), null, { timeout: T }).then(() => true).catch(() => false) };
+out.s12.col1ListsB = await listsIn("f-chat", cfg.sidB, 3000);
+out.s12.msToList = Date.now() - t12;
+out.s12.after = await shell(); out.s12.col1Tabs = await tabsIn("f-chat");
+const left12 = t12 + cfg.ackMs + 500 - Date.now(); if (left12 > 0) await page.waitForTimeout(left12);
+out.s12.rename = await rename(cfg.sidC, "tests-again");
+out.s12.renamedSeen = await labelSeen(cfg.sidC, "tests-again");
+out.s12.toasts1 = await toastsIn("f-chat");
+out.s12.log = await shellLog();
+} catch (e) { out.lateError = String((e && e.stack) || e); }
 out.ms = Date.now() - out.t0;
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
@@ -481,7 +606,7 @@ class ServedChatSplit(unittest.TestCase):
         cfg = os.path.join(cls.lab, "cfg.json")
         with open(cfg, "w") as f:
             json.dump({"url": "http://127.0.0.1:%d/?token=%s" % (cls.port, cls.token),
-                       "sidA": SID_A, "sidB": SID_B, "sidC": SID_C, "sidX": SID_X, "dragPx": DRAG_PX, "draft": DRAFT, "orphan": ORPHAN_DRAFT}, f)
+                       "sidA": SID_A, "sidB": SID_B, "sidC": SID_C, "sidX": SID_X, "dragPx": DRAG_PX, "draft": DRAFT, "orphan": ORPHAN_DRAFT, "ackMs": CLOSE_ACK_MS_LAB}, f)
         driver = os.path.join(cls.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
@@ -581,9 +706,18 @@ class ServedChatSplit(unittest.TestCase):
         s = self._r()["s1"]
         o = s["obs"]
         self.assertTrue(o["done"], "the observer saw B's transcript painted in column 2: %r" % o)
+        # a status frame per other tab: the tally read four of seven on a loaded runner while the pusher race sent the other
+        # three sessions whole (a full each, no status); with the race closed the strip lists every other tab as a skeleton
+        # and each takes its status, so the tally holds again (the wait is bounded and event-driven, never a fixed beat)
         self.assertGreaterEqual(s["statusDelta"], BOARD - 1,
-                                "a status frame per other tab: the column was served as a skeleton client, not whole: %r" % s)
-        self.assertEqual(s["fullChatDelta"], 1, "exactly one full per open, B's: never the board (eight per push before 2026-09-11), never the open's full twice, no prefetch (the column's one member is on screen): %r" % s)
+                                "a status frame per other tab on column 2's own socket: the column was served as a skeleton client, not whole: %r" % s)
+        # the diet's fingerprint on column 2's own socket: B's full, exactly once, never the board (eight per push before
+        # 2026-09-11). The second full a slow runner carried (the bound was two for a day, 2026-09-12) was never the page
+        # asking again: it was the kernel's pusher, still in the per-session loop of the cycle the handshake woke when the
+        # ready arm popped the column's set and re-armed `reconnect`, sending a full for a tab the column does not hold
+        # (reproduced at the wire: up to six per open, none of them B's, and no ask). _send_chat_or_status withholds while
+        # the flag is armed and the reset re-arms under its lock (tests/test_chat_skeleton_reconnect.py test_11_d): one again
+        self.assertEqual(s["fullChatDelta"], 1, "exactly one full per open, B's: never the board (eight per push before 2026-09-11), never another tab's from a pusher iteration in the ready arm's gap (2026-09-12), no prefetch (the column's one member is on screen): %r" % s)
         self.assertEqual(s["col2Asks"], [], "the column asked for nothing: a status delivered ahead of its strip is held for the strip, never the no-base ask that loaded the board behind the view, one ask per withheld tab (2026-09-11): %r" % s)
         # the copy between the call and the paint: the pane loader, never the create flow's words or the no-sessions copy
         self.assertEqual(o["emptyState"], 0, "no 'No session open' / no-sessions copy in a column opened on a session: %r" % o)
@@ -688,7 +822,9 @@ class ServedChatSplit(unittest.TestCase):
 
     def test_8_the_whole_story_runs_in_well_under_half_a_minute(self):
         r = self._r()
-        self.assertLess(r["ms"], 30000, "the driver waits on conditions, never on fixed sleeps: %d ms" % r["ms"])
+        self.assertLess(r["msStory"], 30000, "the driver waits on conditions, never on fixed sleeps: %d ms" % r["msStory"])
+        # steps 11 and 12 each wait past the close backstop by design (shortened to CLOSE_ACK_MS_LAB), so they are bounded apart
+        self.assertLess(r["ms"] - r["msStory"], 4 * CLOSE_ACK_MS_LAB + 10000, "steps 11 and 12: two backstops plus their waits on conditions: %d ms" % (r["ms"] - r["msStory"]))
 
     def test_9_a_tab_dragged_into_the_right_edge_opens_a_column_and_dragged_onto_another_column_moves_there(self):
         """The drag (the user 2026-09-11): a real pointer drag, the shell's zones mounted on the page's tabDrag message,
@@ -747,6 +883,62 @@ class ServedChatSplit(unittest.TestCase):
         self.assertEqual(s["col2Tabs"], [SID_B])
         self.assertEqual(s["draftInCol1"], ORPHAN_DRAFT, "A's draft, held in column 2's blob, is in column 1's box once A is picked there: %r" % s)
         self.assertNotIn(SID_A, ((s["blob2"] or {}).get("drafts") or {}), "…and left column 2's blob: %r" % s["blob2"])
+
+
+    def test_11_the_active_tab_dragged_into_a_new_column_stays_there_when_another_pane_s_arrangement_write_beats_the_kernel_s_strip(self):
+        """The vanishing tab (the user 2026-09-12): a tab dragged into a new column vanished from every column and came back
+        about fifteen seconds later behind a "Couldn't close … romp still has it open" toast. Client-side end to end: the new
+        column's federation manager, subscribed to the view-order storage event before its kernel's first strip had been
+        absorbed, re-emitted the merged order from an EMPTY store on another pane's arrangement write; applyTabOrder took that
+        synthetic frame as the board, noteColumnEmptiness posted colEmpty for a member the kernel never stopped listing, the
+        shell closed the column and column 1 held the id back until the backstop. Held open here at the wire, that window
+        must produce nothing: no colEmpty, the column standing and listing B once its strip lands, the source column re-pointed
+        to a member of its own (it was ON B), and no toast when a strip change runs past the backstop."""
+        r = self._r()
+        self.assertNotIn("lateError", r, "steps 11/12 raised: %s" % r.get("lateError"))
+        s = r["s11"]
+        self.assertEqual(json.loads(s["storeAtDrop"]), {"v": 2, "cols": [{"n": 2, "ids": [SID_B]}]}, "the drop wrote the store: %r" % s["storeAtDrop"])
+        self.assertTrue(s["bundleUp"], "column 2's bundle evaluated while its kernel frames were held: %r" % s)
+        self.assertGreaterEqual(s["heldAtWrite"], 1, "the kernel's connect burst was held at the wire when the shell wrote the arrangement: %r" % s)
+        b = s["beforeRelease"]
+        self.assertEqual([e for e in b["log"] if e.get("romp") == "colEmpty"], [], "a column that has not heard its kernel reports no emptiness: %r" % b["log"])
+        self.assertEqual(b["frames"], ["f-chat", "f-chat-2"], "column 2 stands through the window: %r" % b)
+        self.assertEqual(json.loads(b["cols"]), {"v": 2, "cols": [{"n": 2, "ids": [SID_B]}]}, "…and the store still holds B in it: %r" % b)
+        self.assertGreaterEqual(s["released"], 1, "the held frames were released: %r" % s["released"])
+        self.assertTrue(s["col2ListsB"], "with its strip landed, column 2 lists B: %r" % s)
+        self.assertEqual(s["col2Active"], SID_B); self.assertEqual(s["col2Tabs"], [SID_B])
+        self.assertNotIn(SID_B, s["col1Tabs"], "B left column 1: %r" % s["col1Tabs"])
+        # the source column was ON B: the re-point falls to a member of its own, never the "tab view shows no session" line
+        self.assertIsNotNone(s["col1Active"], "column 1 re-points to one of its own tabs: %r" % {k: s[k] for k in ("col1Active", "col1Empty", "col1Tabs")})
+        self.assertIn(s["col1Active"], s["col1Tabs"]); self.assertNotEqual(s["col1Active"], SID_B)
+        self.assertIsNone(s["col1Empty"], "…and shows no empty-state line: %r" % s["col1Empty"])
+        # past the close backstop, on a strip change: no "Couldn't close" toast in either column, and still no colEmpty
+        self.assertEqual(s["rename"], 200, "the rename that pushes a fresh strip: %r" % s["rename"])
+        self.assertTrue(s["renamedSeen"], "the pushed strip reached column 1's tab label: %r" % s)
+        self.assertEqual(s["toasts1"], [], "no toast in column 1: %r" % s["toasts1"]); self.assertEqual(s["toasts2"], [])
+        self.assertEqual([e for e in s["log"] if e.get("romp") == "colEmpty"], [], "%r" % s["log"])
+        f = s["final"]
+        self.assertEqual(f["frames"], ["f-chat", "f-chat-2"]); self.assertEqual(f["col2Tabs"], [SID_B]); self.assertNotIn(SID_B, f["col1Tabs"])
+        self.assertEqual(f["col2Active"], SID_B)
+
+    def test_12_a_column_closed_for_emptiness_over_a_session_the_kernel_still_lists_returns_it_to_the_first_column_at_once(self):
+        """The hold behind the "Couldn't close" toast (column 1's closingTabs, fed by the shell's `closing` message) is for a
+        tab the user crossed in the closing column, which the kernel goes on listing for a push or two; the toast is right
+        when that cross is refused. A colEmpty naming a session nobody crossed (a page misled by a stale frame, an older page)
+        must not use it: the shell closes the column and the session is column 1's the moment its strip repaints, and no
+        toast follows when a strip change runs past the backstop."""
+        r = self._r()
+        self.assertNotIn("lateError", r, "steps 11/12 raised: %s" % r.get("lateError"))
+        s = r["s12"]
+        self.assertTrue(s["colGone"], "the column closed: %r" % s)
+        self.assertTrue(s["col1ListsB"], "B is on column 1's strip within a moment, not held back for the backstop: %r" % s)
+        self.assertEqual(s["after"]["frameIds"], ["f-chat"]); self.assertEqual(json.loads(s["after"]["cols"]), {"v": 2, "cols": []})
+        self.assertIn(SID_B, s["col1Tabs"])
+        self.assertEqual(s["rename"], 200); self.assertTrue(s["renamedSeen"], "the pushed strip reached column 1: %r" % s)
+        self.assertEqual(s["toasts1"], [], "no 'Couldn't close' toast: nothing was crossed: %r" % s["toasts1"])
+        posts = [e for e in s["log"] if e.get("romp") == "colEmpty"]
+        self.assertEqual([(e["src"], e["gone"], e.get("crossed")) for e in posts], [("f-chat-2", [SID_B], None)],
+                         "the one colEmpty at the shell is the driver's own, from column 2's window, naming no cross: %r" % s["log"])
 
 
 if __name__ == "__main__":

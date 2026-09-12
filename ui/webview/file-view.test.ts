@@ -370,7 +370,8 @@ test("format prefs: rendered is the markdown default, and a corrupt entry reads 
 test("Raw ⇄ Rendered exists for markdown ONLY, and nothing reaches innerHTML unsanitized", () => {
   assert.match(VIEW, /const isMd = langFor\(path\) === "markdown";/);
   // the two buttons are built inside the isMd gate — a .py file shows no Rendered/Raw toggle
-  assert.match(VIEW, /if \(isMd\) \{\s*\n\s*for \(const mode of \["rendered", "raw"\] as const\)/);
+  assert.match(VIEW, /if \(isMd\) \{\s*\n\s*const seg = el\("span", "fileview-seg"\);[\s\S]{0,400}?for \(const mode of \["rendered", "raw"\] as const\)/,
+    "the pair is built inside the isMd gate, into ONE segmented wrapper (T367)");
   assert.match(VIEW, /const rendered = isMd && fmt\.md === "rendered";/, "non-md never renders as prose");
   assert.match(VIEW, /import \{ sanitizeMd \} from "\.\/md-sanitize";/);
   assert.doesNotMatch(VIEW, /from "dompurify"/, "the viewer spells no profile of its own: every option comes through md-sanitize.ts");
@@ -462,13 +463,23 @@ test("a file opened FROM the listing offers the way back — close only the view
 // show — the kernel's ?download=1 serves anything on disk (the rationale lives with _file_download in
 // kernel.py: the view allowlists are a rendering choice, not a security boundary). ──
 
-test("the title bar offers Download next to Copy path, at the same-origin download URL", () => {
+test("the title bar offers Download as the lightbox's tray glyph, in the file group beside Copy path, at the same-origin download URL (T367)", () => {
   // the URL is fileUrl + the download switch: same origin, cookie-authed, and federation-aware for
   // free — fileUrl already routes a remote session's file through the /remote/<host>/file relay
   assert.match(VIEW, /const dlUrl = fileUrl\(path, sid\) \+ "&download=1";/);
-  assert.match(VIEW, /dl\.textContent = "Download";/);
-  // next to Copy path: appended into the same acts bar, wearing the same button class
-  assert.match(VIEW, /acts\.appendChild\(dl\);\n\n  const copy = el\("button", "fileview-btn"\)/);
+  assert.match(VIEW, /dl\.innerHTML = ICON_DOWNLOAD;/, "the one tray drawing (icons.ts), not a word");
+  assert.match(VIEW, /dl\.title = "Download"; dl\.setAttribute\("aria-label", "Download"\);/, "the word rides the title and aria-label");
+  assert.doesNotMatch(VIEW, /dl\.textContent = "Download";/);
+  // in the file group beside Copy path (a glyph too), wearing the same button class
+  assert.match(VIEW, /fileGroup\.appendChild\(dl\);/);
+  assert.match(VIEW, /const copy = el\("button", "fileview-btn fileview-icon"\) as HTMLButtonElement;/);
+  assert.match(VIEW, /fileGroup\.appendChild\(copy\);/);
+  // the wider gaps apply only where groups exist: the close cross after a GROUP sibling, never the file browser's row or
+  // the URL viewer's flat row (review)
+  for (const css of [CHAT_CSS, FEED_CSS]) {
+    assert.match(css, /\.fileview-acts > \.fileview-group \+ \.fileview-group, \.fileview-acts > \.fileview-group ~ \.fileview-close \{ margin-left: 10px; \}/);
+    assert.doesNotMatch(css, /\.fileview-acts > \.fileview-close \{/, "an unscoped close margin would move the file browser's and the URL viewer's cross");
+  }
   assert.match(VIEW, /const dl = el\("button", "fileview-btn"\) as HTMLButtonElement;/, "no new styling, no new font size");
 });
 

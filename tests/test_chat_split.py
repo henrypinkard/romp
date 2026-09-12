@@ -105,16 +105,25 @@ class SplitSourcePins(unittest.TestCase):
         self.assertIn('client["reconnect"] = True\n            if not reconnect:\n                client["skeletonOnReady"] = True', src)
         # a pre-ready skeleton client is sent no session frame: the ready arm's connect push is the one full (the strip and
         # the statuses still go; review find 2026-09-11: the full crossed the wire twice per open)
+        # …and none while `reconnect` is ARMED either (2026-09-12): a client with the flag has no set yet, and a pusher
+        # iteration landing in the ready arm's gap (the set popped, the flag re-armed, the arm's own resolve still ahead)
+        # sent a full for a skeleton tab (test_chat_skeleton_reconnect test_11_d runs the gap)
         so = inspect.getsource(km._send_chat_or_status)
-        self.assertIn('if c.get("skeletonOnReady"):', so)
-        self.assertLess(so.index('if sid in (c.get("skeleton") or ()):'), so.index('if c.get("skeletonOnReady"):'))
-        self.assertLess(so.index('if c.get("skeletonOnReady"):'), so.index('return _send_chat_locked(c, m, ms, change_from, led_changed)'))
-        # the ready arm re-arms the flag PAST the reset and BEFORE its connect push
+        guard = 'if c.get("skeletonOnReady") or c.get("reconnect"):'
+        self.assertIn(guard, so)
+        self.assertLess(so.index('if sid in (c.get("skeleton") or ()):'), so.index(guard))
+        self.assertLess(so.index(guard), so.index('return _send_chat_locked(c, m, ms, change_from, led_changed)'))
+        # the flag is re-armed INSIDE the reset, under its lock and right behind its pop of `reconnect` (2026-09-12: as the
+        # arm's own two statements past the reset there was an instant with neither flag set), and the reset precedes the
+        # arm's connect push
+        rs = inspect.getsource(km._client_reset_chat_base)
+        self.assertIn('if client.pop("skeletonOnReady", False):\n            client["reconnect"] = True', rs)
+        self.assertLess(rs.index("with _client_lock(client):"), rs.index('client.pop("reconnect", None)'))
+        self.assertLess(rs.index('client.pop("reconnect", None)'), rs.index('client.pop("skeletonOnReady", False)'))
         i = src.index('msg.get("type") == "ready"')
         body = src[i:i + 3500]
-        self.assertIn('if client.pop("skeletonOnReady", False):\n                client["reconnect"] = True', body)
-        self.assertLess(body.index("_client_reset_chat_base(client)"), body.index('client.pop("skeletonOnReady", False)'))
-        self.assertLess(body.index('client.pop("skeletonOnReady", False)'), body.index("self._push_one(client)"))
+        self.assertNotIn('client.pop("skeletonOnReady"', body, "the arm's own pop and re-arm are gone: the reset's lock holds both")
+        self.assertLess(body.index("_client_reset_chat_base(client)"), body.index("self._push_one(client)"))
         # a pre-ready pop (the flag still set) neither stamps the client ready nor lets its caller consume a parked reveal:
         # _reveal_request aims taps at stamped clients, and this page has no listener yet
         rr = inspect.getsource(km._resolve_reconnect)
@@ -276,8 +285,11 @@ class SplitSourcePins(unittest.TestCase):
         mt = split[split.index("function moveTab(sid,to){"):split.index("function close(n,keep){")]
         self.assertLess(mt.index("if(!movable(src,sid))"), mt.index("if(to==='new'){"), "refused before anything is taken or grown")
         self.assertLess(mt.index("busy(src)"), mt.index("var st=take(src,sid)"), "refused before the hand-off")
-        # a column closed for emptiness tells the first column which ids are on their way home, ahead of the store write
-        self.assertIn("home.contentWindow.postMessage({romp:'closing',ids:gone},'*');", split)
+        # a column closed for emptiness tells the first column which of its gone ids the page's own cross removed, ahead of
+        # the store write; nothing else is held (the vanishing tab, 2026-09-12)
+        self.assertIn("var crossed=Array.isArray(m.crossed)?gone.filter(function(id){return m.crossed.indexOf(id)>=0;}):[];", split)
+        self.assertIn("home.contentWindow.postMessage({romp:'closing',ids:crossed},'*');", split)
+        self.assertNotIn("{romp:'closing',ids:gone}", split)
         ce = split[split.index("if(m.romp==='colEmpty'"):split.index("if(m.romp==='orphanState'")]
         self.assertLess(ce.index("{romp:'closing'"), ce.index("close(en.n)"))
         # …and orphaned state offered by a page is handed to the owner's page when that page can hear it
@@ -556,16 +568,27 @@ boot({ 'romp-chat-cols': JSON.stringify({ v: 2, cols: [{ n: 2, ids: [WEB] }] }) 
 BUSY['f-chat-2'] = true; STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [] }); CALLS.notify = [];
 window.dispatchEvent({ type: 'storage', key: 'romp-chat-cols' });
 out.busy.reconciled = { ids: ids(), notify: CALLS.notify.slice() };
-// M) a colEmpty that closes a column tells the first column which ids are on their way home, ahead of the store write;
-//    a prune that leaves members says nothing
+// M) a colEmpty that closes a column tells the first column which of its gone ids the page's own cross removed (crossed),
+//    ahead of the store write; a prune that leaves members says nothing; a gone id nobody crossed is not held (it is the
+//    first column's the moment its strip repaints); a crossed id the entry did not hold is ignored
 boot({}, false);
 window.__rompMoveTab(API, 'new'); window.__rompMoveTab(TESTS, 2);
 CALLS.posted = []; SEQ = [];
-msg({ romp: 'colEmpty', gone: [TESTS] }, 'f-chat-2');
+msg({ romp: 'colEmpty', gone: [TESTS], crossed: [TESTS] }, 'f-chat-2');
 out.closing = { partial: CALLS.posted.slice() };
 CALLS.posted = []; SEQ = [];
-msg({ romp: 'colEmpty', gone: [API, X] }, 'f-chat-2');
+msg({ romp: 'colEmpty', gone: [API, X], crossed: [API, X] }, 'f-chat-2');
 out.closing.all = { posted: CALLS.posted.slice(), seq: SEQ.filter((x) => x.indexOf('post:') === 0 || x === 'set:romp-chat-cols'), ids: ids(), stored: cols() };
+boot({}, false);
+window.__rompMoveTab(API, 'new');
+CALLS.posted = [];
+msg({ romp: 'colEmpty', gone: [API] }, 'f-chat-2');   // no cross named (a page misled by a stale frame, an older page): the column closes, nothing is held
+out.closing.uncrossed = { posted: CALLS.posted.filter((p) => p.m && p.m.romp === 'closing'), ids: ids(), stored: cols() };
+boot({}, false);
+window.__rompMoveTab(API, 'new');
+CALLS.posted = [];
+msg({ romp: 'colEmpty', gone: [API], crossed: [] }, 'f-chat-2');
+out.closing.emptyCross = { posted: CALLS.posted.filter((p) => p.m && p.m.romp === 'closing'), ids: ids(), stored: cols() };
 // N) ORPHANED STATE: a page's offer of state for sessions it does not show is taken from it and handed to the owner's page
 //    when that page can hear it; its own member and junk are skipped; a target not yet evaluated leaves the state where it is
 boot({ 'romp-chat-cols': '[2]', 'romp-vscode-state-chat:2': JSON.stringify({ activeId: WEB, drafts: { [WEB]: 'a', [API]: 'b' } }) }, false);
@@ -854,14 +877,20 @@ class SplitExecutes(unittest.TestCase):
 
     def test_a_column_closed_for_emptiness_tells_the_first_column_which_ids_are_on_their_way_home(self):
         # the kernel may still list a member closed from its own cross for a push or two, and the first column would draw
-        # its tab until then (review find 2026-09-11): the ids ride ahead of the store write, so the first column's page
-        # holds them back (closingTabs) until the kernel's strip omits them
+        # its tab until then (review find 2026-09-11): the CROSSED ids ride ahead of the store write, so the first column's
+        # page holds them back (closingTabs) until the kernel's strip omits them. Only those: the backstop behind that hold
+        # toasts "Couldn't close", right for a refused cross and wrong for anything else — a hold over a session the kernel
+        # still listed hid the tab for fifteen seconds and toasted a close nobody asked for (the vanishing tab, 2026-09-12)
         c = self.out["closing"]
         self.assertEqual(c["partial"], [], "a prune that leaves members posts nothing")
         a = c["all"]
-        self.assertEqual(a["posted"], [{"id": "f-chat", "m": {"romp": "closing", "ids": [API]}}], "the entry's members the page reported gone, never an id it did not hold")
+        self.assertEqual(a["posted"], [{"id": "f-chat", "m": {"romp": "closing", "ids": [API]}}], "the entry's members the page reported crossed, never an id it did not hold")
         self.assertEqual(a["seq"], ["post:f-chat:closing", "set:romp-chat-cols"], "the message is queued ahead of the store write's storage event")
         self.assertEqual(a["ids"], ["f-chat"]); self.assertEqual(a["stored"], {"v": 2, "cols": []})
+        for key in ("uncrossed", "emptyCross"):
+            u = c[key]
+            self.assertEqual(u["posted"], [], "%s: a gone id nobody crossed is not held — the first column shows it the moment its strip repaints" % key)
+            self.assertEqual(u["ids"], ["f-chat"], "%s: the column still closes" % key); self.assertEqual(u["stored"], {"v": 2, "cols": []})
 
     def test_orphaned_state_is_handed_to_the_column_that_shows_the_session_when_its_page_can_hear_it(self):
         # a v1 column's blob held drafts for many sessions and the migration keeps one (review find 2026-09-11): the page

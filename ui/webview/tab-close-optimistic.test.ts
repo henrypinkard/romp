@@ -176,7 +176,9 @@ test("closeTabLocally drops the tab, THEN records the close — in that order", 
   // declared beside tabMeta, NOT down by dismissSession: renderTabs reads it and can run before the module
   // finishes evaluating, which would make a `const` down there a temporal-dead-zone throw.
   assert.match(RENDER, /const tabMeta = new Map[\s\S]{0,900}?const closingTabs = new Map<string, number>\(\);/);
-  assert.match(RENDER, /const CLOSE_ACK_MS = 15_000;/);
+  // fifteen seconds by default, read through tab-order.ts readCloseAckMs so a lab can shorten the backstop (the served split
+  // test waits past it in seconds); tab-order.test.ts pins the default and the knob
+  assert.match(RENDER, /const CLOSE_ACK_MS = readCloseAckMs\(\(k\) => \{ try \{ return localStorage\.getItem\(k\); \} catch \{ return null; \} \}\);/);
 });
 
 test("the strip skips a just-closed tab on BOTH passes (order AND the tabMeta placeholder pass)", () => {

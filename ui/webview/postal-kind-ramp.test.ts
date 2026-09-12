@@ -1,16 +1,17 @@
-// T337 (the user 2026-09-10, who found the three kind colours of T320 too alike): each theme's three tokens sit at
-// positions 0, 1/2 and 1 of ONE straight line in OKLCH, hue pinned to the accent's. The line's two ends are two floors:
-// the deep end is the deepest step that still reads at 4.5:1 on the PROVISIONAL card's wash (theme-parity.test.ts holds
-// that contrast, and the box's and the page's), the far end stops short of the prose ink so a lone Question still reads
-// as a colour and not as body text (the distance is pinned here). The POSITIONS are the pin, not the hexes: a re-ink that
-// keeps the line and the even spacing passes; one that bunches two steps (T320's light steps were .05 then .09 apart),
-// drifts off the hue or runs into the ink fails. The comment beside the tokens in styles.css names the same two endpoints.
+// T371 (the user 2026-09-12, who found coordinate and delegate alike: T337's three steps on ONE accent-hue line read as
+// three tints of one blue): each theme's three kind tokens are three HUES sampled from the default progress colormap
+// (aurora, bin/romp_colormap.py), the two the user confused farthest apart on the ramp. The pin reads the ramp FROM the
+// colormap file, never a copied literal: the dark tokens ARE stops of it (coordinate the first, delegate the last, question
+// a middle one), the light tokens hold the same three hues deepened for the cream page, and in both themes every pair
+// of tokens sits a real hue distance apart and every token keeps its distance from the prose ink. The mapping is written
+// once, in the :root comment beside the tokens, and this test pins that sentence; a swap of the mapping moves both.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
+const COLORMAP = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp_colormap.py"), "utf8");
 function block(opener: string): string {
   const at = CSS.indexOf(opener);
   assert.ok(at >= 0, opener + " present");
@@ -22,7 +23,16 @@ function token(blockText: string, name: string): string {
   assert.ok(m, name + " declared as a hex, bare or as a var() fallback");
   return m![1].toLowerCase();
 }
-// sRGB hex → OKLab (Björn Ottosson's matrices); OKLCH from it
+// the aurora ramp, dark to light, read from the colormap module's own table
+function auroraStops(): string[] {
+  const m = /"aurora":\s*\[([\s\S]*?)\]/.exec(COLORMAP);
+  assert.ok(m, "bin/romp_colormap.py declares the aurora ramp");
+  const stops = Array.from(m![1].matchAll(/\((\d+),\s*(\d+),\s*(\d+)\)/g)).map((t) =>
+    "#" + [t[1], t[2], t[3]].map((v) => parseInt(v, 10).toString(16).padStart(2, "0")).join(""));
+  assert.ok(stops.length >= 5, "the ramp has its stops (" + stops.length + ")");
+  return stops;
+}
+// sRGB hex -> OKLab (Bjorn Ottosson's matrices); OKLCH from it
 function oklab(hex: string): { L: number; a: number; b: number } {
   const lin = (c: number) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
   const [r, g, b] = [1, 3, 5].map((i) => lin(parseInt(hex.slice(i, i + 2), 16) / 255));
@@ -40,47 +50,43 @@ function oklch(hex: string): { L: number; C: number; h: number } {
 const hueGap = (h: number, ref: number) => Math.abs(((h - ref + 540) % 360) - 180);
 const dist = (x: { L: number; a: number; b: number }, y: { L: number; a: number; b: number }) => Math.hypot(x.L - y.L, x.a - y.a, x.b - y.b);
 
-// the two lines: (L, C) at position 0 and at position 1, the hue held, both ends inside sRGB on that hue; the comment
-// beside the tokens says the same
-const MAPS = {
-  dark: { block: ":root {", hue: 244, from: { L: 0.65, C: 0.1 }, to: { L: 0.85, C: 0.078 } },
-  light: { block: "body.theme-light {", hue: 38, from: { L: 0.5, C: 0.11 }, to: { L: 0.3, C: 0.098 } },   // C .098 is the hue's gamut edge at L .30
-};
-const STEPS = ["--postal-coordinate", "--postal-delegate", "--postal-question"];
+const STEPS = ["--postal-coordinate", "--postal-question", "--postal-delegate"];   // in ramp order: first, middle, last stop
+const MIN_HUE_GAP = 50;      // degrees of OKLCH hue between any two kinds: two tints of one hue sit at 0, T337's three at 0
+const INK_GAP = 0.075;       // OKLab distance from --fg, T337's floor: a lone kind word is a colour, never body text
 
-for (const [theme, map] of Object.entries(MAPS)) {
-  test(theme + ": the three kind tokens sit at 0, 1/2 and 1 of the accent-hue line, evenly spaced, the far end clear of the ink", () => {
-    const b = block(map.block);
-    const steps = STEPS.map((n) => oklch(token(b, n)));
-    steps.forEach((s, i) => {
-      const t = i / 2;
-      const wantL = map.from.L + (map.to.L - map.from.L) * t, wantC = map.from.C + (map.to.C - map.from.C) * t;
-      assert.ok(Math.abs(s.L - wantL) <= 0.012, `${theme} ${STEPS[i]}: L ${s.L.toFixed(3)} is off the line (${wantL})`);
-      assert.ok(Math.abs(s.C - wantC) <= 0.012, `${theme} ${STEPS[i]}: C ${s.C.toFixed(3)} is off the line (${wantC})`);
-      assert.ok(hueGap(s.h, map.hue) <= 4, `${theme} ${STEPS[i]}: hue ${s.h.toFixed(1)} is not the accent's ${map.hue} (an endpoint clipped by the gamut drifts)`);
-    });
-    // even: the two lightness steps match
-    const d1 = steps[1].L - steps[0].L, d2 = steps[2].L - steps[1].L;
-    assert.ok(Math.abs(d1 - d2) <= 0.012, `${theme}: uneven steps ${d1.toFixed(3)} vs ${d2.toFixed(3)}`);
-    // the span may not shrink further: the two floors (the provisional wash below, the prose ink above) already squeeze
-    // the dark line to .20 of lightness, about T320's .19, so the three steps' separation rests on the chroma gradient
-    // (the deep step the most saturated, the far step the palest) and on the hue held; a wider spread would have to
-    // spend hue, which is the user's call, not a re-ink's
-    assert.ok(Math.abs(steps[2].L - steps[0].L) >= 0.19, `${theme}: the tokens span ${Math.abs(steps[2].L - steps[0].L).toFixed(3)} of lightness, below the .19 floor`);
-    // the far end keeps its distance from the prose ink (--fg): a lone Question is a colour, not body text. The dark end
-    // sits at the ink's own lightness, so its distance is all chroma, the hue's gamut edge there; .075 is just under it
-    const gap = dist(oklab(token(b, "--postal-question")), oklab(token(b, "--fg")));
-    assert.ok(gap >= 0.075, `${theme}: --postal-question is ${gap.toFixed(3)} from --fg in OKLab, too close to the ink`);
-  });
-}
+test("dark: the three kind tokens ARE stops of the aurora ramp, coordinate the first and delegate the last, a hue apart", () => {
+  const stops = auroraStops();
+  const b = block(":root {");
+  const hexes = STEPS.map((n) => token(b, n));
+  hexes.forEach((h, i) => assert.ok(stops.includes(h), `${STEPS[i]} ${h} is not a stop of the aurora ramp (${stops.join(" ")})`));
+  assert.equal(new Set(hexes).size, 3, "three different stops");
+  assert.equal(hexes[0], stops[0], "coordinate is the ramp's first stop (green)");
+  assert.equal(hexes[2], stops[stops.length - 1], "delegate is the ramp's last stop (purple): the two the user confused, farthest apart");
+  const qi = stops.indexOf(hexes[1]);
+  assert.ok(qi > 0 && qi < stops.length - 1, "question is a middle stop (teal-blue)");
+  const hs = hexes.map((h) => oklch(h).h);
+  for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++)
+    assert.ok(hueGap(hs[i], hs[j]) >= MIN_HUE_GAP, `${STEPS[i]} and ${STEPS[j]} are ${hueGap(hs[i], hs[j]).toFixed(0)} degrees apart, under ${MIN_HUE_GAP}`);
+  const ink = oklab(token(b, "--fg"));
+  hexes.forEach((h, i) => assert.ok(dist(oklab(h), ink) >= INK_GAP, `${STEPS[i]} is ${dist(oklab(h), ink).toFixed(3)} from --fg, too close to the ink`));
+});
 
-test("the comment beside the tokens names the same two endpoints, and the tokens hold their theme's accent hue", () => {
-  assert.match(CSS, /L \.65, C \.10[\s\S]{0,500}L \.85, C \.078/, "the dark line's two endpoints, in the :root comment");
-  assert.match(CSS, /L \.50, C \.11[\s\S]{0,300}L \.30, C \.098/, "the light line's two endpoints, in the light comment");
-  assert.match(CSS, /hue pinned\s+at the accent's 244/);
-  assert.match(CSS, /The trade-off is span against distance from the ink/, "the comment states the trade-off the far end makes");
-  assert.match(CSS, /reads at 4\.5:1 on the PROVISIONAL card, the darkest ground a kind word sits on/, "the comment names the wash as the floor, not the box");
-  // the accent itself sits on each line's hue: the ramp is the accent's family, not a neighbour's
-  assert.ok(hueGap(oklch(token(block(":root {"), "--accent")).h, MAPS.dark.hue) <= 8, "the dark accent's hue is the dark line's");
-  assert.ok(hueGap(oklch(token(block("body.theme-light {"), "--accent")).h, MAPS.light.hue) <= 8, "the light accent's hue is the light line's");
+test("light: the same three hues, each deepened on its own hue for the cream page, a hue apart and clear of the ink", () => {
+  const dark = block(":root {"), light = block("body.theme-light {");
+  const pairs = STEPS.map((n) => ({ name: n, d: oklch(token(dark, n)), l: oklch(token(light, n)) }));
+  for (const p of pairs) {
+    assert.ok(hueGap(p.l.h, p.d.h) <= 4, `${p.name}: the light hue ${p.l.h.toFixed(1)} is not the dark stop's ${p.d.h.toFixed(1)}`);
+    assert.ok(p.l.L < p.d.L - 0.1, `${p.name}: the light token (L ${p.l.L.toFixed(3)}) is not deepened below the stop (L ${p.d.L.toFixed(3)})`);
+  }
+  for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++)
+    assert.ok(hueGap(pairs[i].l.h, pairs[j].l.h) >= MIN_HUE_GAP, `${STEPS[i]} and ${STEPS[j]} (light) are ${hueGap(pairs[i].l.h, pairs[j].l.h).toFixed(0)} degrees apart`);
+  const ink = oklab(token(light, "--fg"));
+  STEPS.forEach((n) => assert.ok(dist(oklab(token(light, n)), ink) >= INK_GAP, `${n} (light) is too close to the ink`));
+});
+
+test("the mapping is written once, beside the dark tokens, and names the colormap", () => {
+  assert.match(CSS, /coordinate = the ramp's first stop \(green\), question = its fourth stop \(teal-blue\), delegate = its\s+last stop \(purple\)/,
+               "the :root comment states the mapping in one sentence");
+  assert.match(CSS, /default progress colormap \(aurora, bin\/romp_colormap\.py\)/, "the comment names the ramp and its file");
+  assert.match(CSS, /the :root comment holds the mapping/, "the light block's comment points at that one place");
 });

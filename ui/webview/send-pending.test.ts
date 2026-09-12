@@ -494,7 +494,7 @@ test("✕ on one of two identical bubbles removes that bubble's entry, never the
   assert.match(RENDER, /const mk = \(p: PendingSend\) => \(\{ md: p\.text, optimistic: true, cancelable: true, imgPaths: p\.imgPaths, lost: p\.lost, qts: p\.ts, qid: p\.qid \}\);/);
   assert.match(RENDER, /if \(el\.dataset\.qid\) msg\.qid = el\.dataset\.qid;/, "the cancel names the copy's id");
   assert.match(RENDER, /if \(t\.optimistic && t\.qts !== undefined\) x\.dataset\.qts = String\(t\.qts\);/);
-  assert.match(RENDER, /const qts = el\.dataset\.qts !== undefined \? Number\(el\.dataset\.qts\) : undefined;\s*\n\s*const qid = el\.dataset\.qid \|\| undefined;\s*\n\s*if \(dropPending\(list, qmd, qts, qid\)\) \{ if \(list\.length\) pendingSent\.set\(sidQ, list\); else pendingSent\.delete\(sidQ\); \}/);
+  assert.match(RENDER, /const qts = el\.dataset\.qts !== undefined \? Number\(el\.dataset\.qts\) : undefined;\s*\n\s*const qid = el\.dataset\.qid \|\| undefined;\s*\n\s*const own = list\.find\(\(p\) => \(qid && p\.qid === qid\) \|\| \(qts !== undefined && p\.ts === qts && p\.text === qmd\) \|\| \(!qid && qts === undefined && p\.text === qmd\)\);\s*\n\s*const rec = own \? \(own\.paths && own\.paths\.length \? own\.paths : own\.imgPaths\) : null;[^\n]*\n\s*if \(rec && rec\.length\) ownPaths = rec\.slice\(\);\s*\n\s*if \(dropPending\(list, qmd, qts, qid\)\) \{ if \(list\.length\) pendingSent\.set\(sidQ, list\); else pendingSent\.delete\(sidQ\); \}/);
   assert.doesNotMatch(RENDER, /list\.findIndex\(\(p\) => p\.text === qmd\)/);
 });
 
@@ -537,7 +537,7 @@ test("a send pressed against no frame (a placeholder tab): the first frame's cop
   assert.deepEqual(prompt[0].at?.seen, ["u-same-second"]);
   assert.equal(prompt[0].at?.after, "u-same-second");
   // render.ts marks the entry when the press finds no resident session, and stamps it nowhere else
-  assert.match(RENDER, /const p = newPending\(text, imgPaths, Date\.now\(\), qid\);\s*\n\s*arr\.push\(p\);/);
+  assert.match(RENDER, /const p = newPending\(text, imgPaths, Date\.now\(\), qid, paths\);\s*\n\s*arr\.push\(p\);/);
   assert.match(RENDER, /if \(!s\) \{ p\.late = true; return; \}/);
   // the clock the bound compares against: the kernel stamps the echo atom at its receipt of the send, in
   // whole seconds (sdk_backend.py send). That the chat builder ships every event's stamp as iso(t) is

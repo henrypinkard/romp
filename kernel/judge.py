@@ -1657,6 +1657,8 @@ def _fast_org_env():
         return env
 
 
+_DEFAULT_AUTH_FN = None        # kernel wiring: fn(reg) -> 'login' | 'key', SdkBackend.default_auth: the ONE billing resolver
+#                                (the reg's own pick, else the machine's explicit default when billable, else the helper rule)
 _LOGIN_AUTH_ENV_FN = None      # login tokens claimed out of the manager's ambient environment: the kernel
                                # wires sdk_backend.startup_auth_env; standalone reads the environment
 
@@ -1694,18 +1696,24 @@ def _judge_auth(fsid):
     user 2026-08-12: a judge rides the account of the session it judges, never a third choice and
     never a silent fall to the other one — a judge quietly billing the login on a session the user
     put on the key is the same wrong-account failure the per-session picker exists to prevent).
-    Same resolution as the picker (sdk_backend default_auth / effective_auth), read from the same
-    registry file: an explicit 'login' pick → login; anything else → the key when Claude Code's
-    settings carry an apiKeyHelper, else login. A call with no session (rows with no session) takes the same default a
-    fresh session would."""
-    a = lid = ""
+    THE resolution the picker uses, asked of the ONE resolver: the kernel wires _DEFAULT_AUTH_FN to
+    SdkBackend.default_auth, which reads the reg's own pick, else the machine's EXPLICIT default when this
+    box can bill it (T380; auth_unavailable_why: a logged-out login, a managed helper, an expired account
+    file all move the launch, the status and the flyout to the other side, and the judges with them — the
+    round-3 review found a seed re-read here that kept billing the login alone), else the helper rule. A
+    call with no session (rows with no session) takes the same default a fresh session would. A session billed to a STORED login (T346) is decided here first, from the reg's
+    own pick: the resolver names sides, and a stored login is a pick, never a default. Standalone
+    (tests, no kernel wiring) the registry file and the helper rule stand in: an explicit 'login' or 'key'
+    pick → that side; else the key when Claude Code's settings carry an apiKeyHelper, else login."""
+    reg = {}
     if fsid:
         try:
             reg = json.loads((SDKDIR / (fsid + ".json")).read_text())
-            a = reg.get("auth") or ""
-            lid = reg.get("authLogin") if isinstance(reg.get("authLogin"), str) else ""
+            reg = reg if isinstance(reg, dict) else {}
         except Exception:
-            a = lid = ""
+            reg = {}
+    a = reg.get("auth") or ""
+    lid = reg.get("authLogin") if isinstance(reg.get("authLogin"), str) else ""
     if a == "login" and lid and re.fullmatch(r"[0-9a-f]{12}", lid):
         # a session billed to a STORED login (T346): its judges bill that same login, carried as the pick value
         # 'login:<id>' so _judge_cmd names the login's helper and every latch and row says WHICH login. A stored
@@ -1721,6 +1729,13 @@ def _judge_auth(fsid):
             sys.stderr.write("romp-judge: session %s bills a stored login that is unavailable (%s); its judge calls bill "
                              "the %s instead\n" % (str(fsid or "")[:8], why, "API key" if fall == "key" else "machine's login"))
         return fall
+    if _DEFAULT_AUTH_FN is not None:
+        try:
+            side = str(_DEFAULT_AUTH_FN(reg) or "")
+            if side in ("login", "key"):
+                return side
+        except Exception:
+            pass   # the resolver failed: the standalone rule below decides, never a raise inside a judge call
     if a in ("login", "key"):
         return a
     return "key" if _key_available() else "login"
@@ -9095,7 +9110,89 @@ def _mint_anchor_uuid(seg):
     return None
 
 
-def plan_units(session, store=None):
+_UNSET_FLOOR = object()               # _placed_key / plan_units: derive the episode floor from the key when no pass-wide value is handed
+
+
+class _PlacementIndex:
+    """The placement lookup _placed_key makes, built ONCE per planner call (T377 review, medium 2): the recorded keys by their
+    timestamp-invariant form, so the guard per segment is a dictionary lookup and not a walk of every recorded key (with 20
+    unplaced of 300 segments over 2,300 keys the nudge gate's derivation had grown twelve-fold). The episode floor is taken
+    once for the index (handed in by the pass, else derived from the first key that needs it) and never moves within it."""
+
+    def __init__(self, placements, live, floor=_UNSET_FLOOR):
+        self.placements, self.live, self.floor = placements, live, floor
+        self.by_want = {}
+        for k in placements:
+            rb = k.split("#")[0]
+            self.by_want.setdefault(_seg_key(k), []).append((rb, _key_t(rb)))
+
+    def placed(self, key):
+        if key in self.placements:
+            return True
+        cands = self.by_want.get(_seg_key(key))
+        if not cands:
+            return False
+        kb = key.split("#")[0]
+        for rb, rt in cands:
+            if rb != kb:
+                if self.live is not None and rb in self.live:
+                    continue                          # the recorded key IS another live segment (a twin), not our drift
+                if self.floor is _UNSET_FLOOR:
+                    parts = key.split(":")
+                    self.floor = (episode_floor(":".join(parts[:-2])) if len(parts) >= 3 else None) or 0
+                if rt is not None and rt < (self.floor or 0):
+                    continue                          # recorded in a PRIOR episode (pre-/clear), not our drift
+            return True
+        return False
+
+
+def _seam_text(seg):
+    """The unit text of a segment as the planner frames it: _unit_text, with the seam note when the segment is a settle-time
+    seam tail (plans/segment-regrowth.md: work that came after a completed goal, the planner told so)."""
+    t = _unit_text(seg["atoms"])
+    if t and seg.get("seam"):
+        t = ("Note: everything below happened **after** the goal \"%s\" was already completed "
+             "and closed. If it is merely wrap-up, verification, or cleanup of that finished "
+             "goal, **skip** it — do not reopen. Only if it is a genuinely **new** or different "
+             "thread of work, mint a goal for it.\n\n" % ((seg.get("seamOf") or {}).get("text") or "?")) + t
+    return t
+
+
+def _work_note(seg):
+    """The note the planner prepends to an ended segment's WORK unit: a kernel status notice woke this stretch, or it is the
+    one-round wrap-up of cleared cards; '' otherwise."""
+    if _seg_system(seg):                              # a kernel status notice woke this stretch, not the user
+        return ("Note: this stretch was triggered by an automated romp notice (a kernel "
+                "restart or session resume), not by the user. If it is merely resuming, "
+                "re-verifying, or tidying up after the interruption, **skip** it — file "
+                "nothing and mint nothing. Only work that advances an open goal, or a "
+                "genuinely **new** thread of work, belongs on the board.\n\n")
+    if _seg_clearwrap(seg):                           # the ONE-round wrap-up of cleared card(s) (the user 2026-07-29)
+        return ("Note: this stretch is the one-time wrap-up of goals the user just "
+                "**cleared** off their board — a dismissal, not a completion. Never "
+                "re-create or reopen the cleared goals themselves. The wrap-up asks for "
+                "NO reply (the user 2026-07-29), so the DEFAULT is to **skip**: file "
+                "nothing and mint nothing. A session that merely stops, or reports what "
+                "it parked, or says nothing is pending, files nothing. Mint exactly "
+                "**one** new top-level goal, blocked on the user, ONLY when the session "
+                "raises something that genuinely needs them: an explicit question it is "
+                "waiting on, or a warning that the dismissal looks premature. The why is "
+                "that question, naming where any parked work is.\n\n")
+    return ""
+
+
+def unit_text_for(seg, phase):
+    """The text plan_units would have read for `seg`'s `phase` unit: what a consumer computes lazily when a unit yielded as
+    placed is nonetheless planned (T377: the planner reads no text for a placed unit)."""
+    if phase == "prompt":
+        ptext = _prompt_text(seg["atoms"])
+        return _strip_cmd_prefix(ptext, seg) if _seg_command(seg) else ptext
+    if phase == "work":
+        return _work_note(seg) + (_seam_text(seg) or "") if _seam_text(seg) else ""
+    return _seam_text(seg)
+
+
+def plan_units(session, store=None, floor=_UNSET_FLOOR):
     """Ordered (seg_id, phase, t, text, human, followup, trigger) planner units for the TWO-RUN model (the
     user 2026-06-21, via link_audit), oldest-first. `trigger` (the user 2026-07-01, via bugs) is the
     segment's trigger atom uuid (seg["trigger"], None for an autonomous/continuation segment with no
@@ -9128,6 +9225,20 @@ def plan_units(session, store=None):
     unit mints so follow-ups/nudges can quote the user's own words back (the user 2026-07-01, g13)."""
     turns = session["turns"]
     out = []
+    # T377 (2026-09-12): every consumer skips a unit the store already places (or reads its key alone), yet the unit TEXT was read
+    # for every ended segment first; over a restored tree that hydrated every pre-cut body from disk (1.06 GB per boot on the
+    # devbox, the judges' first pass). A placed unit is yielded with its key, time and scalars and NO text (None); the rest read
+    # their text after the placement check, exactly as before. `live_ids` is the current parse's segment ids (_placed_key's
+    # orphan rule, as run_plan hands it).
+    placed = (store.get("placements") or None) if isinstance(store, dict) else None
+    index = None
+    if placed:
+        live_ids = {sg["id"] for t_ in turns for sg in (_segs(t_, store) if store is not None else em.segments(t_))}
+        index = _PlacementIndex(placed, live_ids, floor)   # built once: the guard below is a lookup (review, medium 2)
+
+    def _placed_phase(seg, phase):
+        return index is not None and index.placed(_unit_key(seg["id"], phase))
+
     for ti, turn in enumerate(turns):
         turn_open = (ti == len(turns) - 1 and not turn["ended"]
                      and not any(a["type"] == "idle" for a in turn["atoms"]))
@@ -9140,22 +9251,31 @@ def plan_units(session, store=None):
                 #                                           real ask in its args — falls through and is planned like any
                 #                                           other prompt (the user 2026-07-22: a `/jld <request>` session
                 #                                           ran with NO card at all, not even a provisional one).
-            work_text = _unit_text(seg["atoms"])           # left framed ("USER ASKED: /jld …") — honest, and the
-            #                                               planner has the whole exchange for context. Only the raw
-            #                                               PROMPT gist below is stripped, since that one IS the title.
-            if not work_text:
-                continue
-            if seg.get("seam"):                           # settle-time seam tail (plans/segment-regrowth.md): work that
-                # continued past its goal's close. Tell the planner so wrap-up files without reopening
-                # and only a genuine PIVOT mints its own goal.
-                work_text = ("Note: everything below happened **after** the goal \"%s\" was already completed "
-                             "and closed. If it is merely wrap-up, verification, or cleanup of that finished "
-                             "goal, **skip** it — do not reopen. Only if it is a genuinely **new** or different "
-                             "thread of work, mint a goal for it.\n\n" % ((seg.get("seamOf") or {}).get("text") or "?")
-                             ) + work_text
+            _memo = []
+
+            def _wt(seg=seg, _memo=_memo):                # the unit text, read once and only when a unit of this segment is not
+                if not _memo:                             #  placed yet: a hydration over a restored tree (T377)
+                    _memo.append(_seam_text(seg))
+                return _memo[0]
+            if not any(_placed_phase(seg, ph) for ph in ("work", "prompt", "delegation", "live")) and not _wt():
+                continue                                  # an unplaced empty segment drops, as before; a placed segment yields its
+            #                                               unit without the emptiness check (no text is read for it), an inert unit
+            #                                               at worst, which every consumer skips as placed (review, low 1)
             is_open_final = turn_open and si == len(segs) - 1
             trig = _seg_anchor(seg)      # trigger, else the segment head — a minted node always gets an anchor
-            vq = _mint_quote(seg)
+            _vq = []
+
+            def _quote(seg=seg, _vq=_vq):                 # the minting quote reads the trigger's text: for an unplaced unit only
+                if not _vq:                               #  (a placed unit mints nothing; T377)
+                    _vq.append(_mint_quote(seg))
+                return _vq[0]
+
+            def _put(phase, text_fn, human_, followup_, seg=seg, trig=trig):
+                if _placed_phase(seg, phase):             # placed already: the key, time and scalars; no text and no quote read
+                    out.append((seg["id"], phase, seg["t"], None, human_, followup_, trig, None)); return
+                t = text_fn()
+                if t:
+                    out.append((seg["id"], phase, seg["t"], t, human_, followup_, trig, _quote()))
             if not is_open_final and not _has_asst_work(seg["atoms"]):
                 # The segment ENDED with no assistant work at all — the turn died before producing anything
                 # (an API-error storm that exhausted; isApiError records don't count, same rule as the
@@ -9169,11 +9289,8 @@ def plan_units(session, store=None):
                 # stays re-nudgeable, a workless delegation stays unfiled.
                 if (_seg_human(seg) and not _seg_followup(seg) and not _seg_nudge(seg)
                         and not _seg_peer(seg)):
-                    ptext = _prompt_text(seg["atoms"])
-                    if _is_cmd:
-                        ptext = _strip_cmd_prefix(ptext, seg)
-                    if ptext:
-                        out.append((seg["id"], "prompt", seg["t"], ptext, True, None, trig, vq))
+                    _put("prompt", lambda: (_strip_cmd_prefix(_prompt_text(seg["atoms"]), seg) if _is_cmd   # the ask, not the invocation
+                                         else _prompt_text(seg["atoms"])), True, None)
                 elif _seg_followup(seg) and not _seg_nudge(seg) and not _seg_peer(seg):
                     # A workless FOLLOW-UP is still JUDGED (the user 2026-08-08, the beacon g10 card):
                     # the card reply armed the fold's msg-reopen latch (followupPending — the card pins
@@ -9186,13 +9303,12 @@ def plan_units(session, store=None):
                     # own reopen/dismiss row is the release, and _strip_unevidenced_dones keeps a
                     # workless reply from CLAIMING completion (the closer holds done authority). Nudges
                     # keep their skip: their machinery re-asks and escalates on its own.
-                    out.append((seg["id"], "work", seg["t"], work_text, _seg_human(seg),
-                                _seg_followup(seg), trig, vq))
+                    _put("work", _wt, _seg_human(seg), _seg_followup(seg))
                 continue
             _pm = _seg_peer(seg)
             if _pm and _pm[0]:                            # POSTAL segment with a KNOWN sender → DELEGATION work-run
                 if not is_open_final:                     # ended → the recipient's work is known; place it under G
-                    out.append((seg["id"], "delegation", seg["t"], work_text, False, None, trig, vq))
+                    _put("delegation", _wt, False, None)
                 continue                                  # peer segs never get a prompt-run or a normal work-run
             # A SENDER-LESS postal delivery (author.peer None: mail whose id the postal index can't
             # resolve — an external tool posting through the kernel's send route with no session
@@ -9209,11 +9325,8 @@ def plan_units(session, store=None):
                 if human and not followup and not _seg_slash_shaped(seg):
                     # slash-shaped → DEFER to the close (the CLI 2.1.215+ raw-record window; see
                     # _seg_slash_shaped): mid-window it may be a command whose wrapper hasn't landed
-                    ptext = _prompt_text(seg["atoms"])
-                    if _is_cmd:                           # same: the ask, not the invocation
-                        ptext = _strip_cmd_prefix(ptext, seg)
-                    if ptext:
-                        out.append((seg["id"], "prompt", seg["t"], ptext, human, followup, trig, vq))
+                    _put("prompt", lambda: (_strip_cmd_prefix(_prompt_text(seg["atoms"]), seg) if _is_cmd   # the ask, not the invocation
+                                         else _prompt_text(seg["atoms"])), human, followup)
                 if (human and store is not None and not _seg_nudge(seg)
                         and _live_anchor_gone(store, seg["id"], followup)):
                     # LIVE RE-PLAN (the user 2026-07-05): the user CLEARED this open segment's card out from
@@ -9223,34 +9336,13 @@ def plan_units(session, store=None):
                     # NUDGE segment (_seg_nudge): a nudge is an automated status check, and its reply
                     # re-minting a card the user just cleared would be the nudge system resurrecting
                     # dismissed work — the loop-interaction the design must rule out.
-                    out.append((seg["id"], "live", seg["t"], work_text, human, followup, trig, vq))
+                    _put("live", _wt, human, followup)
                 continue                                  # no work unit yet — its work hasn't ended
             if _seg_nudge(seg) and followup:              # a romp NUDGE on a goal → RESOLVE it (done/block), not a plain step
-                out.append((seg["id"], "nudge", seg["t"], work_text, False, followup, trig, vq))
+                _put("nudge", _wt, False, followup)
             else:
-                if _seg_system(seg):                      # a kernel status notice woke this stretch, not the user —
-                    # post-restart housekeeping files nowhere (the user 2026-07-08, g133: a resume-notice
-                    # verification sweep minted its own top-level card)
-                    work_text = ("Note: this stretch was triggered by an automated romp notice (a kernel "
-                                 "restart or session resume), not by the user. If it is merely resuming, "
-                                 "re-verifying, or tidying up after the interruption, **skip** it — file "
-                                 "nothing and mint nothing. Only work that advances an open goal, or a "
-                                 "genuinely **new** thread of work, belongs on the board.\n\n") + work_text
-                elif _seg_clearwrap(seg):                 # the ONE-round wrap-up of cleared card(s) (the user
-                    # 2026-07-24). It asks for NO reply since 2026-07-29, so this files NOTHING by default;
-                    # only a session that raises something needing the user mints one card, blocked on them.
-                    # Never the cleared goal reborn.
-                    work_text = ("Note: this stretch is the one-time wrap-up of goals the user just "
-                                 "**cleared** off their board — a dismissal, not a completion. Never "
-                                 "re-create or reopen the cleared goals themselves. The wrap-up asks for "
-                                 "NO reply (the user 2026-07-29), so the DEFAULT is to **skip**: file "
-                                 "nothing and mint nothing. A session that merely stops, or reports what "
-                                 "it parked, or says nothing is pending, files nothing. Mint exactly "
-                                 "**one** new top-level goal, blocked on the user, ONLY when the session "
-                                 "raises something that genuinely needs them: an explicit question it is "
-                                 "waiting on, or a warning that the dismissal looks premature. The why is "
-                                 "that question, naming where any parked work is.\n\n") + work_text
-                out.append((seg["id"], "work", seg["t"], work_text, human, followup, trig, vq))   # ENDED segment → WORK-run
+                prefix = _work_note(seg)                  # a kernel notice woke this stretch, or the cleared-cards wrap-up
+                _put("work", (lambda: prefix + _wt()) if prefix else _wt, human, followup)   # ENDED segment → WORK-run
     return out
 
 
@@ -10558,7 +10650,7 @@ def _migrate_placements(store, ready_keys, live):
     return True
 
 
-def _placed_key(placements, key, live=None):
+def _placed_key(placements, key, live=None, floor=_UNSET_FLOOR):
     """Timestamp-invariant membership: is `key` (a seg id, bare or '#p'/'#d'-suffixed) already recorded in
     placements? Exact hit first (the common no-drift case), else via _seg_key — so a segment whose parse t
     drifted after its placement was recorded still dedups instead of being re-planned (double-minted).
@@ -10581,8 +10673,8 @@ def _placed_key(placements, key, live=None):
         return True
     want = _seg_key(key)
     kb = key.split("#")[0]
-    floor = None
-    for k in placements:
+    floor = None if floor is _UNSET_FLOOR else (floor or 0)   # a pass hands its one floor (T377): the planner and its consumer
+    for k in placements:                                        #  must agree, and a /clear landing mid-pass must not move it
         if _seg_key(k) != want:
             continue
         rb = k.split("#")[0]
@@ -10773,7 +10865,9 @@ def _latch_prompt_msg_ids(session, store):
     it; the last delegate when a drained inbox holds several, the rule author_of applies to the delivery's peer), or ""
     when it carries no delegate (checked: a batched inbox whose first mail is a peer's coordinate and whose second the
     manager's dispatch is the manager's, and a delivery with no dispatch in it leaves _delegator_of its fallback, the
-    latest delegate at or before the mint; the manager's fourth review). The delegating peer of a top is then the
+    newest delegate at or before the mint whose relation stands, its own top open at the mint, walking past a stray
+    that anchored nothing (_standing_delegator); the manager's fourth review and the 2026-09-12 fix). The delegating
+    peer of a top is then the
     sender of THAT mail (_delegator_of), never merely the latest delegate the session received (a worker dispatched by
     two managers relays each block to the manager that asked, T334)."""
     cands = [nd for nd in store.get("nodes", {}).values()
@@ -11142,24 +11236,28 @@ def _plan_session(fsid, path, now):
     # planner that one goal's own raw history alongside its menu title (the user 2026-07-01) — no LLM
     # call, just an index over already-parsed atoms. Seam-aware (_segs) so a settle-split tail resolves.
     seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in _segs(turn, store)}
+    floor = episode_floor(fsid)                       # the placement verdict's one volatile input, taken ONCE for this pass and
+    #                                                   handed to the planner and to every re-derivation below (T377 review, medium
+    #                                                   1: a /clear landing mid-pass raised it between the two, and a unit the
+    #                                                   planner had yielded as placed reached the model with no text)
     live = set(seg_by_id)                             # current parse's seg ids: the _placed_key live-twin guard —
     #                                                   an identical-text twin (crash-heal restart resumes) must
     #                                                   not be swallowed as a "drift" of an already-placed one
     if store.get("placementsV") != PLACEMENTS_V:      # P2: seal/adopt on identity-version change (199118f)
-        ready = [_unit_key(u[0], u[1]) for u in plan_units(session, store)]
+        ready = [_unit_key(u[0], u[1]) for u in plan_units(session, store, floor=floor)]
         if _migrate_placements(store, ready, live):
             save_goals(fsid, store)
     units, retired, seen = [], False, set()
-    for u in plan_units(session, store):
+    for u in plan_units(session, store, floor=floor):
         seg_id, phase = u[0], u[1]
         key = _unit_key(seg_id, phase)
         if key in seen:                               # plan_units yields one unit per TURN, so a same-second
             continue                                  # identical-prompt burst (an auto-retry storm) repeats ONE
         #                                               seg id hundreds of times — each copy would get its own
         #                                               LLM call and file its own duplicate node (2026-07-06)
-        if _placed_key(store["placements"], key, live):   # drift-safe: a recorded key whose parse t has since
+        if _placed_key(store["placements"], key, live, floor=floor):   # drift-safe: a recorded key whose parse t has since
             continue                                  # shifted still dedups (this phase already placed)
-        if u[2] and u[2] < (episode_floor(fsid) or 0):
+        if u[2] and u[2] < (floor or 0):
             # PRE-EPISODE unit (the user 2026-07-27): its segment predates the current episode's head —
             # evidence from a conversation the agent can no longer see (_placed_key's own scoping rule),
             # reachable because the parse stitches the anchor transcript behind a /clear fork. Planning
@@ -11173,7 +11271,7 @@ def _plan_session(fsid, path, now):
             store["placements"][key] = None
             retired = True
             continue
-        if phase in ("prompt", "live") and _placed_key(store["placements"], seg_id, live):
+        if phase in ("prompt", "live") and _placed_key(store["placements"], seg_id, live, floor=floor):
             # Work already placed (legacy/fast segment) → this phase is moot, a FINAL ruling like the
             # courier's "fyi" below. RETIRE it rather than skipping: a bare `continue` left the key
             # ABSENT, and auto-nudge's placement gate (kernel `_auto_nudge_session`, `_unplanned`) asks
@@ -11188,7 +11286,7 @@ def _plan_session(fsid, path, now):
             continue
         if phase == "delegation":
             tgt = _placement_of(store["placements"], seg_id, live)   # the COURIER's verdict for this peer segment
-            if _placed_key(store["placements"], seg_id, live) and not (isinstance(tgt, str) and tgt in store["nodes"]):
+            if _placed_key(store["placements"], seg_id, live, floor=floor) and not (isinstance(tgt, str) and tgt in store["nodes"]):
                 # The courier RESOLVED this peer segment as COORDINATION ("fyi") — a FINAL verdict, never
                 # work to file under a goal. RETIRE the #d phase here (mark it processed, the user 2026-06-22
                 # via link_audit) so it stops being re-collected and re-skipped EVERY pass. (Historically this
@@ -11204,8 +11302,15 @@ def _plan_session(fsid, path, now):
         save_goals(fsid, store)                       # persist the retirements so they dedup out next pass
     placed = 0
     for seg_id, phase, seg_t, text, human, followup, trig, vq in units:
-        if _placed_key(store["placements"], _unit_key(seg_id, phase), live):
+        if _placed_key(store["placements"], _unit_key(seg_id, phase), live, floor=floor):
             continue                                  # placed while THIS pass applied an earlier unit — the
+        if text is None:                              # yielded as placed (no text read) yet planned here: the text is read now,
+            seg = seg_by_id.get(seg_id)               #  lazily, never None to the model (T377 review, medium 1)
+            if seg is None:
+                continue
+            text = unit_text_for(seg, phase)
+            if not text:
+                continue
         #                                               apply loop must uphold the same idempotence the
         #                                               collection loop checked at pass START (2026-07-06)
         away = _rewound_away(fsid, path, trig) if trig else False
@@ -12276,6 +12381,19 @@ def apply_group(store, menu, ops, t):
             child = menu[o["goal"] - 1]["id"]          # it) to a top-level card of its own — the inverse
             if child not in nodes or nodes[child].get("parentId") is None:
                 continue                               # merged away this reply, or already a top
+            ptop = nodes.get(_top_of(nodes, child) or "") or {}
+            if ptop.get("askAnchor") and ptop.get("askAnchor") != "machine" and not isinstance(nodes[child].get("origin"), dict):
+                for k in ("askAnchor", "askAnchorRecord", "promptMsgId"):   # a NON-machine parent's verdict (human,
+                    if k in ptop:                      #   scheduled, absent) comes along: the child's own mint record is
+                        nodes[child][k] = ptop[k]      #   a step's (a system record after a compaction, a notice), which
+                    else:                              #   a later latch would read as a machine anchor and hand the
+                        nodes[child].pop(k, None)      #   user's own decision to a peer (the manager's live case,
+                #                                          2026-09-12). A MACHINE parent's child is left to latch itself
+                #                                          from its own record: a system record reads machine with no
+                #                                          stamp and meets the standing-relation check, a typed record
+                #                                          reads human, where an inherited machine verdict would have
+                #                                          mailed the user's own question to the peer and dropped the top
+                #                                          out of the feed heal's hosts set (the verifier's first round)
             nodes[child]["parentId"] = None            # of group: a drifted tangent gets its own card
             if o.get("retitle"):                       # a step-phrased title may not stand alone as a card
                 nodes[child]["text"] = o["retitle"]
@@ -12872,12 +12990,12 @@ def _peer_name(sid):
         return ""
 
 
-_DELEG_CACHE = [None, {}]    # (mtime_ns, size), {to_sid: [(t, from_id), ...] ascending}: one scan per log change
+_DELEG_CACHE = [None, {}]    # (mtime_ns, size), {to_sid: [(t, from_id, mid), ...] ascending}: one scan per log change
 _DELEG_BY_MID = {}           # message id -> (from_id, to_sid) of that delegate row (filled by the same scan)
 
 
 def _delegates_to():
-    """{recipient sid: [(t, from_id), ...] ascending} for every DELEGATE row in the postal log that reached its recipient
+    """{recipient sid: [(t, from_id, mid), ...] ascending} for every DELEGATE row in the postal log that reached its recipient
     (a returned or withdrawn send, _learn_return, makes no entry): the team relation as the mail recorded it. The
     courier's planted origin, when present, is derived from these rows; today's stores hold none, so this is the
     primary record (T334). Cross-host rows key on the resolved to_sid like _postal_ask_maps."""
@@ -12904,7 +13022,7 @@ def _delegates_to():
             f, t_, ts = o.get("from_id"), o.get("to_sid") or o.get("to_id"), o.get("t")
             if not (f and t_ and ts) or str(o.get("id") or "") in returned or str(t_).startswith("peer:"):
                 continue
-            out.setdefault(str(t_), []).append((int(ts), str(f)))
+            out.setdefault(str(t_), []).append((int(ts), str(f), str(o.get("id") or "")))
             if o.get("id"):
                 by_mid[str(o["id"])] = (str(f), str(t_))
         for v in out.values():
@@ -12927,13 +13045,73 @@ def _delegate_sender(mid, sid=None):
     return frm if sid is None or str(to) == str(sid) else None
 
 
+def _open_at(nd, at):
+    """Whether node `nd` was open (neither done nor cleared) at evidence time `at`: its log folded up to that time, the
+    same fold that materializes its live state (_fold_node). A node whose log holds events, none of them by `at`, was
+    open then (its story had not begun); a node with NO log at all reads its live flags (an older store's node
+    completed before the log carried the story)."""
+    full = nd.get("log") or []
+    if not full:
+        return not nd.get("nodeComplete") and not nd.get("cleared")
+    log = [e for e in full if int(e.get("ev_t") or 0) <= int(at or 0)]
+    if not log:
+        return True
+    return _fold_node(dict(nd, log=log)).get("state") not in ("done", "cleared")
+
+
+def _dispatch_tops_open_at(nodes, at, exclude=None):
+    """{message id: whether a top it anchored was open at evidence time `at`} over the parentless nodes other than
+    `exclude`, keyed by the latch's stamp (promptMsgId) and the courier's planted origin (origin.msgId) alike; a mail
+    two tops name is open when either was (_open_at). Built once per attribution, so the walk over the delegate rows
+    costs a lookup per row rather than a pass over the store (the verifier's second round: rows times tops per call)."""
+    out = {}
+    for tid, tn in nodes.items():
+        if tid == exclude or not isinstance(tn, dict) or tn.get("parentId") is not None:
+            continue
+        o = tn.get("origin") if isinstance(tn.get("origin"), dict) else {}
+        mids = {str(tn.get("promptMsgId") or ""), str(o.get("msgId") or "")} - {""}
+        if not mids:
+            continue
+        opened = _open_at(tn, at)
+        for m in mids:
+            out[m] = out.get(m, False) or opened
+    return out
+
+
+def _standing_delegator(nodes, rows, at, exclude=None):
+    """The sender of the NEWEST delegate row ((t, from_id, mid) of _delegates_to) at or before `at` whose relation
+    stands, else None. A relation stands when a top of this store other than `exclude` carries the row's mail as its
+    anchor, by the latch's stamp or the courier's planted origin, and was open at `at` (_dispatch_tops_open_at). A
+    dispatch that anchored no top (handled without a goal) or whose top had finished is no standing relation; a row
+    with no message id sustains nothing (nothing could name it); and a stray later delegate from another peer that
+    anchored nothing (a hand-off note) is walked past, so it neither captures the block nor strands it as the user's
+    while the manager's dispatch top is open (the verifier's first round)."""
+    before = [r for r in rows if r[0] <= at]
+    if not before:
+        return None
+    open_by_mid = _dispatch_tops_open_at(nodes, at, exclude=exclude)
+    for row in reversed(before):
+        mid = str(row[2] or "") if len(row) > 2 else ""
+        if mid and open_by_mid.get(mid):
+            return row[1]
+    return None
+
+
 def _delegator_of(store, nid):
     """The peer that delegated the work `nid` sits under, or None when the goal is the user's own. Two records, the
-    courier's first: the top's planted origin.peer; else the sender of the latest DELEGATE mail this session received
-    at or before the top was minted (_delegates_to), provided the latch has POSITIVELY read the top's anchor as a
-    machine record (askAnchor "machine": the dispatch mail, never a prompt the user typed). An unlatched top, one
-    whose anchor is gone ("absent") or a scheduled prompt's top is left to the user (fail open to the block), whatever
-    mail the session got before. A top minted before any delegate reached the session predates the relation."""
+    courier's first: the top's planted origin.peer; else the sender of the DELEGATE mail the top's anchor names
+    (promptMsgId, the latch's stamp of the delivery's own dispatch), provided the latch has POSITIVELY read the top's
+    anchor as a machine record (askAnchor "machine": the dispatch mail, never a prompt the user typed). An unlatched
+    top, one whose anchor is gone ("absent") or a scheduled prompt's top is left to the user (fail open to the block),
+    whatever mail the session got before. A top whose anchor names no dispatch (a delivery holding only a peer's
+    heads-up, a watch notice, a record after a compaction; an unlatched stamp gets the same bound) falls back to the
+    newest delegate this session received at or before its mint whose dispatch stands as a relation: its own top,
+    latched or courier-planted, open at the mint (_standing_delegator, walking the rows newest first past any stray
+    delegate that anchored nothing; a row with no message id sustains nothing). A worker under a manager's standing dispatch mints later tops from notices and peers'
+    mails, and those blocks still go to the manager; a dispatch that anchored no top or whose top has finished is no
+    relation, and the fallback would otherwise hand the user's own decisions to whichever peer last sent any delegate
+    mail (the manager's live case, 2026-09-12: three decisions relayed to an unrelated peer nine hours after its mail,
+    whose reply lifted a wait nobody should have been in). The time proxy stands only on that event."""
     nodes = store.get("nodes", {})
     top = _top_of(nodes, nid) if nid in nodes else None
     tn = nodes.get(top) or {}
@@ -12945,9 +13123,9 @@ def _delegator_of(store, nid):
     sid = str(store.get("rompUuid") or str(nid).rsplit(":", 1)[0])
     peer = _delegate_sender(tn["promptMsgId"], sid) if tn.get("promptMsgId") else None   # the mail the anchor names, first
     if not peer:                                  # no mail id on the anchor, or one that is no dispatch to this session (a
-        before = [r for r in _delegates_to().get(sid, []) if r[0] <= int(tn.get("t") or 0)]   # stamp from before the
-        peer = before[-1][1] if before else None  #   delegate-kind rule, a quoted marker): the latest delegate at or
-                                                  #   before the mint, as for an anchor that names none
+        mint = int(tn.get("t") or 0)              #   stamp from before the delegate-kind rule, a quoted marker): the newest
+        peer = _standing_delegator(nodes, _delegates_to().get(sid, []), mint, exclude=top)   # delegate at or before the
+        #                                                                                       mint whose own top stood open then
     return None if not peer or ":" in peer else peer   # an ext: mailer or an unresolved cross-host key is no session that
                                                        #   could ever be asked (judge _presumed_closed: closed by construction)
 

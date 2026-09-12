@@ -2,7 +2,7 @@
 // what a link may preview, the routes' URLs, the one content shape per kind, and the hover's timing run on fake timers.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { PREVIEW_DWELL_MS, PREVIEW_GRACE_MS, HoverIntent, parsePreviewLink, previewKindOf, sliceUrl, fileUrl, langOf, baseName,
+import { PREVIEW_DWELL_MS, PREVIEW_GRACE_MS, HoverIntent, parsePreviewLink, previewKindOf, sliceUrl, fileUrl, previewRoute, langOf, baseName,
          contentFor, textOnlyContent, remoteLoad, stripRemoteLoads } from "./file-preview";
 
 test("parsePreviewLink: path#slug splits on a slug, a # that is not a slug stays in the path", () => {
@@ -36,24 +36,25 @@ test("the routes: the slice with its anchor and session, the bytes route for med
 
 test("contentFor fills the one shape per kind; a missing anchor falls back to the head with a one-line note", () => {
   const md = contentFor("docs/g.md", "", "markdown", "s", { title: "g.md", text: "# G\nbody", found: true, allowed: true });
-  assert.deepEqual(md, { kind: "markdown", title: "g.md", subtitle: undefined, body: { markdown: "# G\nbody" }, note: undefined, open: { label: "open", path: "docs/g.md", frag: undefined } });
+  assert.deepEqual(md, { kind: "markdown", title: "g.md", subtitle: undefined, body: { markdown: "# G\nbody" }, note: undefined });
   const sec = contentFor("docs/g.md", "fold", "markdown", "s", { title: "g.md", text: "## Fold\nabout folds", found: true, allowed: true });
-  assert.equal(sec.kind, "section"); assert.equal(sec.subtitle, "#fold"); assert.equal(sec.open!.frag, "fold");
+  assert.equal(sec.kind, "section"); assert.equal(sec.subtitle, "#fold");
+  assert.ok(!("open" in sec), "no open control on a file card: the link itself opens the file at the section (T369); the contract carries no such field since T375");
   const miss = contentFor("docs/g.md", "nope", "markdown", "s", { title: "g.md", text: "# G\nhead", found: false, allowed: true });
   assert.equal(miss.kind, "markdown"); assert.equal(miss.subtitle, undefined);
-  assert.equal(miss.note, 'no section "nope" in this file; its head instead'); assert.equal(miss.open!.frag, "nope", "open still tries the anchor the link named");
+  assert.equal(miss.note, 'no section "nope" in this file; its head instead'); assert.ok(!("open" in miss));
   const cut = contentFor("docs/g.md", "", "markdown", "s", { title: "g.md", text: "…", found: true, truncated: true, allowed: true });
-  assert.equal(cut.note, "the head of the file; open for the rest");
+  assert.equal(cut.note, "the head of the file; the link opens the rest");
   const code = contentFor("src/app.py", "", "code", "s", { title: "app.py", text: "print(1)", allowed: true });
   assert.deepEqual(code.body, { text: "print(1)", lang: "python" }); assert.equal(code.kind, "code");
   const img = contentFor("plots/a.png", "", "image", "s", null);
-  assert.deepEqual(img, { kind: "image", title: "a.png", body: { url: "/file?path=plots%2Fa.png&sid=s" }, open: { label: "open", path: "plots/a.png", frag: undefined } });
+  assert.deepEqual(img, { kind: "image", title: "a.png", body: { url: "/file?path=plots%2Fa.png&sid=s" } });
   const pdf = contentFor("r.pdf", "", "pdf", null, null);
   assert.equal(pdf.kind, "pdf"); assert.equal(pdf.subtitle, "first page"); assert.equal(pdf.body.url, "/file?path=r.pdf");
   const refused = contentFor("x.md", "", "markdown", "s", { allowed: false, why: "a secrets-shaped name" });
   assert.equal(refused.kind, "text"); assert.equal(refused.note, "a secrets-shaped name"); assert.equal(refused.body.text, "x.md");
   const t = textOnlyContent("/etc/hosts", "", "outside");
-  assert.deepEqual(t, { kind: "text", title: "hosts", subtitle: undefined, body: { text: "/etc/hosts" }, note: "outside", open: { label: "open", path: "/etc/hosts", frag: undefined } });
+  assert.deepEqual(t, { kind: "text", title: "hosts", subtitle: undefined, body: { text: "/etc/hosts" }, note: "outside" });
 });
 
 // a fake clock: timers fire in order when advanced
@@ -166,3 +167,19 @@ test("stripRemoteLoads on the inert tree: an img becomes its alt text, every oth
     "the remote img is its alt text (empty alt: nothing), the poster'd video and its source are gone, the remote track is gone from the local video, the svg keeps its local image, a link is not a load");
 });
 
+
+test("a remote session's preview fetches ride the host relay with the bare sid, as the inline images do (T364)", () => {
+  // the popover asked the LOCAL origin for a remote session's file and got the wrong kernel's answer; the route is the
+  // one preview.ts builds for an inline image: /remote/<host>/file with the sid the remote kernel knows
+  const rsid = "TESTHOST:11111111-2222-3333-4444-555555555555";
+  assert.deepEqual(previewRoute(rsid), { base: "/remote/TESTHOST/file", sid: "11111111-2222-3333-4444-555555555555" });
+  assert.deepEqual(previewRoute("11111111-2222-3333-4444-555555555555"), { base: "/file", sid: "11111111-2222-3333-4444-555555555555" });
+  assert.deepEqual(previewRoute(null), { base: "/file", sid: "" });
+  assert.equal(sliceUrl("docs/a.md", rsid, "top"), "/remote/TESTHOST/file?path=docs%2Fa.md&slice=1&sid=11111111-2222-3333-4444-555555555555&anchor=top");
+  assert.equal(fileUrl("plots/a.png", rsid), "/remote/TESTHOST/file?path=plots%2Fa.png&sid=11111111-2222-3333-4444-555555555555");
+  assert.equal(fileUrl("plots/a.png", "s"), "/file?path=plots%2Fa.png&sid=s", "a local session: the local route, unchanged");
+  const fs = require("node:fs"), path = require("node:path");
+  const PREVIEW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "preview.ts"), "utf8");
+  const FP = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "file-preview.ts"), "utf8");
+  for (const src of [PREVIEW, FP]) assert.match(src, /"\/remote\/" \+ encodeURIComponent\(host\) \+ "\/file" : "\/file"/, "the two builders share the relay's shape");
+});
