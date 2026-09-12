@@ -147,9 +147,11 @@ await page.routeWebSocket((u) => /[?&]col=2(?:&|$)/.test(u.href), (ws) => {
   const server = ws.connectToServer();
   col2Wire = ws; col2Held = [];
   ws.onMessage((m) => { try { const f = JSON.parse(m); if (f && f.type === "needFull") col2Asks.push([f.id, f.why || ""]); } catch (e) { /* a non-JSON frame */ } server.send(m); });
-  server.onMessage((m) => { if (holdCol2) col2Held.push(m); else ws.send(m); });
+  server.onMessage((m) => { if (holdCol2) { col2Held.push(m); if (heldOnceResolve) { heldOnceResolve(); heldOnceResolve = null; } } else ws.send(m); });   // the first held frame resolves heldOnce: step 11 writes the arrangement only once the kernel's burst is in hand
   server.onClose(() => ws.close()); ws.onClose(() => server.close());
 });
+let heldOnceResolve = null, heldOnce = Promise.resolve();   // armed with the hold (below): resolves on the first frame held at the wire
+const armHeldOnce = () => { heldOnce = new Promise((r) => { heldOnceResolve = r; }); };
 const releaseCol2 = () => { holdCol2 = false; const held = col2Held.splice(0); for (const m of held) { try { col2Wire.send(m); } catch (e) { /* the column closed under the hold */ } } return held.length; };
 // The shell's log (the top document: every column's posts land there, and the store's writes are the shell's own): the
 // split's colEmpty traffic with its source frame, and every write of romp-chat-cols, stamped. And the lab's knob: the
@@ -458,7 +460,7 @@ await waitGone("chat-pane-2");
 await waitTabs("f-chat", [cfg.sidA, cfg.sidB, cfg.sidC]);
 await clickTab("f-chat", cfg.sidB); await waitActive("f-chat", cfg.sidB);
 await page.evaluate(() => { window.__shellLog = []; });
-holdCol2 = true;
+holdCol2 = true; armHeldOnce();
 await dragStart("f-chat", cfg.sidB);
 await waitFn(() => !!document.querySelector(".col-drop.col-drop-edge"), null, "step 11: the edge zone never mounted");
 const edge11 = await page.evaluate(() => { const z = document.querySelector(".col-drop.col-drop-edge"); const r = z.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
@@ -469,6 +471,9 @@ await page.mouse.up();
 out.s11 = { storeAtDrop: await page.evaluate(() => localStorage.getItem("romp-chat-cols")) };
 // the window: the column's bundle has evaluated (its page functions are published) while its kernel frames are still held
 out.s11.bundleUp = await page.waitForFunction(() => { const f = document.getElementById("f-chat-2"); try { return !!(f && f.contentWindow && typeof f.contentWindow.__rompTakeSessionState === "function"); } catch (e) { return false; } }, null, { timeout: T }).then(() => true).catch(() => false);
+// …and the kernel's connect burst has reached the wire (held there): on a slow runner the burst can trail the bundle by more
+// than the bundle's own evaluation, so the write waits for the first held frame, bounded, rather than assuming it
+await Promise.race([heldOnce, new Promise((r) => setTimeout(r, T))]);
 out.s11.heldAtWrite = col2Held.length;
 await page.evaluate(() => { const cur = localStorage.getItem("romp:vieworder") || "[]"; const next = cur.includes(", ") ? cur.replace(/, /g, ",") : cur.replace(/,/g, ", "); localStorage.setItem("romp:vieworder", next === cur ? cur + " " : next); });
 // the page's reaction to the event settles in its own task, the shell's (a colEmpty) one message hop later: one bounded beat
