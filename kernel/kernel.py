@@ -16260,8 +16260,10 @@ def _auth_avail():
 
 
 def _auth_avail_status():
-    """_auth_avail's availability half for the per-session status payload: {login, key, loginWhy?, keyWhy?}
-    — no acct (authAcct rides beside it) and no default (a live session has its own pick). Computed ONCE per
+    """_auth_avail's availability half for the per-session status payload: {login, key, loginWhy?, keyWhy?,
+    default} — no acct (authAcct rides beside it); `default` is the machine's seed, carried since T380 so the
+    tab menu's Billing flyout can mark it in its "Default for this machine" group (a live session has its own
+    pick; the default is what a NEW one, or one with no pick, launches on). Computed ONCE per
     pusher cycle (the cycle's _live_scope memo, the same idiom as its liveness snapshot): build_session asks
     for it per session per push, and each answer re-read sdk-defaults.json and both operator settings files
     (review 2026-09-09). Outside a cycle (a connect push on a handler thread, a test) it computes fresh."""
@@ -16269,7 +16271,7 @@ def _auth_avail_status():
     if memo is not None and "avail_status" in memo:
         return dict(memo["avail_status"])
     a = _auth_avail()
-    out = {k: a[k] for k in ("login", "key", "loginWhy", "keyWhy") if k in a}
+    out = {k: a[k] for k in ("login", "key", "loginWhy", "keyWhy", "default") if k in a}
     if memo is not None:
         memo["avail_status"] = dict(out)
     return out
@@ -17256,6 +17258,17 @@ def _drive(msg, client):
                     "after the current turn finishes." if be is _codex_backend else
                     "The permission mode could not be changed: no running backend owns this session.")
             client["send"](json.dumps({"type": "warn", "text": text}))
+        _push_soon()
+    elif t == "setAuth" and msg.get("value") in ("login", "key") and msg.get("scope") == "machine":
+        # the machine's DEFAULT billing (T380, the user 2026-09-12): the seed every new session and every
+        # session with no pick of its own launches on. Written on THIS kernel (the op routes to the session's
+        # owning host, so a remote session's flyout sets that host's default); no session is touched, so
+        # nothing reconnects. LOUD on refusal, the same reason vocabulary as a per-session pick.
+        if not be.set_auth_default(str(msg["value"])):
+            why = str(getattr(be, "auth_unavailable_why", lambda v: "")(str(msg["value"])) or "")
+            client["send"](json.dumps({"type": "warn",
+                                       "text": ("Couldn't set this machine's default billing: %s." % why) if why
+                                       else "Couldn't set this machine's default billing."}))
         _push_soon()
     elif t == "setAuth" and msg.get("value") in ("login", "key"):
         # per-session billing (login vs the manager env's API key) — SDK-only, applied via reconnect

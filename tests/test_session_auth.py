@@ -550,7 +550,7 @@ class AvailabilityOncePerCycle(unittest.TestCase):
             b = km._auth_avail_status()
             self.assertEqual(len(calls), 1, "one compute for the cycle")
             self.assertEqual(a, b)
-            self.assertEqual(a, {"login": True, "key": False, "keyWhy": km.jd._cred.WHY_NO_HELPER}, "the status half only")
+            self.assertEqual(a, {"login": True, "key": False, "keyWhy": km.jd._cred.WHY_NO_HELPER, "default": "login"}, "the status half, with the machine default since T380")
             a["login"] = False
             self.assertTrue(km._auth_avail_status()["login"], "a caller's mutation does not leak into the memo")
             km._live_scope.auth = None                                # the cycle closes
@@ -702,6 +702,31 @@ class SetAuth(_Keyed):
         # …and the next spawn seeds from it
         sid2 = self.be.spawn("m", "/tmp")
         self.assertEqual(sb.read_reg(self.be.state_dir, sid2).get("auth"), "login")
+
+    def test_the_machine_default_is_set_explicitly_and_a_session_pick_then_moves_it_no_more(self):
+        """T380 (the user 2026-09-12): the Billing flyout's Default group writes the seed every new session and every
+        session with no pick of its own launches on; a session with its own pick keeps it; once set explicitly the
+        per-session pick no longer seeds the default (before, the last pick did)."""
+        picked = self.be.spawn("p", "/tmp", auth="login")
+        self.assertTrue(self.be.set_auth_default("key"))
+        d = sb.read_sdk_defaults(self.be.state_dir)
+        self.assertEqual((d.get("auth"), d.get("authExplicit")), ("key", True))
+        self.assertEqual(sb.read_reg(self.be.state_dir, picked)["auth"], "login", "a session with its own pick is untouched")
+        self.assertEqual(sb.read_reg(self.be.state_dir, self.be.spawn("q", "/tmp")).get("auth"), "key", "a new session follows the default")
+        # a per-session pick is about that session now: the default stays where the user set it
+        sid = self.be.spawn("n", "/tmp")
+        self.assertTrue(self.be.set_auth(sid, "login"))
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("auth"), "key", "the explicit default is not moved by a session pick")
+        self.assertEqual(sb.read_reg(self.be.state_dir, sid)["auth"], "login")
+        self.assertTrue(self.be.set_auth_default("login"))
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("auth"), "login")
+        self.assertFalse(self.be.set_auth_default("credit-card"), "junk is not a side")
+
+    def test_the_machine_default_refuses_a_side_this_box_cannot_bill_with_the_reason(self):
+        self._no_helper()
+        self.assertFalse(self.be.set_auth_default("key"))
+        self.assertEqual(self.be.last_auth_refusal, sb._cred.WHY_NO_HELPER)
+        self.assertNotEqual(sb.read_sdk_defaults(self.be.state_dir).get("auth"), "key")
 
     def test_the_picker_pick_beats_the_remembered_default(self):
         sb.write_sdk_default(self.be.state_dir, auth="login")
@@ -956,16 +981,17 @@ class Availability(unittest.TestCase):
         a = km._auth_avail()
         self.assertNotIn("loginWhy", a)
         self.assertNotIn("keyWhy", a)
-        self.assertEqual(km._auth_avail_status(), {"login": True, "key": True})
+        self.assertEqual(km._auth_avail_status(), {"login": True, "key": True, "default": "key"},
+                         "the status half carries the machine default since T380 (the Billing flyout's Default group marks it)")
         self._world(FAKE_KEY, "")
         a = km._auth_avail()
         self.assertEqual(a["loginWhy"], km.jd._cred.WHY_NO_LOGIN)
-        self.assertEqual(km._auth_avail_status(), {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_NO_LOGIN})
+        self.assertEqual(km._auth_avail_status(), {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_NO_LOGIN, "default": "key"})
         self._world("", "aaaaaaaaaaaa")
         self.assertEqual(km._auth_avail()["keyWhy"], km.jd._cred.WHY_NO_HELPER)
         self._world(FAKE_KEY, "aaaaaaaaaaaa", managed=True)
         self.assertEqual(km._auth_avail()["loginWhy"], km.jd._cred.WHY_MANAGED_HELPER)
-        self.assertEqual(km._auth_avail_status(), {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_MANAGED_HELPER})
+        self.assertEqual(km._auth_avail_status(), {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_MANAGED_HELPER, "default": "key"})
         self.assertNotIn(FAKE_KEY, json.dumps(km._auth_avail()), "the reasons carry no key material either")
 
     def test_the_default_falls_to_the_side_that_exists_both_ways(self):
@@ -1091,6 +1117,11 @@ class DrivePlumbing(unittest.TestCase):
         self.assertIn('"setAuth", "endSession"', src.replace("\n", " "), "an ID_OPS member")
         self.assertIn('elif t == "setAuth" and msg.get("value") in ("login", "key"):', src)
         self.assertIn("def _set_auth_or_park(be, sid, value):", src)
+        # the machine's default (T380): the same op with scope "machine" writes the seed on THIS kernel and touches no session
+        self.assertIn('elif t == "setAuth" and msg.get("value") in ("login", "key") and msg.get("scope") == "machine":', src)
+        self.assertIn('if not be.set_auth_default(str(msg["value"])):', src)
+        self.assertLess(src.index('msg.get("scope") == "machine"'), src.index('elif t == "setAuth" and msg.get("value") in ("login", "key"):'),
+                        "the scoped arm is tried first: the plain arm would otherwise swallow it as a per-session pick")
         self.assertIn('_gate_or_park(sid, ("auth", value))', src)   # parks on the gate, or hands over (2026-09-05)
         self.assertIn('elif op[0] == "auth":', src)
         self.assertIn("be.set_auth(sid, op[1])", src)

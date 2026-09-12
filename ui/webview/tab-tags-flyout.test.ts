@@ -11,21 +11,31 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const at = RENDER.indexOf('const tagsItem = el("div", "ctx-item ctx-item-toggle ctx-item-tags");');
 const block = RENDER.slice(at, RENDER.indexOf('menu.appendChild(tagsItem);', at));
 
-test("hover-intent opens the flyout: the feed's 120ms, click still instant, hover never steals focus", () => {
-  assert.match(block, /const HOVER_INTENT_MS = 120;/);
-  assert.match(block, /tagsItem\.addEventListener\("pointerenter", \(\) => \{/);
-  assert.match(block, /hoverOpenT = window\.setTimeout\(\(\) => \{ hoverOpenT = null; openTagsFly\(false\); \}, HOVER_INTENT_MS\);/,
-    "hover opens WITHOUT focusing the input — a graze must not grab the keyboard");
-  assert.match(block, /openTagsFly\(true\);/, "click opens instantly and focuses");
-  assert.match(block, /cancelHoverTimers\(\);\s*\n\s*const openFly = menu\.querySelector\(".ctx-sub-tags"\);/,
-    "a click cancels any pending hover intent before acting");
+// the ONE flyout gesture (T380): wireFlyout, declared beside the menu builder, wires Tags and Billing alike
+const WIRE = RENDER.slice(RENDER.indexOf("function wireFlyout("), RENDER.indexOf("\n}\n", RENDER.indexOf("function wireFlyout(")));
+
+test("hover-intent opens the flyout: the feed's 120ms, click still instant, hover never steals focus (the one gesture, wireFlyout)", () => {
+  assert.match(RENDER, /const HOVER_INTENT_MS = 120;\nfunction wireFlyout\(menu: HTMLElement, item: HTMLElement, sel: string, open: \(byClick: boolean\) => HTMLElement \| null\): void \{/);
+  assert.match(block, /wireFlyout\(menu, tagsItem, "\.ctx-sub-tags", openTagsFly\);/, "Tags rides the shared gesture");
+  assert.match(WIRE, /item\.addEventListener\("pointerenter", \(\) => \{/);
+  assert.match(WIRE, /openT = window\.setTimeout\(\(\) => \{ openT = null; openNow\(false\); \}, HOVER_INTENT_MS\);/,
+    "hover opens WITHOUT focusing the input — a graze must not grab the keyboard (open(false))");
+  assert.match(WIRE, /openNow\(true\);/, "click opens instantly and may focus");
+  assert.match(WIRE, /cancel\(\);\s*\n\s*const fly = menu\.querySelector\(sel\);\s*\n\s*if \(fly\) \{ fly\.remove\(\); return; \}/,
+    "a click cancels any pending hover intent before acting; a second click folds the flyout");
+  assert.match(block, /if \(focusInput\) \(sub\.querySelector\("\.ctx-tag-input"\) as HTMLInputElement \| null\)\?\.focus\(\);/, "the click's focus is the Tags builder's own");
+  // Billing wears the same gesture (T380, the user 2026-09-12): hovering the row opens its flyout, no click needed
+  assert.match(RENDER, /wireFlyout\(menu, item, "\.ctx-sub-billing", \(\) => openBillingFly\(\)\);/);
+  assert.doesNotMatch(RENDER, /hoverOpenT|hoverCloseT|cancelHoverTimers|armHoverClose/, "the inline Tags copy of the gesture is gone: one definition");
 });
 
 test("diagonal tolerance: entering either surface cancels the close; leaving both closes", () => {
-  assert.match(block, /sub\.addEventListener\("pointerenter", cancelHoverTimers\);/);
-  assert.match(block, /sub\.addEventListener\("pointerleave", armHoverClose\);/);
-  assert.match(block, /tagsItem\.addEventListener\("pointerleave", armHoverClose\);/);
-  assert.match(block, /hoverCloseT = window\.setTimeout\(/, "the close is armed on leave with the same tolerance window");
+  assert.match(WIRE, /fly\.addEventListener\("pointerenter", cancel\);/);
+  assert.match(WIRE, /fly\.addEventListener\("pointerleave", armClose\);/);
+  assert.match(WIRE, /item\.addEventListener\("pointerleave", armClose\);/);
+  assert.match(WIRE, /closeT = window\.setTimeout\(\(\) => \{ closeT = null; menu\.querySelector\(sel\)\?\.remove\(\); \}, HOVER_INTENT_MS\);/, "the close is armed on leave with the same tolerance window");
+  assert.match(WIRE, /if \(fly && !fly\.dataset\.flyWired\)/, "the flyout's own tolerance listeners are wired once per flyout node");
+  assert.doesNotMatch(WIRE, /window\.addEventListener/, "no window listener: the harness slices count them");
 });
 
 test("expansion follows the standing side rule and the caret faces right", () => {

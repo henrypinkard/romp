@@ -14045,7 +14045,11 @@ class SdkBackend:
         # so a restart must restore "no init has landed yet", never the old side (both readers guard
         # with isinstance(..., bool), so None reads as absent).
         self._update_reg(sid, auth=value, authPending=True, apiKeyAuth=None)
-        write_sdk_default(self.state_dir, auth=value)   # the seed for the NEXT new session, like model/effort
+        # the seed for the NEXT new session, like model/effort — until the user sets the machine's default
+        # EXPLICITLY (set_auth_default, the Billing flyout's Default group, T380): from then on a per-session
+        # pick is about that session and moves no default
+        if not read_sdk_defaults(self.state_dir).get("authExplicit"):
+            write_sdk_default(self.state_dir, auth=value)
         s = self.sessions.get(sid)
         if s:
             s.auth = value
@@ -14057,6 +14061,24 @@ class SdkBackend:
             # transcript record, so without a synthesized chip an idle session's auth change shows
             # nothing at all.
             self._ack_cmd_chip(sid, "/auth", "/auth " + value, s.resume_sid)
+        return True
+
+    def set_auth_default(self, value: str) -> bool:
+        """Set the machine's DEFAULT billing (T380, the user 2026-09-12): the seed every new session and every
+        session with no pick of its own launches on (sdk-defaults.json `auth`, what spawn seeds a reg from and
+        default_auth falls to). Refuses a side this box cannot bill with the same reason a per-session pick
+        gets (auth_unavailable_why). Marks the default explicit (`authExplicit`), so a later per-session pick
+        no longer moves it. Touches no session: a session with its own pick keeps it, and one that follows
+        the default takes the new side at its next launch."""
+        if value not in ("login", "key"):
+            return False
+        why = self.auth_unavailable_why(value)
+        if why:
+            self.last_auth_refusal = why
+            self._log("auth: the machine default cannot be %s on this box: %s" % (value, why), problem=True)
+            return False
+        write_sdk_default(self.state_dir, auth=value, authExplicit=True)
+        self._log("auth: the machine's default billing is now %s (new sessions, and sessions with no pick of their own)" % value)
         return True
 
     def default_auth(self, reg: dict | None = None) -> str:

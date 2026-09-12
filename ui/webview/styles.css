@@ -698,6 +698,9 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    (the user 2026-06-26). The icon is the same metaphor as the timeline lane toggles; a .off icon is slashed
    + dimmed to show the flag is currently off (matching the timeline). */
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--box-border); }
+/* a flyout's group head (the Billing flyout's "Default for this machine", T380): a row that names the radios under it
+   and takes no gesture, so no hover wash; the radios below wear the menu's own current mark */
+.ctx-sub-head, .ctx-sub-head:hover { cursor: default; background: transparent; }
 .ctx-item-toggle { display: flex; align-items: flex-start; gap: 8px; }
 /* ON = the romp accent blue, matching the timeline lane's feed/mail icons (the user 2026-06-26); OFF = dim
    gray + slashed. So the same blue marks "enabled" in both the menu and the timeline. */
