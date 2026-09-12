@@ -1006,12 +1006,40 @@ that never settles again; the pass is bounded per cycle (`ROMP_CKPT_CONVERGE_MS`
 default 150 ms of wall, and `ROMP_CKPT_CONVERGE_MB`, default 8 MB of documents
 written plus leaf bytes read for a heal), heals a legacy bare cursor under the
 same budget, and never rewrites a document that already carries every fold
-that ran. A leaf unchanged for longer than the reader keeps a quiescent
+that ran. An idle session's leaf, which no settle reaches and the pass must
+refuse, converges at the reader's quiescence drop instead: when a fold that
+drops quiescent files ends over a file unchanged for two minutes, its document
+is written from the entry in memory (the boot's own read, whichever fold made
+it) if a write would improve it with a state the process holds (the pass's
+rule, `_path_needs_write`; a dirty path counts here and not for the pass, and a
+fold cold for want of a state counts for the pass, which heals it, and not
+here, where it would only be written cold again), before the entry is popped,
+and on a hit or a restore at the witness the entry stays as it always has. The
+write is charged to the pusher cycle's byte budget, which the kernel begins at
+each cycle's start and the pass shares near its end; over the budget the write
+and the drop wait with the entry held (`converge.dropDeferred`), the drop then
+owed and paid at the next cycle's start with the room that cycle has, oldest
+first, or by the next fold over the file, whichever comes first. A document
+already whole is never rewritten at a later drop (`converge.dropWrites` counts
+the writes), and a dropped file's next fold restores its cursor from the
+document over a tail read instead of reading the file whole, provided the
+document's cursor carries a state: against a state the process holds, a cursor
+without one (an over-cap, cold or legacy bare write) is refused and the fold
+reads whole as before, so a complete state is never replaced by a tail-only one.
+The knobs: `ROMP_CKPT_CONVERGE_MS=0` turns the pass off and the drop write with
+it (the drop then pops as it did before the write existed); `ROMP_CKPT_CONVERGE_MB`
+is the cycle budget both charge, and `0` turns the drop write off the same way
+rather than deferring every drop; both are read where the drop lives, so they
+hold from the first fold, before the first pusher cycle begins. The owed table
+is bounded: over it the oldest owed drop is paid by its pop alone, and an owed
+file since deleted has its entry popped when the cycle pays. A leaf unchanged for longer than the reader keeps a quiescent
 file's whole entry (two minutes) is refused by the pass and counted under
 `quiescent`: its heal would read the file whole every cycle and the write
 would find no entry (the boot's cold refold or the next settle converges it);
 a path the pass refused or whose write produced nothing is skipped until its
-file changes (`skipped`); `ROMP_CKPT_CONVERGE_MS=0` turns the pass off. Every
+file changes under the reader (`skipped` counts each such hold once, per file
+state, and the check reads the reader's own entry rather than stat the file
+while one is held); `ROMP_CKPT_CONVERGE_MS=0` turns the pass off. Every
 write merges the on-disk document's states for folds the
 writing process never ran (verified by that document's stat and guard as a
 restore would), so a rewrite from one process's cursors strips no state an
@@ -1437,7 +1465,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   whose cursor it dropped so its next run reads the file whole once, and
   `docReadBytes`, the documents the pass's writes read for their carry,
   `quiescent` for leaves refused as quiescent, `skipped` for candidates held
-  off until their file changes), `coldWrites` (per fold name, writes that kept such a tail-only state
+  off until their file changes, once per hold, `dropWrites` and `dropDeferred`
+  for the documents written at the reader's quiescence drop and the drops
+  deferred a cycle for the shared budget), `coldWrites` (per fold name, writes that kept such a tail-only state
   out of the document so no later kernel restores it as complete), `droppedRestores` (a
   restore lost to a read that replaced the entry under it; the reader
   serializes reads per path, so this should stay at zero), `documentBytes`

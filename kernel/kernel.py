@@ -9823,8 +9823,11 @@ except Exception:
 _CKPT_SETTLE_SEEN = {}          # sid -> (turn-end key, states-log stat) at the last checkpoint write of its files
 _CKPT_PERIODIC_SEEN = {}        # sid -> (leaf stat, monotonic time) at the last PERIODIC write (see _persist_checkpoints)
 CKPT_PERIOD_S = float(os.environ.get("ROMP_CKPT_PERIOD_S", "30"))   # a session mid-turn for hours writes at least this often
-CKPT_CONVERGE_MS = float(os.environ.get("ROMP_CKPT_CONVERGE_MS", "150"))          # the converge pass's wall budget per pusher cycle (T360)
-CKPT_CONVERGE_BYTES = int(float(os.environ.get("ROMP_CKPT_CONVERGE_MB", "8")) * 1024 * 1024)   # ...and its bytes (documents written plus leaves read for a heal)
+CKPT_CONVERGE_MS = em._CKPT_CONVERGE_MS_DEFAULT   # the converge pass's wall budget per pusher cycle (T360); 0 turns the pass off and the
+#                                                    quiescence drop's write with it (T362); the event model reads the knob so both reach
+#                                                    the drop before the first cycle begins
+CKPT_CONVERGE_BYTES = em._CKPT_CYCLE_CAP_DEFAULT   # ...and its bytes (documents written plus leaves read for a heal), the cycle budget the
+#                                                     quiescence drop's writes share (T362); 0 turns those writes off too (the drop then pops as before)
 
 
 def _session_fold_files(sid, leaf):
@@ -9908,6 +9911,16 @@ def _stored_tree(path, sid):
 _CKPT_JUST_WRITTEN = set()          # the paths the settle write took this cycle; the converge pass skips them (T360 review, low 4)
 
 
+def _begin_checkpoint_cycle():
+    """The pusher cycle's START (T362 round one, lows 2 and 3): the cycle's checkpoint byte budget is whole again, shared by the
+    builds' quiescence-drop writes and the converge pass near the cycle's end (the boot's first builds are capped where the
+    volume is; before, the pass began the cycle and the first cycle's drops ran uncapped), and the drops an earlier cycle
+    deferred are paid with this cycle's room, oldest first, no fold over their files needed. The pass's off switch
+    (ROMP_CKPT_CONVERGE_MS=0) covers the drop write: the cycle begins with no budget, and the drop pops as before T362."""
+    em.checkpoint_cycle_begin(CKPT_CONVERGE_BYTES if CKPT_CONVERGE_MS > 0 else 0)
+    em.checkpoint_pay_owed_drops()
+
+
 def _converge_checkpoints(now):
     """The converge pass (T360), one per pusher cycle after the settle writes: the dirty documents that lack a complete
     state this process now holds (em.checkpoint_converge_candidates: a fold missing from the document because it never ran
@@ -9928,9 +9941,9 @@ def _converge_checkpoints(now):
         return 0
     em.converge_stat("passes")
     leaves = {str(s.get("path")) for s in _sessions(now) if s.get("path")}
-    t0 = time.monotonic(); spent = 0; n = 0
+    t0 = time.monotonic(); n = 0
     for i, p in enumerate(cands):
-        if i and (time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0 or spent > CKPT_CONVERGE_BYTES):
+        if i and (time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0 or not em.checkpoint_cycle_room(0)):
             em.converge_stat("deferred", len(cands) - i)   # gated on candidates PROCESSED, not documents written: a first
             break                                          #  candidate that writes nothing must not lift the budget (review)
         if p in leaves and em.file_quiescent(p):           # T361 (the live loop): a leaf unchanged past the reader's quiescence
@@ -9943,7 +9956,7 @@ def _converge_checkpoints(now):
             healed = _heal_cold_folds(p)                   # drops every tail-only cursor, reruns the five leaf folds
             if healed:
                 got = _read_bytes_of(p) - before
-                em.converge_stat("heals", len(healed)); em.converge_stat("healBytes", got); spent += got
+                em.converge_stat("heals", len(healed)); em.converge_stat("healBytes", got); em.checkpoint_cycle_charge(got)
             unhealed = [k for k in cold if k not in healed]
             if em.entry_whole_resident(p) and _prime_leaf_folds(p):
                 em.converge_stat("primed")
@@ -9956,21 +9969,24 @@ def _converge_checkpoints(now):
         except (OSError, AttributeError):
             pre = 0
         if pre:
-            em.converge_stat("docReadBytes", pre); spent += pre
+            em.converge_stat("docReadBytes", pre); em.checkpoint_cycle_charge(pre)
         if em.checkpoint_write(p):                         #  run reads the file whole once, and the path is no candidate for it
             n += 1
             try:
                 size = em._ckpt_file(p).stat().st_size
             except OSError:
                 size = 0
-            em.converge_stat("writes"); em.converge_stat("bytes", size); spent += size
+            em.converge_stat("writes"); em.converge_stat("bytes", size); em.checkpoint_cycle_charge(size)
         else:
             em.converge_stat("failed"); _converge_skip(p)  # nothing to write, or the write failed: not again until the file changes
     return n
 
 
-_CONVERGE_SKIP = {}                 # path -> the file's (mtime_ns, size) when the pass last refused or failed it (T361): the path is
-#                                     no candidate until that changes, so a refusal is one per file state, never one per cycle
+_CONVERGE_SKIP = {}                 # path -> [the file's (mtime_ns, size) when the pass last refused or failed it, the reader's own
+#                                     entry stamp (mtime, size) then, counted] (T361):
+#                                     the path is no candidate until that changes, so a refusal is one per file state, never one per
+#                                     cycle; `skipped` counts once per (path, file state) too (T362 low), and while the reader holds
+#                                     the file's entry the check reads that entry's stamp, no stat
 
 
 def _stat_key_ns(p):
@@ -9982,18 +9998,32 @@ def _stat_key_ns(p):
 
 
 def _converge_skip(p):
-    _CONVERGE_SKIP[p] = _stat_key_ns(p)
+    _CONVERGE_SKIP[p] = [_stat_key_ns(p), _entry_stamp(p), False]
     if len(_CONVERGE_SKIP) > 4096:
         _CONVERGE_SKIP.clear()
 
 
+def _entry_stamp(p):
+    """The file's (mtime, size) as the reader's own entry records it, when the reader holds one; None otherwise."""
+    with em._JSONL_CACHE_LOCK:
+        ent = em._JSONL_CACHE.get(p)
+    return None if ent is None else (ent[0], ent[1])
+
+
 def _converge_skipped(p):
-    """True while the file stands as it did when the pass last refused or failed it."""
-    k = _CONVERGE_SKIP.get(p)
-    if k is None:
+    """True while the file stands as it did when the pass last refused or failed it: the reader's entry says so without a stat
+    when it holds one (a stat only for a file the reader let go; an entry no fold has refreshed since an append holds the
+    skip too, and rightly: the process then holds nothing newer to write), and `skipped` counts the hold once, not every
+    cycle."""
+    row = _CONVERGE_SKIP.get(p)
+    if row is None:
         return False
-    if _stat_key_ns(p) == k:
-        em.converge_stat("skipped")
+    stamp = _entry_stamp(p)
+    held = (stamp is not None and stamp == row[1]) or _stat_key_ns(p) == row[0]
+    if held:
+        if not row[2]:
+            row[2] = True
+            em.converge_stat("skipped")
         return True
     _CONVERGE_SKIP.pop(p, None)
     return False
@@ -48775,6 +48805,10 @@ def _pusher_cycle():
 
 def _pusher_cycle_jobs(now, live_map, any_client):
     _t_jobs = time.monotonic()            # /perf: this function minus the _push_all below is the `jobs` stage
+    try:                                  # the cycle's checkpoint byte budget, whole again, and the drops owed from the last one
+        _begin_checkpoint_cycle()         # (T362): before the builds below, whose quiescence drops write against it
+    except Exception:
+        sys.stderr.write("checkpoint-cycle: %s\n" % traceback.format_exc())
     _t_push = 0.0
     try:                                  # parked ops deliver on the settle EVENT this cycle was woken for
         _apply_pending_ops()              # (_wake_kernel, /tick, a park/cancel/move, the 0.5 s backstop) —
