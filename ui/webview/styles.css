@@ -1682,11 +1682,18 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .tx-spacer { width: 100%; pointer-events: none; }
 /* "Loading earlier messages…" cue while a window expand/jump renders un-rendered history (render.ts). Pinned
    top-center of the chat pane, above the transcript, non-interactive. */
+/* T365 (the user 2026-09-12): the loading pill is anchored to the CHAT SECTION, never the viewport. showLoadingPill
+   inserts a zero-height .tx-loading-anchor right before #content in the page's flex column (tab bar, its resize grip,
+   the ledger box, then the transcript), so the pill's top edge follows the tab strip's bottom by layout alone, however
+   many rows the strip wraps into and however that changes while the pill shows; the viewport-fixed top:10px it had
+   sat on the tabs, and on the tabs themselves once the strip wrapped. The surface rides the menu tokens so it reads
+   on cream as on the dark page. */
+.tx-loading-anchor { position: relative; flex: 0 0 auto; height: 0; width: 100%; overflow: visible; z-index: 50; pointer-events: none; }
 .tx-loading-pill {
-  position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50;
-  background: rgba(20, 24, 33, 0.92); color: var(--accent, #9cd2ff); font-size: 12px; font-weight: 600;
-  padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: none;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4); border: 1px solid rgba(156, 210, 255, 0.25);
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50;
+  background: var(--vscode-menu-background, var(--surface-raised)); color: var(--accent, #9cd2ff); font-size: 12px; font-weight: 600;
+  padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: none; white-space: nowrap;
+  box-shadow: var(--shadow-toast); border: 1px solid var(--menu-border);
 }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
 .turn-tool, .turn-thinking, .turn-toolgroup { padding-top: 4px; padding-bottom: 4px; }
