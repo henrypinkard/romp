@@ -5757,8 +5757,25 @@ def _hydrate_one(a, rec):
     a.pop("lazy", None)
 
 
-_HYDRATE_TEXT_READERS = ("_unit_text", "_prompt_text", "_atom_text", "_atom_user_texts")   # the shared text readers (the judges'
-#                                   three and the kernel's user-texts reader): attributed with their caller
+_HYDRATE_TEXT_READERS = set()     # the CODE objects of the shared text readers (the judges' _unit_text, _prompt_text and _atom_text,
+#                                   the kernel's _atom_user_texts), each registered where it is defined: a hydration through one is
+#                                   attributed with the reader's caller. Matched by code object, never by name (T384 round three: a
+#                                   local function named like a reader was consumed as one)
+
+
+def register_hydrate_text_reader(*fns):
+    """Register shared text readers the hydration attribution names together with their caller."""
+    for fn in fns:
+        _HYDRATE_TEXT_READERS.add(fn.__code__)
+
+
+def unregister_hydrate_text_reader(*fns):
+    for fn in fns:
+        _HYDRATE_TEXT_READERS.discard(fn.__code__)
+
+
+def hydrate_text_reader_registered(fn):
+    return fn.__code__ in _HYDRATE_TEXT_READERS
 
 
 def hydrate(atoms, rompuuid=None, by=None):
@@ -5778,9 +5795,9 @@ def hydrate(atoms, rompuuid=None, by=None):
             while f is not None and _synthetic_scope(f):  # a comprehension's or generator expression's own frame is no caller
                 f = f.f_back
             by = f.f_code.co_name if f is not None else "?"
-            if by in _HYDRATE_TEXT_READERS:               # a text reader every walker shares says nothing about WHO walked: the
-                g = f.f_back                              #  first caller outside the shared readers is recorded with it (T377:
-                while g is not None and (g.f_code.co_name in _HYDRATE_TEXT_READERS or _synthetic_scope(g)):   #  naming the boot's
+            if f is not None and f.f_code in _HYDRATE_TEXT_READERS:   # a text reader every walker shares says nothing about WHO
+                g = f.f_back                              #  walked: the first caller outside the shared readers is recorded with it
+                while g is not None and (g.f_code in _HYDRATE_TEXT_READERS or _synthetic_scope(g)):   #  (T377: naming the boot's
                     g = g.f_back                          #  reader; a reader reached through another reader, or through a
                 by = "%s<-%s" % (by, g.f_code.co_name if g is not None else "?")   #  comprehension's frame, still names the walker)
         except Exception:

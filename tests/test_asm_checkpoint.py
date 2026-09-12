@@ -728,8 +728,9 @@ class HydrationAttribution(Harness):
         modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
         atoms = [a for t in tree["turns"] for a in t["atoms"]]
         em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
-        def _unit_text(atoms):                                  # the reader's name, as the judges' is
+        def _unit_text(atoms):                                  # a stand-in for the judges' reader, registered like it
             return em.hydrate(atoms)
+        em.register_hydrate_text_reader(_unit_text); self.addCleanup(em.unregister_hydrate_text_reader, _unit_text)
         def some_walker():
             return _unit_text(atoms)
         some_walker()
@@ -742,10 +743,35 @@ class HydrationAttribution(Harness):
             return em.hydrate(atoms)
         def _prompt_text(atoms):
             return _atom_text(atoms)
+        em.register_hydrate_text_reader(_atom_text, _prompt_text)
+        self.addCleanup(em.unregister_hydrate_text_reader, _atom_text, _prompt_text)
         def other_walker():
             return _prompt_text(atoms)
         other_walker()
         self.assertEqual(list(em.asm_checkpoint_stats()["hydratedBy"]), ["_atom_text<-other_walker"], "the first caller outside the shared readers")
+
+    def test_the_shared_readers_are_matched_by_code_object_not_by_name(self):
+        """Round three, low 2: the shared text readers were matched by NAME, so a local function named like one was consumed as
+        the reader (the whole-read passthrough already matches by code object for the same reason). The real readers are
+        registered where they are defined; a same-named local function is a walker, and the stand-ins the attribution tests use
+        register themselves."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("byobj", records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+        atoms = [a for t in tree["turns"] for a in t["atoms"]]
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        def _atom_user_texts(a):                                # a walker that merely shares a shared reader's name
+            return em.hydrate([a])
+        def unrelated_walker():
+            return [_atom_user_texts(a) for a in atoms]
+        unrelated_walker()
+        by = em.asm_checkpoint_stats()["hydratedBy"]
+        self.assertEqual(list(by), ["_atom_user_texts"], "a same-named local function is the caller, not a shared reader: %s" % by)
+        km = kernel_module()
+        self.assertTrue(em.hydrate_text_reader_registered(km._atom_user_texts), "the kernel's reader is registered")
+        self.assertTrue(all(em.hydrate_text_reader_registered(f) for f in (km.jd._unit_text, km.jd._prompt_text, km.jd._atom_text)),
+                        "the judges' three readers are registered")
 
     def test_a_walk_from_inside_a_generator_expression_names_the_enclosing_function(self):
         """The 1e60c712 head went red on Python 3.10 and 3.11: a list comprehension there runs in its own frame (inlined from
@@ -773,8 +799,9 @@ class HydrationAttribution(Harness):
         self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
         em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
         atoms = [a for t in tree["turns"] for a in t["atoms"]]
-        def _atom_user_texts(a):                                # a shared reader reached from a comprehension inside a walker
+        def _atom_user_texts(a):                                # a stand-in shared reader reached from a comprehension inside a walker
             return em.hydrate([a])
+        em.register_hydrate_text_reader(_atom_user_texts); self.addCleanup(em.unregister_hydrate_text_reader, _atom_user_texts)
         def listcomp_walker():
             return [_atom_user_texts(a) for a in atoms]
         listcomp_walker()
@@ -842,19 +869,19 @@ class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
     def test_a_marker_without_tool_use_scalars_is_an_answer_with_no_tool_call_and_hydrates_nothing(self):
         """Round two, medium: the writer records `tu` only when an atom has tool calls, so a marker without it is the common
         prose-only answer (the version gate and the source pin make any other marker shape unreachable). The reader takes it as
-        an empty set: no body read (a fallback read here hydrated every prose-only answer the walk met)."""
-        for name in COMPACTING:                                        # a scenario with a prose-only assistant answer before the cut
-            records, sent = G.SINGLE_FILE[name]
-            path = self.write("notu-" + name, records(), sent=sent)
-            self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
-            self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
-            prose = [a for t in tree["turns"] for a in t["atoms"] if a.get("type") == "assistant" and a.get("lazy") is not None and "tu" not in a["lazy"]]
-            if prose:
-                break
-        self.assertTrue(prose, "prose-only pre-cut answers in play (markers without tu)")
+        an empty set: no body read (a fallback read here hydrated every prose-only answer the walk met). The tree holds a
+        prose-only marker BESIDE a marker carrying calls before the cut, the production shape, so one tree pins both (round
+        three, low 1: the earlier scenario had no tool call at all and compared two empty sets)."""
+        records, sent = G.SINGLE_FILE["eclipsed_branch_kept"]          # tool calls and prose-only answers, then a compaction after
+        path = self.write("notu-both", compacting_variant(records(), "notu"), sent=sent)   #  them: the whole scenario is pre-cut
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
         whole_ids = {b.get("id") for t in self.cold(path)["turns"] for a in t["atoms"] if a.get("type") == "assistant"
                      for b in ((a.get("message") or {}).get("content") or []) if isinstance(b, dict) and b.get("type") == "tool_use"}
+        self.assertTrue(whole_ids, "the fixture has tool calls")
         self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+        pre = [a for t in tree["turns"] for a in t["atoms"] if a.get("type") == "assistant" and a.get("lazy") is not None]
+        with_calls = [a for a in pre if "tu" in a["lazy"]]; prose = [a for a in pre if "tu" not in a["lazy"]]
+        self.assertTrue(with_calls and prose, "both shapes before the cut: %d with calls, %d prose-only" % (len(with_calls), len(prose)))
         em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
         found = self.km._seg_of_tool_uses(tree, {"placements": {}, "nodes": {}, "seq": 0}, list(whole_ids) + ["toolu_not_anywhere"])
         self.assertEqual(set(found), whole_ids, "the calls resolved from the scalars; the missing id resolves to nothing")
@@ -907,6 +934,21 @@ class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
         self.assertIn("_atom_user_texts<-_echo_landing_atoms", by, "%s" % by)
         self.assertIn("_atom_user_texts<-_merge_tx_sets", by, "%s" % by)
         self.assertNotIn("_atom_user_texts", by, "no bare row: %s" % by)
+
+    def test_the_floor_and_the_held_filter_share_one_holdable_echo_predicate(self):
+        """Round three, low 3: the four clauses (a text key, not a command, not dropped, not landed) were spelled out twice; one
+        predicate serves both, the held filter adding its two dependent clauses, so a clause added to one side cannot recreate
+        round two's low 4."""
+        import inspect
+        km = self.km
+        self.assertTrue(km._echo_holdable({"_echo_text": "a line"}))
+        for bad in ({"_echo_text": "a line", "command": True}, {"_echo_text": "a line", "dropped": True},
+                    {"_echo_text": "a line", "_landed": True}, {"_echo_text": ""}, {}):
+            self.assertFalse(km._echo_holdable(bad), "%r" % bad)
+        self.assertIn("_echo_holdable(", inspect.getsource(km._echo_landing_atoms))
+        frame = inspect.getsource(km._comments_frame)
+        self.assertIn("_echo_holdable(", frame)
+        self.assertNotIn('not a.get("dropped") and not a.get("_landed")', frame, "the clauses live in the predicate alone")
 
     def test_a_dropped_echo_below_the_cut_does_not_sink_the_landing_floor(self):
         """Round two, low 4: the floor was the min over every live echo with a text, but the frame holds only echoes that are not
