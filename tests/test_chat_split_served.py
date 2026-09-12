@@ -143,11 +143,16 @@ const out = { t0: Date.now() };
 // column's bundle evaluating and its first strip landing is then held open for as long as the step needs, never raced.
 const col2Asks = [];
 let holdCol2 = false, col2Held = [], col2Wire = null;
+// what column 2's OWN socket receives (the /perf counters are kernel-wide: another pane's frames land inside the window on a
+// slow runner): full session frames and status frames, counted as the kernel sends them, from the socket's connect
+let col2Fulls = 0, col2Statuses = 0, col2StatusNeed = 0, col2StatusResolve = null;
+const col2Count = (m) => { try { const f = JSON.parse(m); if (f && f.type === "session") col2Fulls++; else if (f && f.type === "status") { col2Statuses++; if (col2StatusResolve && col2Statuses >= col2StatusNeed) { col2StatusResolve(); col2StatusResolve = null; } } } catch (e) { /* a non-JSON frame */ } };
+const col2StatusesReach = (need, ms) => new Promise((r) => { col2StatusNeed = need; if (col2Statuses >= need) return r(); col2StatusResolve = r; setTimeout(r, ms); });   // bounded: the wait ends at the count or the cap
 await page.routeWebSocket((u) => /[?&]col=2(?:&|$)/.test(u.href), (ws) => {
   const server = ws.connectToServer();
-  col2Wire = ws; col2Held = [];
+  col2Wire = ws; col2Held = []; col2Fulls = 0; col2Statuses = 0;
   ws.onMessage((m) => { try { const f = JSON.parse(m); if (f && f.type === "needFull") col2Asks.push([f.id, f.why || ""]); } catch (e) { /* a non-JSON frame */ } server.send(m); });
-  server.onMessage((m) => { if (holdCol2) { col2Held.push(m); if (heldOnceResolve) { heldOnceResolve(); heldOnceResolve = null; } } else ws.send(m); });   // the first held frame resolves heldOnce: step 11 writes the arrangement only once the kernel's burst is in hand
+  server.onMessage((m) => { col2Count(m); if (holdCol2) { col2Held.push(m); if (heldOnceResolve) { heldOnceResolve(); heldOnceResolve = null; } } else ws.send(m); });   // the first held frame resolves heldOnce: step 11 writes the arrangement only once the kernel's burst is in hand
   server.onClose(() => ws.close()); ws.onClose(() => server.close());
 });
 let heldOnceResolve = null, heldOnce = Promise.resolve();   // armed with the hold (below): resolves on the first frame held at the wire
@@ -271,16 +276,18 @@ await waitTabs("f-chat-2", [cfg.sidB]);
 await waitActive("f-chat-2", cfg.sidB);
 await waitNoTabs("f-chat", [cfg.sidB]);
 await waitFn(() => window.__obs && (window.__obs.done || window.__obs.timedOut), null, "column 2 never painted B's transcript");
+const col2FullsAtPaint = col2Fulls;   // read as the paint is seen: the column's socket has carried B's full and nothing else's
 const perfAtPaint = await page.evaluate(() => window.__obs.perfAtPaint ? window.__obs.perfAtPaint : null);
 out.s1.col2Active = await activeIn("f-chat-2"); out.s1.col1After = await activeIn("f-chat");
 out.s1.col2Tabs = await tabsIn("f-chat-2"); out.s1.col1Tabs = await tabsIn("f-chat");
 out.s1.obs = await page.evaluate(() => { const { perfAtPaint, ...rest } = window.__obs; return rest; });
-out.s1.fullChatDelta = sends(perfAtPaint, "chat") - sends(perf0, "chat");   // read AT the paint: a later read could count the page's idle prefetch
-// the statuses trail the one full on a slow runner (strip, the full, then a status per other tab, in the ready arm's push):
-// wait for the kernel's counter to reach the board, bounded, instead of reading it at the paint
-const needStatus = sends(perf0, "status") + board - 1;
-const perfSettled = await page.waitForFunction(async (need) => { const p = await fetch("/perf").then((r) => r.json()); const c = ((((p || {}).sends || {}).full || {}).status || {}).count || 0; return c >= need ? p : false; }, needStatus, { timeout: T }).then((h) => h.jsonValue()).catch(() => null);
-out.s1.statusDelta = sends(perfSettled || perfAtPaint, "status") - sends(perf0, "status");
+// the diet, measured on column 2's OWN socket (kernel-wide /perf counters mix in other panes' frames on a slow runner):
+// the fulls the column received by the paint, and the statuses once they reach a frame per other tab (they trail the one
+// full in the ready arm's push: strip, the full, then the statuses), bounded
+out.s1.fullChatDelta = col2FullsAtPaint;
+await col2StatusesReach(board - 1, T);
+out.s1.statusDelta = col2Statuses;
+out.s1.perfFullDelta = sends(perfAtPaint, "chat") - sends(perf0, "chat"); out.s1.perfStatusDelta = sends(await perf(), "status") - sends(perf0, "status");   // the kernel-wide view, for the record
 out.s1.col2Asks = col2Asks.slice();
 out.s1.targetB = await targetOf(cfg.sidB); out.s1.targetA = await targetOf(cfg.sidA); out.s1.targetX = await targetOf(cfg.sidX);
 
@@ -700,8 +707,8 @@ class ServedChatSplit(unittest.TestCase):
         o = s["obs"]
         self.assertTrue(o["done"], "the observer saw B's transcript painted in column 2: %r" % o)
         self.assertGreaterEqual(s["statusDelta"], BOARD - 1,
-                                "a status frame per other tab: the column was served as a skeleton client, not whole: %r" % s)
-        self.assertEqual(s["fullChatDelta"], 1, "exactly one full per open, B's: never the board (eight per push before 2026-09-11), never the open's full twice, no prefetch (the column's one member is on screen): %r" % s)
+                                "a status frame per other tab on column 2's own socket: the column was served as a skeleton client, not whole: %r" % s)
+        self.assertEqual(s["fullChatDelta"], 1, "exactly one full session frame on column 2's own socket by the paint, B's: never the board (eight per push before 2026-09-11), never the open's full twice, no prefetch (the column's one member is on screen): %r" % s)
         self.assertEqual(s["col2Asks"], [], "the column asked for nothing: a status delivered ahead of its strip is held for the strip, never the no-base ask that loaded the board behind the view, one ask per withheld tab (2026-09-11): %r" % s)
         # the copy between the call and the paint: the pane loader, never the create flow's words or the no-sessions copy
         self.assertEqual(o["emptyState"], 0, "no 'No session open' / no-sessions copy in a column opened on a session: %r" % o)
