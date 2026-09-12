@@ -25,7 +25,7 @@ km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 class DoneConfirming(unittest.TestCase):
     def test_the_flag_reads_the_rollup_export_not_the_raw_node_flag(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('confirming = set(store.get("confirming") or ())', src,
                       "the store's rollup export is the one source")
         self.assertIn('"doneConfirming": (True if (column == "working" and nid in confirming) else None),', src,
@@ -34,7 +34,7 @@ class DoneConfirming(unittest.TestCase):
     def test_the_column_is_untouched_by_the_window(self):
         # "I definitely don't want a working done flicker" (the user 2026-07-24): the window annotates the
         # card; the column expression must not consult it.
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         start = src.index('column = ("needs_input"')
         col = src[start: src.index('else "completed" if col == "completed" else "working")', start)]
         self.assertNotIn("confirming", col, "the column expression never reads the confirming window")

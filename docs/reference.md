@@ -1624,7 +1624,39 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   goal-store publish moves that session's `store` component and no other
   tab's; the judge-pass generation busts the feed and timeline caches only.
   `romp perf` prints the split and the non-zero causes after the chat
-  average, and the moved count when it is non-zero.
+  average, and the moved count when it is non-zero. `feed` also carries
+  `memo`, the per-session card memo inside `build_feed`: each living
+  session's cards are derived once and served while every input of that
+  derivation stands (the transcript, states, names, captions, store, journal
+  and archive by identity; the live row, the wait graph, the stall and nudge
+  records, the session's own rows of the postal log, the watches and the
+  background tasks by value; the interrupt and settle-gap booleans the
+  clock decides and the billing offer's open window as the card renders it;
+  the peers the cards read), so a rebuild
+  re-derives only the sessions whose inputs moved. The sections that span
+  sessions (the serving-fold join, the parked handoffs, the quarantine cards,
+  the bell pass, the working and awaiting dot lists, the unreadable-state
+  ring) are never memoized: every build recomposes them from the served
+  entries, decoded fresh, so nothing memoized is mutated. `hit`, `miss` and
+  `derived` count per session per build, `evict` the entries shed (a departed
+  session, or the byte bound), `entries` and `bytes` are the resident set
+  against `bound` (a sixty-fourth of the machine's memory, or
+  `ROMP_FEED_MEMO_BYTES`), and `miss_by` maps each labelled component of the
+  per-session key (`transcript`, `parse`, `cut`, `states`, `names`,
+  `captions`, `store`, `anchors`, `reg`, `cleared`, `row`, `ask`, `live`,
+  `bg`, `wait`, `postal`, `stalls`, `nudge`, `jauth`, `jactive`, `hide`,
+  `watch`, `subagents`, `usage`, `offer`, `auth`, `downtime`, `debug`,
+  `interrupting`, `closer`, `peers`, plus `cold` for a session with no
+  entry) to the re-derivations it caused; a miss with several moved
+  components counts under each. The nudge records, the key on hand, the
+  host-suspension spans and the debug mode are board-wide inputs: a change
+  to one re-derives every session. The clock is not a component of the key:
+  a card's clock-derived fields either leave the memoized entry and are
+  stamped per build (the age tint, a placeholder's time), or enter the key
+  as the value the clock decides (the interrupt window and the settle gap
+  as booleans, the billing offer's open window and its reset as the card
+  renders them, a parse's trailing idle edge), so a served card shows what a
+  rebuilt one would.
 - `sends`: `full`, `delta`, `deduped`, each a map from slot name (`chat`,
   `feed`, `bars`, `taborder`, ...) to `count` and `bytes`. A deduplicated frame
   was built and compared, then not sent.

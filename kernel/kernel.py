@@ -528,6 +528,10 @@ class _PerfStats:
             file_slice = dict(self.file_slice_stats)
             glossary_stats = dict(self.glossary_stats)
             since = self.since
+        try:                                           # the feed's per-session card memo (T368): its own lock, a copy per read
+            builds["feed"]["memo"] = _feed_memo_report()
+        except Exception:
+            builds["feed"]["memo"] = {}
         pusher["ring_n"] = len(ring)
         pusher["cycle_ms_p50"] = self._pct(ring, 0.5)
         pusher["cycle_ms_p90"] = self._pct(ring, 0.9)
@@ -16434,7 +16438,7 @@ def _auth_avail_status():
     return out
 
 
-def _cap_switch_offer(sid, aerr):
+def _cap_switch_offer(sid, aerr, now=None):
     """The explicit billing-switch OFFER for a login-billed session dead on the account's usage cap —
     or None. The user's BINDING ruling (2026-08-30, via the nightly optimizer): a session must NEVER
     silently switch billing in either direction — so romp only OFFERS, and only the user's explicit
@@ -16452,11 +16456,21 @@ def _cap_switch_offer(sid, aerr):
     tm = (_live_map() or {}).get(str(sid)) or {}
     if str(tm.get("authLive") or tm.get("auth") or "") != "login" or not _auth_key_present():
         return None
+    return _usage_cap_open(now)
+
+
+def _usage_cap_open(now=None):
+    """The login account's usage window sitting AT its cap with a readable reset still ahead of `now` (the caller's
+    clock, else the wall clock), as {"resetsAt", "window"}, or None: usage.json's five-hour and seven-day windows
+    (the authority the retry pause reads), the first at 100 percent whose resets_at has not passed. The ONE rule
+    the billing-switch offer mints from (_cap_switch_offer) and the feed memo's `offer` key component reads
+    (T368 review): the offer self-expires when resets_at passes, and that crossing has to move the memo key the
+    way the interrupt window and the settle gap do, or a served card would keep offering a switch past the reset."""
     try:
         u = json.loads((jd.STATE / "usage.json").read_text())
     except Exception:
         return None
-    now = time.time()
+    now = time.time() if now is None else now
     for k in ("five_hour", "seven_day"):
         w = u.get(k) or {}
         if isinstance(w, dict) and (w.get("pct") or 0) >= 100 and (w.get("resets_at") or 0) > now:
@@ -35433,7 +35447,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
         text = pre + g if g else prompt[:140].strip()
     t = held.get("t", lt["t"])
     return {"itemId": "provisional:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
-            "t": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
+            "t": t, "live": live, "_ageT": t,   # the tint's epoch; trgb is stamped per build by the feed's fold (_feed_fold_card)
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
             "blocked": None, "column": "working",
@@ -35458,18 +35472,18 @@ def _awaiting_card(s, name, color, fsid, live, now, why, kind=None, since=None, 
     card's compact "Waiting on task" pill (feed.ts), which lists the live task descriptions."""
     if not live:                                     # a dead session isn't awaiting anything live
         return None
-    t = now
-    try:
+    t, age_t = now, None                             # `t` is the build's clock until a turn dates it; `_ageT` is the epoch the
+    try:                                             #  feed's fold tints from, None while t IS the clock (the fold restamps t)
         turns = _parse(s["path"], fsid, now)["turns"]
-        if turns:
-            t = turns[-1].get("t", now)              # last activity → recency tint, sorts with the working column
+        if turns and turns[-1].get("t") is not None:
+            t = age_t = turns[-1]["t"]               # last activity → recency tint, sorts with the working column
     except Exception:
         pass
     # _session_awaiting already phrases the why ("waiting on a background command: <desc>"); capitalize it for
     # the headline. The task list rides `awaiting` for the pill, so the headline needn't repeat every task.
     text = (why[:1].upper() + why[1:]) if why else "Waiting on a background command"
     return {"itemId": "awaiting:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
-            "t": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
+            "t": t, "live": live, "_ageT": age_t,   # trgb is stamped per build by the feed's fold (_feed_fold_card)
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
             "blocked": None, "column": "working",
@@ -35497,8 +35511,8 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
     answered work. Event-based: keyed on the live perm/picker state, not a timer; build_feed only asks when the
     session has NO working card AND no focus to floor, so it never duplicates a real card."""
     text = None
-    t = now
-    try:
+    t, age_t = now, None                             # `t` is the build's clock until the live segment dates it; `_ageT` is the
+    try:                                             #  epoch the feed's fold tints from, None while t IS the clock (the fold restamps t)
         turns = _parse(s["path"], fsid, now)["turns"]
     except Exception:
         turns = None
@@ -35507,7 +35521,7 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
         segs = em.segments(lt)
         if segs:
             held = segs[-1]                          # the live segment — what the user is being asked about
-            t = held.get("t", lt["t"])
+            t = age_t = held.get("t", lt["t"])
             if jd._seg_human(held):
                 prompt = re.sub(r"<!--.*?-->", "", _split_reminders(_seg_prompt(held))[0],
                                 flags=re.S).strip()   # markers are plumbing, never display (see _provisional_card)
@@ -35535,7 +35549,7 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
     if not text:
         text = "Awaiting your input" if perm_state == "picker" else "Awaiting your approval"
     return {"itemId": "blocked:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
-            "t": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
+            "t": t, "live": live, "_ageT": age_t,   # trgb is stamped per build by the feed's fold (_feed_fold_card)
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
             "blocked": {"state": perm_state,
@@ -36029,12 +36043,1515 @@ def _state_unknown_names(alive, live_map, working, awaiting):
     return out
 
 
+# ───────────────────────── the feed's per-session card memo (T368) ─────────────────────────
+# build_feed derives every living session's cards on every rebuild, and the pusher rebuilds the whole payload on
+# ANY change anywhere (_fleet_view_sig): one transcript append re-derived every session's cards. The memo below
+# holds each session's derived entry (its cards, its dot names, its service chip, its serving-fold candidates, its
+# heal counts) under a key of every input the derivation reads, so a rebuild re-derives only the sessions whose
+# inputs moved. Invalidation is event-based on the inputs alone: no clock rides the key. The clock-derived field
+# (each card's age tint, trgb) leaves the memoized entry and is stamped per build by the fold (_feed_fold_card),
+# and the two booleans the clock decides (_interrupting's stamp window, _closer_pending's settle gap) are computed
+# in the key, so a crossing moves the key and nothing else does. Entries are JSON strings: a hit decodes fresh
+# objects, so the post-loop passes that mutate cards (the serving-fold join, the notify pass) never touch a
+# memoized object. Cross-session sections (stateUnknown, the serving-fold commit, parked handoffs, the notices)
+# recompose per build from the per-session results and are never memoized across sessions.
+_FEED_MEMO_LABELS = ("transcript", "parse", "cut", "states", "names", "captions", "store", "anchors", "reg",
+                     "cleared", "row", "ask", "live", "bg", "wait", "postal", "stalls", "nudge", "jauth", "jactive",
+                     "hide", "watch", "subagents", "usage", "offer", "auth", "downtime", "debug", "interrupting",
+                     "closer", "peers")
+_FEED_MEMO_DEPS = ("usage", "offer", "peers")    # the components evaluated over the PREVIOUS entry's record (see _feed_session_key)
+_feed_memo = {}                                  # sid → (key, entry_json, size); dict order is the LRU order: a served entry
+#                                                  moves to the tail, the head goes first when the bytes exceed the bound
+_feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
+_FEED_MEMO_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": 0, "derived": 0,
+                    "miss_by": {k: 0 for k in _FEED_MEMO_LABELS + ("cold",)}}   # /perf builds.feed.memo
+
+
+def _feed_memo_bound():
+    """The memo's byte bound: ROMP_FEED_MEMO_BYTES when it names a positive integer, else a sixty-fourth of the machine's
+    memory (the _spend_tree_memo_bound idiom; 128 MB on an 8 GB box). The entries are the LIVE sessions' serialized
+    card lists, departed sessions dropped after every build (_feed_memo_forget), so the bound is a backstop against a
+    runaway board, not a working-set knob. Read once at import (FEED_MEMO_BYTES); GET /perf reports it beside the
+    memo's bytes (builds.feed.memo)."""
+    raw = os.environ.get("ROMP_FEED_MEMO_BYTES", "")
+    try:
+        if raw and int(raw) > 0:
+            return int(raw)
+    except ValueError:
+        pass
+    return _mem_total_bytes() // 64
+
+
+def _feed_memo_count(key, n=1):
+    with _feed_memo_lock:
+        _FEED_MEMO_STATS[key] = _FEED_MEMO_STATS.get(key, 0) + n
+
+
+def _feed_memo_miss(old, new):
+    """Count a miss and attribute it: the sorted labels of every key component that differs between the cached key
+    `old` and the fresh one `new` (`cold` when there was no cached entry, or its key has another shape). A miss with
+    several moved components counts under each, so miss_by's sum can exceed `miss`."""
+    if old is None or len(old) != len(new):
+        labels = ("cold",)
+    else:
+        labels = tuple(sorted(lab for lab, a, b in zip(_FEED_MEMO_LABELS, old, new) if a != b))
+    with _feed_memo_lock:
+        _FEED_MEMO_STATS["miss"] += 1
+        for lab in labels:
+            _FEED_MEMO_STATS["miss_by"][lab] = _FEED_MEMO_STATS["miss_by"].get(lab, 0) + 1
+    return labels
+
+
+def _feed_memo_get(sid):
+    """The memoized (key, entry_json, size) for sid, or None. A read is a USE: the entry moves to the LRU tail."""
+    with _feed_memo_lock:
+        ent = _feed_memo.pop(sid, None)
+        if ent is not None:
+            _feed_memo[sid] = ent
+        return ent
+
+
+def _feed_memo_put(sid, key, entry_json):
+    """Store sid's entry under its key (replacing any earlier one), then shed the least recently served entries, one at
+    a time, until the bytes fit FEED_MEMO_BYTES. Never clear-at-cap; an entry that alone exceeds the bound still
+    serves (the pages cache's rule), so one very large board cannot make the memo useless."""
+    size = len(entry_json)
+    with _feed_memo_lock:
+        old = _feed_memo.pop(sid, None)
+        if old is not None:
+            _FEED_MEMO_STATS["bytes"] -= old[2]
+        _feed_memo[sid] = (key, entry_json, size)
+        _FEED_MEMO_STATS["bytes"] += size
+        while len(_feed_memo) > 1 and _FEED_MEMO_STATS["bytes"] > FEED_MEMO_BYTES:
+            k = next(iter(_feed_memo))               # the least recently served goes first
+            _FEED_MEMO_STATS["bytes"] -= _feed_memo.pop(k)[2]
+            _FEED_MEMO_STATS["evict"] += 1
+        _FEED_MEMO_STATS["entries"] = len(_feed_memo)
+
+
+def _feed_memo_forget(alive_sids):
+    """Drop the entries of sessions no longer in the build's alive set (a departed session's cards are not coming
+    back under its sid; a revived one re-derives). Called after every build's loop."""
+    with _feed_memo_lock:
+        gone = [k for k in _feed_memo if k not in alive_sids]
+        for k in gone:
+            _FEED_MEMO_STATS["bytes"] -= _feed_memo.pop(k)[2]
+        _FEED_MEMO_STATS["evict"] += len(gone)
+        _FEED_MEMO_STATS["entries"] = len(_feed_memo)
+    for k in [k for k in _SUBAGENT_DIRS_MEMO if k not in alive_sids]:   # the key's walk memo leaves with the session
+        _SUBAGENT_DIRS_MEMO.pop(k, None)
+    return len(gone)
+
+
+def _feed_memo_report():
+    """The memo's counters with its occupancy refreshed (entries, bytes) and its bound: GET /perf builds.feed.memo."""
+    with _feed_memo_lock:
+        out = dict(_FEED_MEMO_STATS)
+        out["miss_by"] = dict(_FEED_MEMO_STATS["miss_by"])
+        out["entries"] = len(_feed_memo)
+        out["bound"] = FEED_MEMO_BYTES
+    return out
+
+
+def _feed_peer_facts(p, cleared_by_sid):
+    """What one card-owning session's derivation read about a PEER p (an origin sender, a handoff recipient, a stamped
+    or awaited peer), by identity and value: the peer's goal store, journal and archive (jd._store_identity; the shared
+    read-only view the origin badge reads) with whether that view READS (jd.load_goals_shared_or_fault's fault
+    boundary: an EIO moves no stat, and the badge reads absorbed while the sender's store faults; a stat-hit on a
+    healthy store, the same episode table the body's own read then hits), its names-registry entry (the snapshot the
+    build's _name_of/_name_color read), its slice of the clear set (a cleared sender goal dims the badge), and the
+    attached host that owns it with the name that host gave it (_peer_identity's remote rungs). The postal rung rides
+    the board-wide `postal` component."""
+    r = _host_for_sid(p)
+    host = str((r or {}).get("host") or "") if r else ""
+    ident = jd._store_identity(p)[1:]                # BEFORE the read below (stat-then-read)
+    return (ident, _chat_ident(jd.GOALDIR / (p + ".json")),   # + ctime: a permissions fault or repair moves it alone
+            jd.load_goals_shared_or_fault(p)[1] is not None,
+            tuple(_names_parts(p) or ()),
+            cleared_by_sid.get(p, ()),
+            host, _remote_name_of(host, p) if r else None)
+
+
+_SUBAGENT_DIRS_MEMO = {}                         # sid → (subagents root, its directories, their identities): the walk,
+#                                                  memoized per living session and dropped with its memo entry (_feed_memo_forget)
+
+
+def _subagent_dirs_ident(sid, d):
+    """(the directories under the subagents root `d`, their identities), the walk memoized: an unchanged tree costs
+    one stat per known directory, not an os.walk per session per build (the T368 review's profile: the walk was a
+    third of the memo key's cost). Sound because a directory added or removed under `d` moves its PARENT's mtime,
+    and every parent is a known directory, so the known identities standing means the tree stands; any of them
+    moving (a sidecar landing, a directory appearing or vanishing, the root itself) re-walks. A root that does not
+    exist is the tree [d] with identity None, and its appearance re-walks the same way. Keyed by the session so
+    _feed_memo_forget drops a departed session's entry with its memo entry; a session whose transcript (and so
+    whose root) moved re-walks. A sidecar REWRITTEN in place under its own name moves no directory's mtime, so
+    neither this memo nor _subagent_meta_map's own cache sees it (pre-existing, shared with that cache; the CLI
+    writes a sidecar once, at the agent's spawn)."""
+    hit = _SUBAGENT_DIRS_MEMO.get(sid)
+    if hit is not None and hit[0] == d:
+        idents = tuple(_chat_ident(x) for x in hit[1])
+        if idents == hit[2]:
+            return hit[1], idents
+    dirs = tuple(_subagent_dirs(d) or [d])
+    idents = tuple(_chat_ident(x) for x in dirs)
+    _SUBAGENT_DIRS_MEMO[sid] = (d, dirs, idents)
+    return dirs, idents
+
+
+def _postal_session_slice(sid, maps=None):
+    """The postal log's rows that can reach ONE session's cards, by value: for every ordered pair the session is a
+    party to (as sender or recipient; a cross-host recipient by its stable id or peer key), the latest message
+    time, the latest reply-expecting ask, the latest reply-requiring send, the returned or withdrawn sends, and the
+    log's display names for the other parties. Everything the body reads of the log is a function of these rows
+    (_peer_answered and _peer_answered_at walk the session's own pairs, _session_stamp_read's superseding clock is
+    that walk, _peer_identity's remote names are the join), so a row between two OTHER sessions leaves this
+    session's key where it was; the whole log's identity keyed every session before (T368 review: one row
+    re-derived the board). The maps are the one cached scan (_postal_wait_maps, keyed on the log's stat)."""
+    sid = str(sid)
+    last_any, last_ask, last_await, returned, names, by_party = maps if maps is not None else _postal_maps_indexed()
+    pairs = by_party.get(sid) or ()
+    rows = tuple((p, last_any.get(p), last_ask.get(p), last_await.get(p),
+                  tuple(sorted((returned.get(p) or {}).items(), key=repr)))
+                 for p in pairs)
+    parties = {x for p in pairs for x in p if x != sid}
+    return (rows, tuple(sorted((x, names.get(x)) for x in parties if x in names)))
+
+
+def _postal_maps_indexed():
+    """The postal wait maps, the returns and the display names from the one cached scan, plus an index party → its
+    ordered pairs (sorted by repr), built once per build (_feed_board_facts) so each session's slice is a lookup
+    rather than a pass over every pair."""
+    last_any, last_ask, last_await = _postal_wait_maps()
+    returned = _postal_returned()
+    names = _postal_peer_names()
+    by_party = {}
+    for p in set(last_any) | set(last_ask) | set(last_await) | set(returned):
+        if isinstance(p, tuple):
+            for x in p:
+                by_party.setdefault(x, []).append(p)
+    for x in by_party:
+        by_party[x] = tuple(sorted(set(by_party[x]), key=repr))
+    return last_any, last_ask, last_await, returned, names, by_party
+
+
+def _cleared_by_sid(cleared):
+    """The clear set indexed by owning session: id → the text before its LAST colon (a node id is <sid>:gN, and a
+    composite session key such as host:name keeps its own colon), so `by[sid]` is exactly the tuple the per-session
+    filter `i.startswith(sid + ":")` returned, sorted; an id with no colon belongs to no session (the filter matched
+    it for none) and is not indexed. Built once per build (_feed_board_facts), read per session and per peer
+    (tests/test_feed_session_memo.py pins the equivalence over every id shape)."""
+    by = {}
+    for i in cleared:
+        if ":" in i:
+            by.setdefault(i.rpartition(":")[0], []).append(i)
+    return {k: tuple(sorted(v)) for k, v in by.items()}
+
+
+def _feed_board_facts(ctx, now):
+    """The board-wide inputs of every session's key, taken ONCE per build into ctx (the same value for every
+    session: one stat each, not one per living session): the clear set indexed by session, the postal maps indexed
+    by party, the nudge records' identities, usage.json's identity and the login-account window sitting at its cap
+    with its reset ahead as (window, resetsAt) or None (the `offer` component's payload), the key on hand,
+    the host-suspension spans, the debug mode and its rows' identity. Taken before any session's derivation, so
+    every session's read follows its stat (stat-then-read)."""
+    b = ctx.get("board")
+    if b is None:
+        dbg = bool(jd._debug_mode())
+        b = {"cleared_by_sid": _cleared_by_sid(ctx["cleared"]),   # the clear set indexed by owning session, once per build
+             "postal": _postal_maps_indexed(),
+             "nudge": (_chat_ident(jd.STATE / "auto-nudge.json"), _chat_ident(jd.STATE / "nudge-events.jsonl")),
+             "usage_ident": _chat_ident(jd.STATE / "usage.json"),
+             "cap_open": (lambda w: (w["window"], w["resetsAt"]) if w else None)(_usage_cap_open(now)),
+             "auth": _auth_key_present(),
+             "downtime": (len(_downtime), _downtime[-1] if _downtime else None),
+             "debug": (dbg, _chat_ident(jd.ERRORS) if dbg else None)}
+        ctx["board"] = b
+        ctx["usage_ident"] = b["usage_ident"]      # the deps re-evaluation reads these two (see _feed_key_with_deps)
+        ctx["cap_open"] = b["cap_open"]
+    return b
+
+
+def _feed_session_key(s, tm, ctx, prev_entry):
+    """One session's memo key: a tuple in _FEED_MEMO_LABELS order, one component per input _feed_session_entry reads,
+    every file stat'd BEFORE any read below it (stat-then-read: a publish landing between the stat and the read pairs
+    an old key with new content, which the next build's stat sees and re-derives; the other order could pair a new
+    key with old content and never heal). The clock is not a component; the two booleans it decides are. The
+    per-session facts the body needs and this function already computed are handed over in `ctx` (`ps`,
+    `who_working`, `interrupting`, `store`, `closer`, `hide`), so a build reads each once, hit or miss, and their
+    side effects (the live merge's prune/settle, the interrupt stamp's pop, the snapshot punch) run every build as
+    they did before the memo. `prev_entry` is the session's previous decoded entry (None when cold): its `peers` and
+    `reads` records drive the two dependency components, which _feed_key_with_deps re-evaluates over the NEW entry
+    after a derivation (the chat build's deps idiom), so a cold entry hits on the next unchanged build.
+
+    Components, label: what it covers (the reads in the body), how it is taken.
+      transcript: _chat_ident(s["path"]). The cache-only parse (_parse_cached → jd.parse_cached's fileset key), the
+        anchors (_segs_seam, _seg_anchors, _seg_jump, _seg_key, _seg_last_text, _atom_prose_chars, em.turn_scalar),
+        the api-error tail (_api_error), the background scans (_heal_session_tops → _bg_scan_all_cached,
+        _bg_live_norm's transcript rung, _bg_owner_tops/_bg_service_descs/_awaiting_task_descs → _bg_placed_tops →
+        _parse), the placeholders' _parse (_provisional_card, _blocked_placeholder, _awaiting_card),
+        _pure_delegation_top's dictated-prompt read, _open_turn_progress's hydrate, _last_plain_user_turn_t.
+      parse: (`_parse_cached(path) is not None`, the last turn's end). The warm bit: a cold kernel derives without
+        the parse (no dots, no anchors, the cold-parse summary fallback) and _warm_fleet_bg then fills the cache
+        with NO file change, and the bit flipping is what re-derives the session warm. The end: the one value in a
+        parse that is not a function of its files (em.parse_session reads the clock for the trailing idle span's
+        end alone, synthesize_idle), so a parse re-run at a later clock with no file change (an evicted parse warmed
+        again) differs there and nowhere else; keying on it re-derives once per re-parse and makes the parse's
+        identity exact without a clock in the key (T368 review round two).
+      cut: the SDK backend's pending_cut(sid), a chat DELETE rollback that changes the parse with no file change.
+      states: (_chat_ident(STATE/states/<fsid>.jsonl), _chat_ident(STATE/states/<anchor>.jsonl)). The parse key's
+        states file, the machine cuts (_interrupt_suppresses_nudge → _last_machine_cut), _session_retrying's
+        retrying-since fold, the awaiting overlay (_session_awaiting → _states_awaiting_overlay).
+      names: (s["name"], the names snapshot's fields for fsid: _names_parts). The card's name (discover's read) and
+        colour (_name_color); the snapshot's CONTENT, not the file, since the body reads the cycle's snapshot.
+      captions: _chat_ident(CAPDIR/<fsid>.jsonl). The placeholders' gist (_provisional_card / _blocked_placeholder →
+        _seg_caption(_captions(fsid))).
+      store: (jd._store_identity(fsid)[1:] (the store, its override journal, its goals-archive entry), the judge-pass
+        snapshot's stamp when this sid is in it (_goals_snap_at[0], else None: _feed_goals serves the pre-pass
+        snapshot while a pass is mid-flight), the user-gesture mark _user_goal_write[fsid], the punch record
+        _goals_snap_done[fsid], the rewind hold (cutT, leaf, at) or None, whether the read FAULTED (an EIO or a
+        permissions fault moves no stat)). _feed_goals, jd.load_goals_shared inside _bg_placed_tops and
+        _session_stamp_read, jd.review_boundary, jd._done_since and every node read.
+      anchors: _node_anchor_rev[fsid]. The warm-anchor table _node_anchor_uuids serves a cold node from; a chat build's
+        resolve for this sid bumps it.
+      reg: (_chat_ident(STATE/sdk/<fsid>.json), _chat_ident(STATE/gone/<fsid>.json)). The launch ledger
+        (_thread_reg → _bg_live_norm), spawnedAt and the death marker (_sdk_spawned_at, jd._cli_epoch), the SDK-human
+        flag (_display_sdk_human).
+      cleared: the session's own slice of _cleared_ids(), sorted. `nid in cleared` per top, the provisional card's
+        follow-up target check; a peer's slice rides `peers`.
+      row: the live row tm without snapT and interrupting, as sorted items (None when not live). `live`, perm_state,
+        `since`, _session_retrying's retry fields, the subagent and bgTasks sets, authLive (_cap_switch_offer).
+      ask: json of the backend's current_ask(fsid) while the row is on a permission/picker prompt, else None. The
+        blocked placeholder's title.
+      live: Sessions.live_rev(fsid, be). The in-memory live tail _merge_live_atoms folds in ahead of the disk.
+      bg: the normalized live background-task rows (_bg_live_norm: tid, desc, t, type, deadline, agentId) when the
+        parse is warm, else None. The task set the awaiting sources, the blocked-yield ownership, the service chip
+        and the awaiting pill read; a deadline crossing (em._bg_expired) is the row leaving the tuple.
+      wait: wmap[fsid] as sorted items, or None. The peer-wait floor and the waitingOn chip.
+      postal: _postal_session_slice(fsid), the log's rows the session is a party to, by value (the pairs' latest
+        times, asks, reply-requiring sends and returns, the other parties' display names). _peer_answered and
+        _peer_answered_at walk those pairs, _session_stamp_read's superseding clock is that walk, _peer_identity's
+        remote names are the join; a row between two other sessions moves no key of this one.
+      stalls: the session's slice of _stalled_goals() as (gid, why, since), sorted. The stalled section and the
+        in-flight swirl.
+      nudge: (_chat_ident(STATE/auto-nudge.json), _chat_ident(STATE/nudge-events.jsonl)), board-wide.
+        _auto_nudge_data()["nudged"][nid], _nudge_times()[nid].
+      jauth: jd._auth_down_map()[fsid] as sorted items, or None. The judge-auth floor and badge.
+      jactive: fsid in {r["fsid"] for r in jd.active_runs()}. The Analyzing swirl's active prong.
+      hide: _session_flag(fsid, "hideFromFeed"). The session yields no entry while set.
+      watch: json of _watch_awaiting(fsid) (the in-memory watches for this sid). An awaiting source.
+      subagents: _chat_ident of the transcript's subagents directory and every directory under it (the walk memoized
+        on those identities, _subagent_dirs_ident). _subagent_meta_map. A sidecar rewritten in place under its own
+        name moves no directory's mtime and is invisible here as it is to the map's own cache (pre-existing).
+      usage: _chat_ident(STATE/usage.json) when the previous entry recorded reading it (an api error's cap offer,
+        _cap_switch_offer), else None. A deps component.
+      offer: the login-account usage window sitting at its cap with its reset still ahead of the build's clock, as
+        (window, resetsAt) from _usage_cap_open(now), or None; taken when the previous entry recorded reading
+        usage.json, else None. The billing-switch offer's own clock crossing (resets_at passing ends the mint,
+        _cap_switch_offer) as the payload the card renders, not a boolean: with two windows capped, the earlier
+        reset passing moves the offer to the later window and its time, which a boolean would not see (T368 review
+        round two). A deps component.
+      auth: _auth_key_present(). The cap offer's key-on-hand leg.
+      downtime: (len(_downtime), its last span). _session_working's host-suspension read (_suspended_after).
+      debug: (jd._debug_mode(), _chat_ident(STATE/judge-errors.jsonl) when on). dbg_rows → _card_warn_rows.
+      interrupting: _interrupting(fsid, ps or {}, now, tm), computed here (the stamp's 120 s cap and its settle).
+      closer: _closer_pending(fsid, path, now, store) under the body's exact gate (live, warm parse, idle, no judge
+        call in flight), the settle gap the Analyzing swirl reads.
+      peers: ((peer sid, _feed_peer_facts(peer)) ...) for every peer the previous derivation read (origin senders
+        via jd.load_goals_shared_or_fault / _name_of / _name_color, handoff rows' _ho_sid, the identities
+        _handoff_peer_identities, _peer_identity and _handoff_card_fields resolved, the awaiting arm's peers);
+        None when cold. A deps component.
+    NOT components: the clock (the fold stamps trgb and a clock-stamped placeholder's t per build), the colormap (the
+    fold reads it), notify-cards.json (the post-loop notify pass), session-order, the views, the notices (post-loop)."""
+    fsid, path = s["sid"], s.get("path")
+    now = ctx["now"]
+    live = tm is not None
+    hide = bool(_session_flag(fsid, "hideFromFeed"))
+    board = _feed_board_facts(ctx, now)         # the board-wide identities and indexes, once per build (before any read)
+    # ── file identities, every one BEFORE the reads below ──
+    transcript = _chat_ident(path) if path else None
+    states = tuple(_chat_ident(jd.STATESDIR / (k + ".jsonl"))
+                   for k in dict.fromkeys([fsid, str(s.get("anchor") or "")]) if k)
+    names = (s.get("name"), tuple(_names_parts(fsid) or ()))
+    captions = _chat_ident(jd.CAPDIR / (fsid + ".jsonl"))
+    sident = jd._store_identity(fsid)[1:]
+    with _goals_snap_lock:
+        _snap = _goals_snap[0]
+        snap_at = _goals_snap_at[0] if (_snap is not None and fsid in _snap) else None
+    _hold = _rewind_hold_get(fsid)
+    hold = (_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None
+    anchors = _node_anchor_rev.get(fsid, 0)
+    reg = (_chat_ident(jd.STATE / "sdk" / (fsid + ".json")), _chat_ident(jd.GONEDIR / (fsid + ".json")))
+    cl = board["cleared_by_sid"].get(fsid, ())
+    row = (tuple(sorted(((k, v) for k, v in tm.items() if k not in ("snapT", "interrupting")), key=lambda kv: kv[0]))
+           if tm else None)
+    postal = _postal_session_slice(fsid, board["postal"])
+    nudge = board["nudge"]
+    stalls = tuple(sorted((k, v.get("why"), v.get("since")) for k, v in ctx["stalls"].items()
+                          if k.startswith(fsid + ":")))
+    jauth = tuple(sorted((ctx["jauth_map"].get(fsid) or {}).items(), key=str)) or None
+    jactive = fsid in ctx["jactive"]
+    subagents = _subagent_dirs_ident(fsid, str(_subagents_dir(path)))[1] if path else None
+    reads_usage = bool(((prev_entry or {}).get("reads") or {}).get("usage"))   # the entry read usage.json (the cap offer)
+    usage = board["usage_ident"] if reads_usage else None
+    offer = board["cap_open"] if reads_usage else None
+    auth = board["auth"]
+    downtime = board["downtime"]
+    debug = board["debug"]
+    facts = {p: _feed_peer_facts(p, board["cleared_by_sid"]) for p in ((prev_entry or {}).get("peers") or ())}
+    ctx["peer_facts"] = facts                        # pre-derivation facts: _feed_key_with_deps keeps these for the peers
+    peers = tuple((p, facts[p]) for p in sorted(facts)) if prev_entry is not None else None   # the new entry names again
+    # ── the in-memory reads ──
+    be = Sessions.backend_for(fsid)
+    _be = _sdk()
+    cut = _be.pending_cut(fsid) if _be else ""
+    live_rev = Sessions.live_rev(fsid, be)
+    watch = json.dumps(_watch_awaiting(fsid), sort_keys=True, default=str)
+    ask = None
+    if (tm or {}).get("state") in _NEEDS_INPUT_STATES:
+        try:
+            ask = json.dumps(be.current_ask(fsid), sort_keys=True, default=str)
+        except Exception:
+            ask = None
+    wait = tuple(sorted((ctx["wmap"].get(fsid) or {}).items(), key=str)) or None
+    # ── the per-session facts the body reads through ctx, once per build (a hidden session reads none of them,
+    #    exactly as the loop's `continue` skipped them) ──
+    ps, st, who_working, interrupting, closer = None, None, False, False, False
+    if not hide:
+        ps = _parse_cached(s["path"]) if path else None   # CACHE-ONLY: the cards paint at once on a cold kernel (the user 2026-06-26)
+        if ps is not None:
+            ps = _merge_live_atoms(ps, fsid)         # the same LIVE-MERGED session the chat chip + timeline lane read
+        try:
+            who_working = _session_working(ps["turns"]) if ps else False
+        except Exception:
+            who_working = False
+        sess_interrupting = _interrupting(fsid, ps or {}, now, tm)   # pops its stamp on the settled path, once per build
+        interrupting = sess_interrupting
+        st = _feed_goals(fsid)                       # the store the body renders (None: the read faulted)
+        closer = bool(live and ps and not who_working and not jactive
+                      and _closer_pending(fsid, path, now, st if st is not None else {"nodes": {}, "status": {}}))
+    ctx.update(ps=ps, who_working=who_working, interrupting=interrupting, store=st, closer=closer, hide=hide)
+    # the store component closes on the READ's outcome (st is None: the read faulted, jd.load_goals_or_fault filed it):
+    # an EIO or a permissions fault moves no stat, so without the bit a faulted derivation (no cards) would serve
+    # on after the fault cleared, and a pre-fault entry would serve through it (tests/test_goal_store_fault_boundary)
+    store = (sident, snap_at, _user_goal_write.get(fsid, 0.0), _goals_snap_done.get(fsid), hold,
+             st is None and not hide)                # a hidden session's skipped read is not a fault
+    bg = (tuple((r.get("tid"), r.get("desc"), r.get("t"), r.get("type"), r.get("deadline"), r.get("agentId"))
+                for r in _bg_live_norm(fsid, path)) if (ps is not None and path) else None)
+    parse = (ps is not None, (ps["turns"][-1].get("end") if ps and ps.get("turns") else None))   # the warm bit + the parse's own edge
+    return (transcript, parse, cut, states, names, captions, store, anchors, reg, cl, row, ask, live_rev,
+            bg, wait, postal, stalls, nudge, jauth, jactive, hide, watch, subagents, usage, offer, auth, downtime,
+            debug, interrupting, closer, peers)
+
+
+_FEED_PEERS_UNSETTLED = ("unsettled",)           # a `peers` component no build's key can equal (the builder makes None or
+#                                                  a tuple of (peer, facts) pairs): stored when a peer was read before its facts
+
+
+def _feed_key_with_deps(key, ctx, entry):
+    """The key with its dependency components re-evaluated over the entry a derivation just produced: `usage` and
+    `offer` from the entry's `reads`, `peers` from the entry's `peers`, each peer's facts the PRE-derivation ones the key
+    took when the previous entry already named that peer. A peer this derivation read for the FIRST time has no
+    pre-derivation facts, and facts taken now could pair a new key with old content (the peer's store moving while
+    the body read it, the order stat-then-read forbids), so the stored key carries _FEED_PEERS_UNSETTLED instead:
+    the next build re-derives once more, this time with every peer's facts taken before the read, and hits from
+    then on. One extra derivation the first time a session's cards name a new peer, never a stale hit."""
+    k = list(key)
+    reads = (entry or {}).get("reads") or {}
+    k[_FEED_MEMO_LABELS.index("usage")] = ctx.get("usage_ident") if reads.get("usage") else None
+    k[_FEED_MEMO_LABELS.index("offer")] = ctx.get("cap_open") if reads.get("usage") else None
+    if entry is None:
+        peers = None
+    else:
+        facts = ctx.get("peer_facts") or {}
+        named = sorted(entry.get("peers") or ())
+        peers = tuple((p, facts[p]) for p in named) if all(p in facts for p in named) else _FEED_PEERS_UNSETTLED
+    k[_FEED_MEMO_LABELS.index("peers")] = peers
+    return tuple(k)
+
+
+def _feed_session_entry(s, ctx):
+    """ONE session's contribution to the feed, derived from its inputs alone: the body of build_feed's per-session
+    loop (T368), memoized per session by build_feed under _feed_session_key. Returns a JSON-able dict, or None for a
+    session muted from the feed (hideFromFeed):
+      asks          its cards, in board order, each carrying "_ageT" (the epoch its age tint is computed from; None
+                    for a placeholder whose time IS the build's clock) and no trgb: the fold stamps the tint per build
+                    (_feed_fold_card), so the memoized entry holds nothing clock-derived
+      working       the session's name when its turn is open (the working-dot list), else None
+      awaiting      the session's name when it is idle and awaiting (the await-green dot list), else None
+      bgServices    the live judge-classified SERVICE descriptions for the session chip, else None
+      servingFolds  [{"tracker", "card"}]: worker mirror cards awaiting the post-loop fold under the sender's row
+      heal, hidden  the session-started tops nested / hidden this derivation (T319 / T333 counts)
+      cold          True when the session is living, unparsed and worth warming (_warm_fleet_bg)
+      peers         the peer sids this derivation read (origin senders, handoff recipients, stamped and awaited
+                    peers): the key's `peers` dependency component re-evaluates them next build
+      reads         {"usage": True} when the derivation read usage.json (an api error's cap offer): the key's `usage`
+    `ctx` carries the build's cross-session reads (now, live_map, cleared, dbg_rows, wmap, stalls, jauth_map,
+    jactive) and the per-session facts the key already computed (ps, who_working, interrupting, store, closer):
+    the body reads those from ctx and nothing twice. Every helper this body calls is covered by a component of
+    _feed_session_key (its docstring maps them); tests/test_feed_memo_inputs.py pins that mapping against this
+    function's source."""
+    now, live_map, cleared, dbg_rows = ctx["now"], ctx["live_map"], ctx["cleared"], ctx["dbg_rows"]
+    wmap, _stalls, _jauth_map, _jactive = ctx["wmap"], ctx["stalls"], ctx["jauth_map"], ctx["jactive"]
+    ent_asks, ent_folds = [], []                     # the entry's cards and serving-fold candidates
+    ent_working = ent_awaiting = ent_bg = None       # the dot names and the service chip
+    heal_total = hidden_total = 0                    # T319 / T333 counts, summed by the caller
+    cold_parse = False                               # a living session not yet parsed → the caller warms it
+    peers_read, reads = set(), {}                    # the dependency record (see the docstring)
+
+    def _note_peers(idents):                         # identity dicts ({name, host, sid, color}) or bare sids
+        for d in idents or ():
+            p = d.get("sid") if isinstance(d, dict) else d
+            if p:
+                peers_read.add(str(p))
+    fsid, name = s["sid"], s["name"]
+    if _session_flag(fsid, "hideFromFeed"):      # muted from the feed (the user 2026-06-19) → timeline-only
+        return None                              # (the key's `hide` component; the caller memoizes the None)
+    color = _name_color(fsid)
+    tm = live_map.get(fsid); live = tm is not None
+    # CACHE-ONLY parse (the user 2026-06-26): the CARDS come from the goal store (cheap) and must paint at
+    # once on a cold start, so the working-dot + the deep-link anchors read the parse ONLY if it's already
+    # cached — never paying the ~1s cold parse here. _warm_fleet_bg fills the cache + re-pushes; the dots
+    # and anchors snap in a beat later.
+    ps = ctx["ps"]                               # _parse_cached, live-merged (_merge_live_atoms): read ONCE per build by
+    #                                              _feed_session_key, hit or miss, so the merge's prune/settle side effects
+    #                                              and the interrupt stamp's pop run every build as they always did
+    if ps is None:
+        if _warm_wanted(s, tm):                      # cold by design otherwise (T323 stage 1): no warm to chase
+            cold_parse = True
+    who_working = ctx["who_working"]             # WORKING from the EVENT MODEL (_session_working over the open turn), not
+    #                                              the row's state: the key computed it for the closer gate; one dot signal
+    if who_working:
+        ent_working = name
+    # the open turn's live narration (the user 2026-08-13) — computed once per session, ridden by
+    # every working card below; cache-warm like the dot (a cold start paints plain, then snaps in)
+    sess_progress = _open_turn_progress(ps["turns"]) if (ps and who_working) else None
+    # The card-floor disposition (the user 2026-08-14: NO working card is ever mute — even unknown
+    # shows as such): "open" = a turn is running (the narration above rides when parsed), "quiet" =
+    # parsed and between turns, "unknown" = no parse to read (a cold cache, or a machine that isn't
+    # reporting). The feed's spin ladder renders a floor line for each — see spin-caption.ts.
+    sess_state = "open" if who_working else ("quiet" if ps else "unknown")
+    # The user's LAST action on this session was an INTERRUPT (no message from them since): its quiet
+    # is user-chosen, not a stall — auto-nudge is suppressed (same predicate, _auto_nudge_tick) and
+    # the working card wears an "interrupted" badge saying so (the user 2026-07-05). Cache-only,
+    # like the working dot: the badge snaps in once _warm_fleet_bg fills the parse. The read is memoized
+    # on that cache object's identity (_interrupt_marks, the "display" family), so an unchanged parse
+    # costs no scan per build.
+    try:
+        sess_interrupted = bool(ps) and not who_working and \
+            _interrupt_suppresses_nudge(ps["turns"], fsid, family="display")
+    except Exception:
+        sess_interrupted = False
+    # A user interrupt still IN FLIGHT (dispatched, not yet settled): the card wears a steady
+    # "interrupting…" badge from the click until it settles, THEN falls to the past-tense "interrupted"
+    # badge — never flickering between "working" and "interrupted" while the SDK live-tail retires mid-
+    # settle (the user 2026-07-07). Same derivation as the chat chip + timeline lane (_interrupting):
+    # SDK's own in-flight flag for SDK sessions, the stop record for a row without it. Safe to call again in this push.
+    sess_interrupting = ctx["interrupting"]      # _interrupting(fsid, ps or {}, now, tm), computed in the key (a clock
+    #                                              crossing moves the key; its stamp pop runs once per build, as before)
+    # An api-retry storm INSIDE an open turn (the user 2026-07-09): the live backend state says
+    # "retrying" → the working card wears a "retrying since HH:MM" chip. The API-error badge below
+    # (aerr) only fires once the session is idle-stalled, so without this a storm reads as plain
+    # healthy Working for its whole life — nimbus's card said Working through an ~80-minute storm.
+    sess_retrying = _session_retrying(fsid, tm)
+    store = ctx["store"]                     # _feed_goals(fsid), read once in the key: a pre-pass snapshot while a judge
+    #                                          pass is mid-flight → the card's
+                                             # status never shows a half-applied intermediate (atomic visibility)
+    store_faulted = store is None            # this session's store could not be READ (EACCES, EIO, a directory
+    if store_faulted:                        # at the path): its row is filed (jd.load_goals_or_fault) and THIS
+        store = {"nodes": {}, "status": {}}  # session renders with no goal-derived content — no cards (so no
+        #                                      floors and no swirl, which land only on cards) and nothing
+        #                                      inferred from the absence (the provisional card is gated on the
+        #                                      flag below). A render-only stand-in, never saved. Every other
+        #                                      session is untouched; before this, one such file aborted the
+        #                                      whole build.
+    # ANALYZING (the user 2026-07-13; broadened 2026-08-12): the card must say when romp is working
+    # on it. Two prongs, either lights the swirl:
+    #   * the SETTLE GAP — the turn just settled but the closer hasn't delivered its verdict yet
+    #     (cache-warm only: it needs the parse; the swirl snaps in after _warm_fleet_bg);
+    #   * a judge call for this session ACTUALLY IN FLIGHT — jd.active_runs(), the same in-process
+    #     registry the nudge gate trusts (_revivers_pending), whose comment always claimed "the
+    #     Analyzing… swirl already says so"; now it does. This is what a backlog drain looks like:
+    #     when the judge-auth outage healed, 201 calls swept an 18-hour backlog while every card
+    #     sat inertly in Working (the user 2026-08-12, who asked for the queue to be visible on
+    #     the card) — planner/grouper work on OLDER turns never trips the settle gap, and a fresh
+    #     kernel's caches are cold exactly when the drain runs, so the closer prong alone stayed
+    #     dark. The active prong deliberately needs neither `live` nor a warm parse: the registry
+    #     is an in-process fact, free to read.
+    # Session-scoped (we don't know WHICH goal a verdict will land on until it does); each working
+    # card wears the Analyzing… swirl meanwhile (feed.ts spinCaption).
+    sess_judging = bool(not who_working and (fsid in _jactive or ctx["closer"]))   # closer = the key's
+    #                                          _closer_pending(fsid, path, now, store) under the same live/parse/idle gate
+    nodes, status = store.get("nodes", {}), store.get("status", {})
+    confirming = set(store.get("confirming") or ())   # rollup export: done verdict in, settle pending (judge rollup_status, the user 2026-07-24)
+    # Exact click-to-jump anchors: map each goal segment → the work/reply uuid — the SAME anchors the
+    # timeline/ledger already use — so a card click deep-links to the precise turn BY ID instead of the
+    # old time-nearest heuristic. _parse is cache-backed (cheap); reply uuid preferred (the readable
+    # assistant text). A missing entry → anchorUuid None → feed falls back to time. (the user 2026-06-17.)
+    # seg_uuid → the WORK anchor (reply/work assistant atom, for the mark/time zones); seg_trig → the
+    # PROMPT anchor (the segment's TRIGGER atom = the user's message that opened it, for the TITLE). A
+    # title is prompt-intent and must land on the USER turn — passing the trigger uuid (which the chat
+    # tags + the kind guard accepts as turn-user) lets it resolve BY ID instead of a kind-restricted
+    # nearest-time landing (the user 2026-06-17). (Both are emitted .turn[data-uuid]s in the chat.)
+    seg_uuid, seg_trig, seg_best, cite_uuids = {}, {}, {}, set()
+    try:
+        for turn in (ps["turns"] if ps else []):     # cached parse only; anchors fill in after _warm_fleet_bg
+            for seg in _segs_seam(turn, store):
+                w, r = _seg_anchors(seg["atoms"])
+                seg_uuid[_seg_key(seg["id"])] = r or _seg_jump(seg["atoms"])   # timestamp-invariant key; landable
+                #                                  anchors only — never a thinking-only uuid (SDK echo/real drift)
+                seg_trig[_seg_key(seg["id"])] = jd._prompt_anchor_uuid(seg)   # attachment-safe: a
+                #                                  title click must land on the USER message, never an
+                #                                  attachment record no chat event carries (2026-08-25)
+                _lu, _lsub = _seg_last_text(seg["atoms"])
+                seg_best[_seg_key(seg["id"])] = (_lu, _lsub, seg.get("t", 0))   # latest prose → summary deep-link fallback
+                pcs_ = em.turn_scalar(turn, "pcs")
+                if pcs_ is not None:                 # a restored pre-cut turn: its stored prose chars, no atom built (T358)
+                    cite_uuids.update(u_ for u_, n_ in pcs_.items() if n_ >= jd.CITE_MIN_CHARS)
+                    continue
+                for _a in seg["atoms"]:              # citable-uuid set: gates the distiller's CITED anchor.
+                    # Resolvable in THIS parse AND substantive (the user 2026-07-14): a stored citation
+                    # pointing at a connective stub (a lead-in that merely names the goal) is a wrong
+                    # link by construction — the outcome never lives there — so it falls through to the
+                    # deterministic fallback below, healing bad anchors already in stores at read time.
+                    if _a.get("uuid") and _atom_prose_chars(_a) >= jd.CITE_MIN_CHARS:
+                        cite_uuids.add(_a["uuid"])
+    except Exception:
+        pass
+    healed = _heal_session_tops(s.get("path"), nodes, status)   # T319: machine-rooted tops nest (read-side)
+    heal_total += sum(1 for v in healed.values() if v[0])
+    _hidden = {k for k, v in healed.items() if v[1].get("hidden")}   # T333: rooted in a skill the harness loaded, no
+    hidden_total += len(_hidden)                                     #   request in the store to sit under: no card
+    children = {}
+    for nid, nd in nodes.items():
+        if nid in _hidden:
+            continue                             # the session's own view keeps the work
+        _hp = healed.get(nid)
+        _pk = _hp[0] if (_hp and _hp[0]) else nd.get("parentId")
+        if _pk is not None and _pk not in nodes and isinstance(nd.get("born"), dict):
+            _pk = None                           # T319: a born step whose parent is gone renders as a root that says so
+        children.setdefault(_pk, []).append(nid)
+    agent_open = _agent_open_set(nodes, children)   # authoritative-open subtree → never rendered 'done' (see helper)
+    parked_rows = _parked_rows(nodes, children)     # leapfrogged open rows → the quiet "parked" row cue (see helper)
+
+    def _subtree(root):                          # all node ids at/under root (pre-order)
+        stack, acc = [root], []
+        while stack:
+            x = stack.pop(); acc.append(x); stack.extend(children.get(x, []))
+        return acc
+
+    # VERDICTS ONLY (the user 2026-07-15; roll-UP removed — it painted an authored-looking ✓ on a
+    # goal nobody ruled done, see build_session's _subtree_done twin): a node is "done" if it's
+    # explicitly nodeComplete (verdict or roll-down cache), OR if a done ancestor checks it off
+    # (roll-DOWN, threaded by flatten through ancestor_done — dimmed disc). All-children-done alone
+    # no longer checks a parent; the closer rules those (_subtree_done_candidates) and the check
+    # appears when its verdict lands.
+    _cdone = {}
+    def _closure_done(nid):
+        if nid in _cdone:
+            return _cdone[nid]
+        nd = nodes.get(nid)
+        if not nd:
+            _cdone[nid] = False
+            return False
+        res = bool(nd.get("nodeComplete"))
+        if not res and nd.get("umbrella"):         # ARCHIVED pre-T101 container — history renders
+            # structurally-complete (mints retired; live ones dissolve every rollup): the
+            kids = [c for c in children.get(nid, []) if not nodes[c].get("cleared")]
+            res = bool(kids) and all(_closure_done(c) for c in kids)
+        _cdone[nid] = res
+        return res
+
+    # Order children MOST-RECENT-FIRST by subtree-max mt — the SAME recency key the ledger tree uses
+    # (build_session _submax), so every goal-tree view reads newest-first: the card's inline sub-goal
+    # checklist, the modal tree, and the ledger TOC all agree (the user 2026-06-17). mt (last-touched)
+    # falls back to t for never-modified nodes.
+    _fsmemo = {}
+    def _fsubmax(cid):
+        if cid in _fsmemo:
+            return _fsmemo[cid]
+        cn = nodes.get(cid) or {}
+        m = cn.get("mt", cn.get("t", 0))
+        for k in children.get(cid, []):
+            m = max(m, _fsubmax(k))
+        _fsmemo[cid] = m
+        return m
+
+    # BLOCKED rolls UP the tree (the user 2026-07-11: nimbus's Needs-you traced to a block buried
+    # under a collapsed row — "shouldn't the block propagate up so I see it?"). Mirror of the judge's
+    # any_blocked: a node reads "question" when it — or any descendant chain not inside a completed
+    # subtree — holds an open block (a done subtree's block is moot, same short-circuit). This is
+    # also what the CLIENT was designed for: hasQuestionDescendant exists to find the LOWEST ? (the
+    # actual ask) beneath rolled-up ancestors.
+    _qmemo = {}
+    def _closure_blocked(nid):
+        if nid in _qmemo:
+            return _qmemo[nid]
+        nd = nodes.get(nid)
+        if not nd or nd.get("cleared") or (_closure_done(nid) and nid not in agent_open):
+            _qmemo[nid] = False
+            return False
+        res = bool(nd.get("blocked")) or any(_closure_blocked(c) for c in children.get(nid, []))
+        _qmemo[nid] = res
+        return res
+
+    # The rejudging latch's CLEAR bound (the user 2026-07-31): the block a top card surfaces may
+    # live on a DESCENDANT (blocked rolls up, _closure_blocked above), and the unblocker stamps
+    # blockCheckT on the node it EXAMINES — the blocked child — never on the top. The latch used
+    # to read the top's own watermark, which for a child-held block stays None forever: every
+    # plain reply dropped the card to Working (plain_user_t > 0 is always true) and every landing
+    # turn advanced disp_t past the reply and lifted it back to Needs-You — the same strobe the
+    # watermark bound fixed for top-level blocks (PR #144), reintroduced one level down. The
+    # audited card flipped seconds-apart pairs at every conversational turn for half an hour.
+    # The bound is therefore the OLDEST watermark among the subtree's OPEN blocked nodes (the
+    # exact closure _closure_blocked walks, same done/cleared gates): the card returns to
+    # Needs-You only once EVERY block it is surfacing has been re-examined with evidence
+    # covering the reply. None when the walk finds no open block (a stale rollup) — the caller
+    # falls back to the top's own watermark, the pre-existing semantics.
+    _bcmemo = {}
+    def _block_check_floor(nid):
+        if nid in _bcmemo:
+            return _bcmemo[nid]
+        nd = nodes.get(nid)
+        if not nd or nd.get("cleared") or (_closure_done(nid) and nid not in agent_open):
+            _bcmemo[nid] = None
+            return None
+        vals = [int(nd.get("blockCheckT") or 0)] if nd.get("blocked") else []
+        vals += [v for v in (_block_check_floor(c) for c in children.get(nid, [])) if v is not None]
+        res = min(vals) if vals else None
+        _bcmemo[nid] = res
+        return res
+
+    def flatten(nid, out, ancestor_done=False, boundary=None):  # AskTreeNode flat list, root first; nest via children ids
+        nd = nodes[nid]
+        kids = sorted(children.get(nid, []), key=_fsubmax, reverse=True)   # most-recent-first (matches the ledger)
+        explicit = bool(nd.get("nodeComplete"))
+        # AUTHORITATIVE-open override (the user 2026-07-01): an open agent to-do item — or an umbrella
+        # holding one — is NEVER done, even if a nodeComplete ancestor would roll 'done' down onto it.
+        # Mirrors the judge's rollup_status; without it the open item read 'done' → the "checked off" hover.
+        done = (explicit or _closure_done(nid) or ancestor_done) and nid not in agent_open
+        derived = done and not explicit            # roll-up / roll-down → DIMMED ✓ disc, not the full one
+        st = "done" if done else ("question" if _closure_blocked(nid) else "open")
+        # The node's deep-link target SEGMENT: its NEWEST trail seg — the resolve turn for
+        # done/blocked nodes, the latest activity for open ones (where it stands, not where born).
+        _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid)
+        # A HANDOFF tracking node ("↪ delegated to <peer>") finally ships as its designed kind: the
+        # feed's delegations section (fask-delegations, built to the 2026-06-10 handoff spec) keys on
+        # kind "handoff" and had sat dormant because flatten hardcoded "ask" — the sender's card
+        # showed a bare text row with no recipient identity and no visible cross-card LINK (the user
+        # 2026-08-16, who watched a clear take the linked card with it and had no way to see why).
+        # who/whoSid/whoColor become the RECIPIENT's identity for these rows — exact, from the
+        # courier-recorded handoff.peer, never inferred.
+        _ho = nd.get("handoff") if isinstance(nd.get("handoff"), dict) else None
+        _ho_sid = str(_ho.get("peer") or "") if _ho else ""
+        if _ho_sid:
+            peers_read.add(_ho_sid)              # a peer this row names (its registry entry is a dependency)
+        _born = nd.get("born") if isinstance(nd.get("born"), dict) else (healed.get(nid) or (None, None))[1]
+        out.append({"id": nid, "kind": "handoff" if _ho_sid else "ask", "text": nd["text"],
+                    "born": _born or None,   # T319: a step the session started on its own (why it sits here)
+                    "who": (_name_of(_ho_sid) or _ho_sid[:8]) if _ho_sid else name,
+                    "whoSid": _ho_sid or fsid,
+                    "whoColor": _name_color(_ho_sid) if _ho_sid else color,
+                    "whoWorking": who_working, "status": st, "derived": derived,
+                    # user-cleared sub (nodeOverride op:clear) → renders struck-through + faded with a
+                    # "cleared" chip; `status` above stays honest (box = done, the user 2026-07-26)
+                    "cleared": bool(nd.get("cleared")),
+                    # this DONE sub's outcome was already REVIEWED: its done predates the top's
+                    # review boundary (jd.review_boundary — the same boundary the distiller scopes
+                    # the takeaway with, so the fold and the summary can never disagree). The card
+                    # collapses these behind one "N reviewed earlier" row instead of re-presenting
+                    # them on every re-completion (the user 2026-08-19). `out` is empty only for
+                    # the ROOT row, which is the card head, never a checklist row.
+                    "reviewedEarlier": bool(boundary and out and done
+                                            and jd._done_since(nd) <= boundary) or None,
+                    # a rolled-UP question (the block lives in a descendant, not here) — the client's
+                    # mark tooltip says "blocked inside", and the actual ask keeps its own ⏸ below
+                    "qderived": st == "question" and not nd.get("blocked"),
+                    # LEAPFROGGED row (the user 2026-08-24): open, nothing filed under it, while N
+                    # younger siblings were dispatched past it — the quiet "parked" tag + the card's
+                    # dim sub-goals suffix. Gated on the OPEN render state so a rolled-down or
+                    # closed row can never wear it; mint/retire events live in _parked_rows.
+                    "parked": ({"n": parked_rows[nid]} if (st == "open" and nid in parked_rows) else None),
+                    # AUTHORITATIVE tier: this node mirrors an item on the agent's OWN to-do list, so its
+                    # open/done is agent-asserted (solidity = authority in the disc render). None = a plain
+                    # judge-inferred node. (the user 2026-07-01)
+                    "auth": (nd.get("agentTask") or {}).get("status"),
+                    # `last` drives each row's "(Xm ago)" age + recency tint: the node's LAST ACTIVITY
+                    # (newest mt in its subtree, _fsubmax), so a replied-to / re-touched node freshens in
+                    # the modal tree just as its card does — not pinned to the mint `t` (the user
+                    # 2026-07-01). `t` stays the mint time (the node's nav-time fallback).
+                    "t": nd["t"], "last": _fsubmax(nid),
+                    "_ageT": _fsubmax(nid),   # the epoch the row's recency tint is computed from; trgb itself is the FOLD's
+                    #                           (_feed_fold_card, per build), never the memoized entry's
+                    # mt = last-modified (the segment the planner applied done / block) → a blocked or
+                    # done node deep-links to WHERE IT RESOLVED, not where it was minted. Falls back to
+                    # t for never-modified nodes (open work, derived done). (the user 2026-06-16.)
+                    "mt": nd.get("mt", nd["t"]),
+                    # anchorUuid = the WORK anchor (reply assistant atom of the resolve/mint segment) →
+                    # the mark/time zones deep-link here. promptAnchorUuid = the PROMPT anchor (the
+                    # MINTING segment's trigger = the user's message) → the TITLE deep-links here, by id,
+                    # landing on the user turn (no kind-restricted nearest-time needed). (2026-06-17.)
+                    "anchorUuid": _wa,
+                    "promptAnchorUuid": _pa,
+                    "summary": nd.get("summary"),                   # distiller's key takeaway — shown in the MODAL only — the user 2026-06-17
+                    "blockSummary": nd.get("blockSummary"),         # block-distiller's DECISION BRIEF (MODAL); null until produced — the user 2026-06-18
+                    "relayNote": nd.get("relayCarried") or None,    # a far host still holds a relayed question after its wait ended (relayCarried): its own line under the brief, never a brief paragraph (briefParts maps those)
+                    "followupPending": nd.get("followupPending"),   # per-node "Followed up" chip in the modal tree (business 2026-06-17)
+                    # the per-item story (MODAL, non-done only): newest block/unblock/verdict rows with
+                    # anchors, so an open sub answers 'is this still active?' in place (the user 2026-07-20)
+                    "log": _node_log_rows(nd, seg_uuid) if st != "done" else None,
+                    "children": kids})
+        for c in kids:
+            flatten(c, out, ancestor_done=done, boundary=boundary)
+        return out
+    # HARD blocked floor: a session stopped RIGHT NOW on a live permission prompt (the live row's state)
+    # floors its ACTIVE-FOCUS card under BLOCKED — the strongest signal, beats the goal's planner
+    # status. (The planner's SOFT block, nd["blocked"], is the model's "needs user" verdict; this is
+    # the live event.) Gated on the ROLLED-UP status, NOT the raw nodeComplete flag: a focus that is
+    # nodeComplete but the settled gate still holds at "working" (the session marked it done, then kept
+    # working under it and live-blocked) IS floored — so a live block always surfaces; only a genuinely
+    # settled "completed" (or user-"cleared") card is left alone, its block being for new, not-yet-placed
+    # work. (the user 2026-06-18: a live-blocked nodeComplete-but-working focus wasn't reaching BLOCKED.)
+    perm_top = None
+    perm_state = tm.get("state") if tm else None
+    if perm_state in _NEEDS_INPUT_STATES:               # live prompt (permission Allow/Deny OR a picker)
+        f = store.get("lastNode")
+        while f and nodes.get(f, {}).get("parentId") is not None:
+            f = nodes[f]["parentId"]
+        if f in nodes and status.get(f) not in ("completed", "cleared"):
+            perm_top = f
+    # AWAITING signal (event-model, the user 2026-06-22): the session is paused on AGENT work it
+    # dispatched — a WORKING flavor, never needs-input. Sourced from the live subagent snapshot, the
+    # PENDING background tasks (launch not yet judge-placed; a placed launch's story belongs to the
+    # judge's stamp or the service chip — see _session_awaiting/_bg_split), or the SDK producer's
+    # states overlay; None when actively working.
+    # Computed BEFORE the API-error floor, which must yield to it (the user 2026-07-05).
+    _sess_aw = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
+    sess_awaiting_why = _sess_aw["why"] if _sess_aw else None
+    sess_awaiting_kind = _sess_aw["kind"] if _sess_aw else None
+    sess_awaiting_since = _sess_aw.get("since") if _sess_aw else None   # the wait's own event time (the user 2026-08-23)
+    sess_awaiting_count = _sess_aw.get("count") if _sess_aw else None   # how many are awaited — the pill's word agrees in number (T225)
+    sess_awaiting_peers = _sess_aw.get("peers") if _sess_aw else None   # named identities when the arm knows them (2026-08-26)
+    _note_peers(sess_awaiting_peers)
+    sess_awaiting_items = list(_sess_aw.get("items") or []) if _sess_aw else []   # the awaited rows (slice 2) — the pill lists them grouped
+    if sess_awaiting_why and not who_working:
+        ent_awaiting = name                      # the AWAITING dot list (await-green, the user 2026-07-13) — the
+        #                                          same split _session_chip makes; feed/chat dots match the chip
+    # API-error floor: a session stopped on an API error (transcript isApiErrorMessage, event-based)
+    # floors its focus top-goal under BLOCKED with an apiError reason → the feed card shows a red
+    # "API error" badge + a Retry button (the user 2026-06-16). Same focus-goal walk as the perm floor.
+    # GATED on awaiting, like _session_chip (4699) and build_session (5512) — this was the ONE ungated
+    # _api_error read (the user 2026-07-05, jld_audit): a main thread erroring BETWEEN agent waits is
+    # still IN MOTION, but the raw floor made the feed card wear red "API error" + "stalled" while the
+    # chat chip said Working — and api_top then suppressed the very awaiting flip that would have told
+    # the truth. One formula, one truth: awaiting wins; the floor applies only to a session truly dead
+    # in the water.
+    aerr = _api_error(s["path"]) if (ps and not who_working and not sess_awaiting_why) else None   # cache-only: fills in after the warm
+    _cap_off = _cap_switch_offer(fsid, aerr, now) if aerr else None   # the billing-switch OFFER (never a silent switch, 2026-08-30);
+    #                                              the build's clock, the one the key's `offer` component reads the cap window against
+    if aerr:
+        reads["usage"] = True                    # the offer reads usage.json: the key's `usage` component rides this record
+    api_top = None
+    if aerr:
+        f = store.get("lastNode")
+        while f and nodes.get(f, {}).get("parentId") is not None:
+            f = nodes[f]["parentId"]
+        if f in nodes and status.get(f) not in ("completed", "cleared"):   # rollup status, not raw nodeComplete (see perm floor)
+            api_top = f
+    # JUDGE-AUTH floor (the user 2026-08-12): this session's judges are failing on their CREDENTIAL
+    # (judge.py latched a credential-class error envelope; its next successful call clears it) — romp
+    # cannot analyze the session, so no card here can move on its own, and only the user can fix it
+    # (the key, the login, or the session's billing pick). Floor the focus top to needs-you wearing
+    # the story: the alternative was a board silently frozen in Working, which is exactly how a
+    # login-less host spent 13 hours and ~53k refused calls without a pixel changing. Yields to the
+    # LIVE floors (a permission prompt, the session's own API error): one interrupt at a time, the
+    # present event first — and the api floor's authErr copy already names the same credential fix.
+    jerr = _jauth_map.get(fsid)
+    jauth_top = None
+    if jerr and api_top is None and perm_top is None:
+        f = store.get("lastNode")
+        while f and nodes.get(f, {}).get("parentId") is not None:
+            f = nodes[f]["parentId"]
+        if f in nodes and status.get(f) not in ("completed", "cleared"):
+            jauth_top = f
+    _unnested = False
+    for _f in (perm_top, api_top, jauth_top):    # T319: a floor that RESOLVES to a healed top un-nests exactly that top:
+        _h = healed.get(_f) if _f else None      #   it keeps its card (the floor keys the card on it) and its face; the
+        if _h and _h[0] and _f in children.get(_h[0], []):   #   host's other rows are untouched
+            children[_h[0]].remove(_f)
+            children.setdefault(None, []).append(_f)
+            healed[_f] = (None, _h[1])
+            heal_total -= 1
+            _unnested = True
+        elif _h and _h[1].get("hidden") and _f in _hidden:   # T333: a hidden top the floor keys on comes back as a card
+            children.setdefault(None, []).append(_f)
+            healed[_f] = (None, {k: v for k, v in _h[1].items() if k != "hidden"})
+            _hidden.discard(_f)
+            hidden_total -= 1
+            _unnested = True
+    if _unnested:                                # the derivations below read the tree the card SHOWS (item 8 of the
+        agent_open = _agent_open_set(nodes, children)   #   fourth review): recomputed over the un-nested layout
+        parked_rows = _parked_rows(nodes, children)
+    plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
+    had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
+    had_awaiting = False                         # …and does any of them read AWAITING? → the session's await-green dot (below)
+    # The live background-task set, once per session: OWNERSHIP for the blocked-yield below (any live
+    # task counts there — the yield keys on the dispatch event, not on classification), and the
+    # judge-classified SERVICES for the neutral per-session chip (the user 2026-07-24). Idle-gated
+    # like the awaiting signal: an actively producing turn is just working.
+    live_tasks = _bg_live_norm(fsid, s["path"]) if (ps and not who_working) else []
+    owned = _bg_owner_tops(fsid, s["path"], live_tasks) if live_tasks else {}
+    if live_tasks and live:
+        svc = _bg_service_descs(fsid, s["path"])
+        if svc:
+            ent_bg = svc
+    for nid in children.get(None, []):
+        col = status.get(nid, "working")
+        if col == "cleared" or nid in cleared:
+            continue
+        if _pure_delegation_top(nodes, nid, sid=fsid, path=s["path"]):   # whole top is just peer
+            continue                                 # handoffs → coordination, not an inbox card
+        # AWAITING floor (event-based, the user 2026-06-22): a session paused on dispatched/delegated
+        # work is a WORKING flavor, never needs-input. Floor a working OR stale-blocked top to awaiting
+        # from (a) the session-level awaiting signal (live subagents / SDK states overlay),
+        # or (b) an unanswered outbound to a LIVE peer (postal wait-for — a stale block on a peer-waiting
+        # session yields to it). The live permission / API-error floors still win (the present event).
+        # the peer-wait only applies to a goal that EXISTED when the question was sent — a goal minted
+        # AFTER it can't be awaiting that answer (the user 2026-06-28). Scopes the stale session-level
+        # wait off unrelated newer goals; if every pre-question goal is resolved, nothing floors.
+        _peer_wait = (fsid in wmap and nodes[nid]["t"] <= wmap[fsid]["since"])
+        # A blocked top yields ONLY to a background task ITS OWN subtree dispatched, and only when
+        # that dispatch is NEWER than the block's own evidence. Two guards, both exact:
+        #  - OWNERSHIP (the user 2026-07-17, quartz): the 07-15 time-only guard compared the
+        #    session-wide newest dispatch — a campaign watcher relaunched after a kernel restart
+        #    (89s after an UNRELATED card's block) re-dressed a genuine needs-you as the await-green
+        #    awaiting badge. _bg_owner_tops resolves each live task's launch to its placed top;
+        #    a task owned elsewhere — or one whose launch can't be attributed (subagents, the
+        #    overlay, an unplaced launch) — never flips a blocked card. Genuinely stale blocks are
+        #    retired by the judge's own unblock path (new work filed on this branch), which is
+        #    placement-exact; this floor no longer approximates it session-wide.
+        #  - EVENT ORDER (the user 2026-07-15): even an owned task yields only when dispatched at/
+        #    after the block — an ask newer than the dispatch is live (nimbus ended its turn asking
+        #    the user questions while its own background timer ran).
+        _await_ok = bool(sess_awaiting_why)
+        _owned_why = None
+        _owned_since = None
+        if col == "blocked":
+            _blk_t = max([nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
+                          if nodes[x].get("blocked") and not _closure_done(x)] or [0])
+            _own = owned.get(nid)
+            # The yield stands on ownership + event order ALONE (no session-awaiting gate): under the
+            # service split, a placed launch no longer feeds sess_awaiting_why, but a dispatch from
+            # the blocked card's own thread still proves the thread moved past the block.
+            _await_ok = bool(_own) and _own["since"] >= _blk_t
+            if _await_ok:
+                _owned_why = "waiting on a background command%s" % (   # the chip's word for in-harness work (2026-09-05)
+                    (": " + _own["descs"][0]) if _own["descs"] else "")
+                _owned_since = _own["since"]           # the dispatch event that proved the yield
+        # The JUDGE's durable ⏳ stamp (the closer's awaiting verdict, kernel/judge.py): this goal's
+        # latest audited turn ended waiting on async work it set in motion. Store-backed, so it holds
+        # across kernel restarts — exactly where the live snapshot signals above go dark and a
+        # genuinely-waiting goal used to read as plain working, then "stalled". It floors WORKING
+        # only: a real needs-you (block) always outranks the annotation.
+        _sf = (_goal_awaiting_stamp_full(nodes, nid, children, answered_at=_peer_answered(fsid))
+               if col == "working" else None)
+        _stamp_why = _sf[1] if _sf else None
+        _stamp_kind = _sf[2] if _sf else None
+        _stamp_since = (_sf[0] or None) if _sf else None   # the stamp's awaitingAt — when the judge filed the wait
+        # the stamp arm NAMES its peers too (2026-08-26): the judge's awaitPeers keys resolve through
+        # the one identity ladder, so a judge-classified peer wait wears the same identity chips the
+        # delegation arm always has — before this the or-chain hardcoded peers=None on this arm
+        _stamp_peers = (sorted((_peer_identity(p) for p in _sf[3]), key=lambda d_: d_["name"])
+                        if _sf and _stamp_kind == "peer" and _sf[3] else None)
+        _note_peers(_stamp_peers)
+        # DELEGATION-derived awaiting (the courier's durable handoff graph, not the question-regex):
+        # every OPEN leaf under this top is a handoff-tracking node → the only outstanding work lives
+        # with peers, so the card reads ⏳ "delegated to <peer>" instead of plain working (which reads
+        # as "this session should be doing something"). Ends on the graph's own event: run_propagate
+        # checks the handoff off the moment the peer's linked goal completes. The session-scoped
+        # surfaces (rail/chat/timeline) read the SAME evidence via _session_delegated_why in
+        # _session_awaiting's stamp branch — keep the two in step (the user 2026-08-08).
+        _deleg_why = None
+        _deleg_since = None
+        _deleg_peers = None
+        if col == "working" and not _stamp_why and not _await_ok \
+                and _all_outstanding_delegated(nodes, nid):
+            # the SAME open test the gate used (2026-08-26): _all_outstanding_delegated proved every
+            # OPEN LEAF is a handoff via _open_leaves (whose agent-open pierce ignores a done marker),
+            # so the peers/since read here must walk the same set — the raw nodeComplete filter this
+            # replaces could see an EMPTY set the gate saw as non-empty, minting a nameless, durationless
+            # "delegated to a peer" card
+            _hnodes = [x for x in _open_leaves(nodes, nid)
+                       if isinstance(nodes[x].get("handoff"), dict)]
+            _deleg_peers = _handoff_peer_identities(nodes, _hnodes)
+            _note_peers(_deleg_peers)
+            _peers = sorted({d["name"] for d in (_deleg_peers or [])} or {"a peer"})
+            _deleg_why = "delegated to %s; waiting on their result" % ", ".join(_peers)
+            # the newest outstanding handoff's mint — the last local act before the wait began
+            _deleg_since = max([nodes[x].get("t") or 0 for x in _hnodes] or [0]) or None
+        if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
+                _await_ok or _stamp_why or _deleg_why or (col == "blocked" and _peer_wait)):
+            col = "awaiting"
+        # TRACKED delegation payloads (the user 2026-08-24): a report-back handoff renders as ONE
+        # card homed under the DELEGATOR. The sender's card is the PRIMARY — delegTracked names
+        # the recipient identities so the feed shows their live status right on it — and the
+        # recipient's planted copy is the SATELLITE (origin.tracked below) the feed collapses
+        # off the default board, still one click away via that session's own views (nothing runs
+        # in secret, 2026-08-11). Both keys ship only when present, so every untracked payload
+        # is byte-identical to before. The pair link stays the courier's msgId graph: clears and
+        # run_propagate cross it unchanged.
+        _tracked_hn = [x for x in _subtree(nid)
+                       if isinstance(nodes[x].get("handoff"), dict) and nodes[x]["handoff"].get("tracked")
+                       and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")]
+        _tracked_peers = (_handoff_peer_identities(nodes, _tracked_hn) or None) if _tracked_hn else None
+        _note_peers(_tracked_peers)
+        o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
+        origin = None
+        if isinstance(o, dict) and o.get("peer"):
+            # The "↪ from <peer>" badge is PROVENANCE and stays for the card's life (the user
+            # 2026-08-16: the badge used to vanish at the exact moment the recipient finished —
+            # run_propagate completes the sender's tracking node instantly — so a COMPLETED card
+            # never showed where its work came from, and a propagated clear read as one card
+            # mysteriously taking another with it). origin_live says whether the sender's linked
+            # goal is still OPEN: live → the affordance of an active handoff; absorbed → the same
+            # badge, dimmed, purely historical. This is the completed-column MERGE, heuristic-free:
+            # the one surviving card wears both identities, keyed on the courier's recorded link.
+            # NAMED origin_live, never `live`: this block once reused the session-level `live` —
+            # the backend-alive bit set at the top of the session loop — so every LATER card of
+            # the session, and the placeholders built after the loop, wore the badge's bool: a
+            # live session's cards dressed .dead and took the revive path; a dead session's
+            # offered Continue. Badges persist for the card's life, so one absorbed badge
+            # poisoned the session's whole card tail.
+            psid, gid = o["peer"], o.get("goalId")
+            peers_read.add(str(psid))            # the sender's store and registry entry are dependencies of this card
+            pstore, pfault = jd.load_goals_shared_or_fault(psid) if gid else (None, None)   # read-only peer view
+            sgoal = pstore.get("nodes", {}).get(gid) if pstore is not None else None
+            origin_live = bool(sgoal and not sgoal.get("nodeComplete") and not sgoal.get("cleared")
+                               and gid not in cleared)   # a sender whose store faults reads absorbed (dimmed,
+            #                                              no affordance) rather than aborting the build
+            # Name resolution: the live names registry first (a local sender may have been
+            # renamed), then the courier's plant-time snapshot (the only source for a
+            # FEDERATED sender, whose sid this kernel can't resolve), then the sid stub.
+            # peerHost renders as the same quiet "host:" prefix remote sessions wear on the
+            # timeline (host-prefix.ts) — a local resolve means a local sender, no host.
+            pname = _name_of(psid)
+            origin = {"peer": pname or o.get("peerName") or psid[:8],
+                      "peerHost": ("" if pname else o.get("peerHost") or ""),
+                      "peerSid": psid, "color": _name_color(psid), "live": origin_live}
+        # SENDER-SIDE handoff provenance (the user 2026-08-24): a TOP-LEVEL "↪ delegated to
+        # <peer>" tracking node wore its provenance as the card TITLE, arrow and all. The card
+        # now titles the WORK and ships the delegation as the badge mirroring origin above —
+        # see _handoff_card_fields. Every other card keeps its text untouched.
+        handoff_to, card_text = _handoff_card_fields(nodes, nid)
+        _note_peers([handoff_to] if handoff_to else None)
+        await_why = (sess_awaiting_why or _stamp_why or _deleg_why or _owned_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph, then the blocked-yield's owned dispatch (None for the postal-only case → the waitingOn chip names the peer)
+        await_kind = None                        # the winning why's KIND and SINCE ride beside it,
+        await_since = None                       # mirroring the or-chain exactly (a kindless winner
+        await_peers = None                       # stays kindless; since = the wait's own event time).
+        await_count = None                       # how many are awaited — the SAME number the chat chip words itself
+        await_items = []                         # the awaited ROWS the pill lists, grouped by kind (slice 2, 2026-09-05)
+        if col == "awaiting":                    # from (T228, the user's one-count rule): the live snapshot's own
+            # count, the peers a stamp or delegation names, one owned dispatch; None when the arm cannot know
+            for _w, _k, _s, _p, _n, _it in ((sess_awaiting_why, sess_awaiting_kind, sess_awaiting_since, sess_awaiting_peers, sess_awaiting_count, sess_awaiting_items),
+                                            (_stamp_why, _stamp_kind, _stamp_since, _stamp_peers, (len(_stamp_peers) if _stamp_peers else None), _awaiting_peer_items(_stamp_peers)),
+                                            (_deleg_why, "peer", _deleg_since, _deleg_peers, (len(_deleg_peers) if _deleg_peers else None), _awaiting_peer_items(_deleg_peers)),
+                                            (_owned_why, "task", _owned_since, None, 1, [])):
+                if _w:
+                    await_kind, await_since, await_peers, await_items = _k, _s, _p, _it
+                    await_count = _n if isinstance(_n, int) and _n > 0 else None
+                    break
+        # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
+        # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
+        # such node in its subtree — else (working/awaiting) its LAST ACTIVITY (the newest mt anywhere in
+        # its subtree, _fsubmax). Keying the time badge to the mint `t` made a goal OPENED hours ago but
+        # FINISHED moments ago read as "done hours ago" (the user 2026-06-19); the same pin made a WORKING
+        # goal you JUST replied to still read "15m ago" instead of freshening — a reply advances the goal's
+        # mt, so the card must too (the user 2026-07-01). `created` keeps the true mint time for the record.
+        disp_t = _fsubmax(nid)
+        if col == "completed":
+            # A completed card's time is when the WORK finished / it SETTLED — NEVER a later re-judge that
+            # re-touches the UMBRELLA node's own mt without changing anything (the user 2026-07-08: an
+            # hours-old completed card jumped to "3m ago" after a no-op re-judge re-stamped the top node's
+            # mt; a re-materialize can advance mt even when nothing changed). So derive ONLY from stable
+            # evidence: the settle time + the done DESCENDANTS' completion mt — excluding the top node `nid`
+            # itself, whose (re-touchable) mt _fsubmax had already folded in.
+            dts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid) if x != nid and _closure_done(x)]
+            # settledAt = when the card actually ENTERED the Completed column (the judge stamps it ONCE at
+            # settlement — NOT re-bumped by a no-op re-judge, verified stable while the umbrella mt drifted;
+            # it can lag the done op's mt by many segments). The column sorts by `t` oldest-at-top, so a
+            # just-settled card drops to the BOTTOM where the eye expects it, above older completions whose
+            # stale mt was even further back (the user 2026-06-29).
+            cand = max([nodes[nid].get("settledAt") or 0] + dts)   # settle time OR a real late-completing leaf
+            disp_t = cand or disp_t                                # both absent (legacy/childless) → keep _fsubmax
+        elif col == "blocked":
+            bts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
+                   if nodes[x].get("blocked") and not _closure_done(x)]
+            if bts:
+                disp_t = max(bts)
+        # followupAt = when a follow-up OPTIMISTICALLY moved this card into Working (optimistic_followup
+        # stamps it at the flip). Same idea as the Completed column's settledAt: the column sorts
+        # oldest-at-top, so without this the card sorts by its stale blocked-era mt and appears at the TOP,
+        # then the judge re-files the real follow-up work (≈now) and it lurches to the BOTTOM. Flooring
+        # disp_t to now at the flip lands it at the bottom AT ONCE, where the re-file will keep it — no jump
+        # (the user 2026-07-03). Once real work lands, _fsubmax passes followupAt and this is moot.
+        if col == "working":
+            disp_t = max(disp_t, nodes[nid].get("followupAt") or 0)
+        # RE-CHECK (the user 2026-06-27): a SOFT-blocked top you've answered with a TARGETED card-reply/nudge
+        # (followupPending on the top — precise, only this card) is no longer on YOU. It de-urgents (dotted,
+        # dropped from the needs-you tally) and drops to WORKING until the judge resolves or re-blocks it.
+        recheck = bool(col == "blocked" and nid != api_top and nid != perm_top
+                       and nodes[nid].get("followupPending"))
+        # RE-JUDGING (the user 2026-06-30; MOVED to Working 2026-07-02): a PLAIN reply on the thread
+        # AFTER the block moves the card to WORKING — it's the agent's move now, and the delay before
+        # the card left Needs-You was the user's complaint (2026-07-02). The flag holds until the
+        # UNBLOCKER has re-examined the block with evidence covering the reply (blockCheckT, its
+        # persisted watermark, reaches the reply); then the card returns to Needs-You exactly once —
+        # or leaves authoritatively if the judge lifted the block. The "Re-judging…" swirl rides along
+        # in Working. Never the hard floors (api/permission).
+        #
+        # LATCHED ON THE WATERMARK, NOT THE OPEN TURN (the user 2026-07-29). The flag used to be
+        # bounded by who_working, which made a blocked card on an ACTIVE session strobe
+        # working↔needs-you at every turn boundary — the audited card flipped seven times in six
+        # minutes while nothing about it changed. The turn-bound was a proxy for "the judge hasn't
+        # ruled on the reply yet"; blockCheckT IS that event: the unblocker advances it on every
+        # examine AND on the parse give-up path, so the latch cannot stick past a judge look. This is
+        # the same trust the TARGETED-reply arm (followupPending) already places in the judge to
+        # clear its store-backed flag. Cards move on new information, never on activity boundaries.
+        #
+        # NO ECHO ARM (the user 2026-07-22): the flip used to ALSO ride the backend send-echo
+        # (echo_send_t), for a sub-second flip before the turn's atom lands in the cached parse. At the
+        # time a composer slash-command echo never retired (its transcript form is the "<command-name>"
+        # wrapper, which did not text-match the raw echo; since 2026-09-10 the echo lands under
+        # sb.command_text_key, see _echo_landed_in), and the parser skips it from the human floor, so
+        # the stale echo pinned rejudging TRUE forever: the card sat in Working, idle, invisible to the
+        # nudge (which reads the still-blocked store). The latch arms only off the PARSE's plain-reply
+        # turn (a real transcript atom, never the echo), and the watermark clear is judge-driven, so
+        # the stranded-echo failure stays impossible whatever an echo does.
+        # The watermark that bounds the latch is the one covering THE BLOCK THE CARD SURFACES —
+        # a descendant's, when the block rolled up (_block_check_floor above; the user 2026-07-31).
+        _bct = _block_check_floor(nid)
+        rejudging = bool(col == "blocked" and nid != api_top and nid != perm_top
+                         and not nodes[nid].get("followupPending")
+                         and plain_user_t > disp_t
+                         and plain_user_t > (_bct if _bct is not None
+                                             else (nodes[nid].get("blockCheckT") or 0)))
+        # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
+        # A RE-CHECK'd soft-block (targeted follow-up) drops to WORKING (the user 2026-06-27): once you've
+        # replied to THAT card it's the agent's move, not yours, so it leaves the needs-input column entirely
+        # (still dotted + a "Re-judging…" swirl so you can see it pending). A plain reply (rejudging) now
+        # ALSO drops to Working — but only WHILE in flight (see the rejudging comment above).
+        # A TRANSIENT API error is NOT blocking either (the user 2026-06-29):
+        # auto-retry recovers it, so the card STAYS in Working with the "⚠ API error" chip. But a "prompt
+        # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
+        # only api_top WHEN tooLong, or a genuine soft block (col blocked & not recheck), keeps needs_input.
+        # A MODEL-scoped usage limit joins them (the user 2026-08-01): the session cannot run another
+        # turn until you switch model or top up, so leaving the card in Working left a working card on
+        # a session nothing could move — not nudged (the api-error gate suppresses it), not blocked,
+        # not awaiting, for 80 minutes.
+        # A safeguards REFUSAL joins them (the user 2026-08-15): deterministic on the same input,
+        # never auto-retried, so a Working card would sit on a session nothing can move — the
+        # human rewriting or dropping the ask IS the only unblock.
+        api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit")
+                                                      or aerr.get("modelLimit")
+                                                      or aerr.get("authErr") or aerr.get("refusal"))))
+        # NUDGE FAILED (plans/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
+        # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
+        # was still working-stalled; per the anti-loop rule it is never re-nudged, so the card carries
+        # the story instead. Surfaced only while the goal still reads working (a later block/completion
+        # resolves it, and `awaiting` means it's genuinely in flight — no failure to show then). A FORK
+        # nudge (`stalled` — the goal had open authoritative to-dos) that failed additionally FLOORS the
+        # card to needs-you: the agent can't self-block a to-do, we asked once, nothing moved — the
+        # human is the bottleneck now. The floor keeps requiring open to-dos AT DISPLAY TIME (agent_open)
+        # so it self-heals the instant the agent crosses the items off; the live api/permission floors
+        # still win (the present event).
+        nrec = _auto_nudge_data().get("nudged", {}).get(nid) or {}
+        _stall_rec = _stalls.get(nid)             # romp is holding this card (see "stalled" in the payload)
+        # ROUTING (2026-08-13): an in-flight-class hold (jd.WHY_IN_FLIGHT — romp's own review is the
+        # wait) presents as the Analyzing… swirl, never the stalled chip; every other hold paints the
+        # Stalled section. The old screen hid the in-flight records from BOTH surfaces, so one frozen
+        # between retries showed nothing — now the sweep retires them on their events and whatever
+        # stands presents somewhere by definition.
+        _stall_inflight = bool(_stall_rec and _stall_rec.get("why") in jd.WHY_IN_FLIGHT)
+        if _stall_inflight:
+            _stall_rec = None
+        # HARD RULE (the user 2026-08-13): a stalled card on a session that isn't doing anything
+        # files under BLOCKED — it needs eyes, whoever's bottleneck it is; Working is where it hid.
+        # This supersedes the 2026-07-23 "Working column only" stance. Keyed on the stall RECORD
+        # (event-latched: minted by the walk, popped by the sweep) plus the session's idle read —
+        # the same displacement precedent as recheck/rejudging's de-urgent smoothing: the session
+        # taking a turn IS new information, and the card returns to Blocked if the hold outlives it.
+        _stall_block = bool(_stall_rec and not who_working and not sess_awaiting_why)
+        # the chip shows while the failure is the live story: the goal still working, OR blocked BY the
+        # failure itself (the diary's latest block has src "nudge", 2026-07-07). A real judge verdict
+        # (planner/closer block, or completion) takes the story over and the chip yields.
+        _lastblk = next((e.get("src") for e in reversed(nodes[nid].get("log") or [])
+                         if e.get("kind") == "block"), None)
+        # ...and "takes the story over" must survive the card going BACK to working (the user 2026-07-09:
+        # g143 wore "stalled" although the closer had ruled it done after the failed nudge and a later
+        # user follow-up reopened it). The `failed` flag only resets on the NEXT nudge fire, so the
+        # working arm alone would resurrect the chip forever. Event-based retire: any diary event from a
+        # real actor (planner/closer/courier/user/agent) AFTER the nudge's own block means the stall was
+        # answered — the chip yields for good, whatever column the card is in now.
+        _nlog = nodes[nid].get("log") or []
+        _nblk_at = next(((e.get("at") or e.get("ev_t") or 0) for e in reversed(_nlog)
+                         if e.get("kind") == "block" and e.get("src") == "nudge"), None)
+        # The row is the retire anchor, but it's also the write most exposed to a judge pass's
+        # stale save (g52, 2026-07-16: the planner's held-store save erased it while `failed`
+        # survived in auto-nudge.json — with _nblk_at None the chip could never retire, and it
+        # said "waiting on you" straight through the user's own follow-up). Fall back to the
+        # failure stamp's own time (failedAt, written with `failed`); a legacy record carrying
+        # neither retires on any user event at all — of the two failure modes, a false
+        # "waiting on you" is the one that breaks flow.
+        _nfloor = _nblk_at if _nblk_at is not None else nrec.get("failedAt")
+        # "unblocker" is a real actor here (the user 2026-08-14: its unblock ruled the nudge's
+        # block answered and moved the card back to Working, while the chip — whose claim IS that
+        # block — survived it, a red "waiting on you" on a card the judges had just un-waited)
+        _story_moved = (any((e.get("at") or e.get("ev_t") or 0) > _nfloor
+                            and e.get("src") in ("planner", "closer", "courier", "user", "agent",
+                                                 "unblocker")
+                            for e in _nlog) if _nfloor is not None
+                        else any(e.get("src") == "user" for e in _nlog))
+        nudge_failed = (bool(nrec.get("failed")) and not _story_moved
+                        and (col == "working" or (col == "blocked" and _lastblk == "nudge")))
+        # A live picker/permission floor (perm_top) is a GENUINE block, so the kernel reports its column as
+        # needs_input — NOT "working" with the client re-routing it by it.blocked (which was crafty + split
+        # the truth: build_feed said working while the card showed under Blocked, and the distiller line,
+        # keyed on it.column, then stayed hidden). Now it.column is authoritative: the card IS blocked, the
+        # client files by it.column, and the distiller line shows (the user 2026-06-29).
+        column = ("needs_input" if (api_block or nid == jauth_top or nid == perm_top or _stall_block
+                                    or (col == "blocked" and not recheck and not rejudging))
+                  else "completed" if col == "completed" else "working")
+        had_working = had_working or column == "working"
+        had_awaiting = had_awaiting or col == "awaiting"   # the FLAVOR, not the column: awaiting rides Working
+        # distillState (the user 2026-07-21): which distilled line the CARD should show — keyed on the
+        # GENUINE resolution state, NOT the transient `column`. recheck/rejudging drop a still-blocked
+        # card to Working the moment its session takes a turn (de-urgent smoothing), and `column`, keyed
+        # on that, flickered the decision brief OFF every time — so a busy session's blocked card read as
+        # "unblocked, no summary" (the docs thread). distillState rides the real block (api_block /
+        # perm_top / col=="blocked"), so the brief/takeaway stays put through the re-judge window; the
+        # column still moves for placement. Completed is stable (never recheck/rejudged), so it matches.
+        distill_state = ("completed" if col == "completed"
+                         else "blocked" if (api_block or nid == jauth_top or nid == perm_top
+                                            or col == "blocked")
+                         else None)
+        # summaryAnchorUuid: where a click on the distilled summary line lands.
+        # COMPLETED goals pin to the COMPLETION TURN'S wrap-up — event-derived, not a guess: the
+        # closer's DONE-ANCHOR appended the completing turn's final segment as the node's trail tail
+        # (judge _close_turn), so that segment's last substantive assistant block is the big turn-end
+        # recap the user expects the summary to open on (the user 2026-07-14: the distiller's own
+        # citation kept naming a mid-turn status note that merely passed the prose floor).
+        # NEXT: the anchor the distiller/brief itself CITED while writing the line
+        # (node["summaryAnchor"], judge _split_source) — the reader that wrote the summary names what
+        # it read (the user 2026-07-01); honored only when the uuid resolves in this parse AND carries
+        # substantive prose (cite_uuids — a citation on a connective stub is wrong by construction,
+        # the user 2026-07-14). This is the primary tier for a BLOCKED brief (no completion turn
+        # exists) and for a completed goal whose recap segment is tool-only.
+        # FALLBACK (older goals, no/invalid/stub citation): the most CURRENT substantive assistant
+        # message across the goal's whole subtree trail (mint→resolution). Never the old
+        # biggest-text-block pick: "longest ever" is monotone, so a long early analysis held the
+        # anchor forever while the real outcome landed later (the user 2026-07-01).
+        _sa_u, _cited = None, nodes[nid].get("summaryAnchor")
+        if col == "completed":
+            # The newest trail TAIL across the SUBTREE, not just the top's own (the user 2026-07-15,
+            # the g91 click): a BOTTOM-UP-completed umbrella (all children done) has no done verdict
+            # of its own, so the DONE-ANCHOR never appended a completing segment to ITS trail —
+            # trail[-1] was still the MINT segment and the pin sent the summary click to the goal's
+            # oldest prose instead of the wrap-up the distiller correctly cited. A child's
+            # done-anchored tail IS its completing turn's segment, so the newest substantive tail is
+            # the completion recap for both shapes (an explicitly-done top's own tail stays newest).
+            _tail = None                             # (seg_t, uuid) of the newest substantive tail
+            for _x in _subtree(nid):
+                _tr = nodes[_x].get("trail") or []
+                if not _tr:
+                    continue
+                _u, _sub, _t = seg_best.get(_seg_key(_tr[-1]), (None, False, 0))
+                if _u and _sub and (_tail is None or _t > _tail[0]):
+                    _tail = (_t, _u)
+            if _tail:
+                _sa_u = _tail[1]
+        if _sa_u is None and _cited and _cited in cite_uuids:
+            # THE GROUNDING CAN BE OUTRUN (the user 2026-08-28, T153): the citation names what
+            # the summary was WRITTEN FROM — but a reply that reopens the card adds stretches
+            # the stored summary has never seen (no re-completion yet, so no re-distill event),
+            # and the click then lands in the stale FIRST stretch of a visibly two-stretch
+            # card. When the follow-up stamp or any subtree trail segment postdates the
+            # summary's own coverage stamp, the cited tier YIELDS to the most-current-
+            # substantive walk below, so the click follows the freshest evidence; the citation
+            # resumes authority the moment a re-distill lands (the stamp catches up).
+            # Display-only: no column implication.
+            _cov = max(int(nodes[nid].get("distilledMt") or 0),
+                       int(nodes[nid].get("briefedMt") or 0))
+            _outrun = bool(_cov) and (
+                (nodes[nid].get("followupAt") or 0) > _cov
+                or any((seg_best.get(_seg_key(_sid), (None, False, 0))[2] or 0) > _cov
+                       for _x in _subtree(nid) for _sid in (nodes[_x].get("trail") or [])))
+            if not _outrun:
+                _sa_u = _cited
+        if _sa_u is None:
+            _best = None                             # (substantive, seg_t): prefer substantive, then latest
+            for _x in _subtree(nid):
+                for _sid in (nodes[_x].get("trail") or []):
+                    _u, _sub, _t = seg_best.get(_seg_key(_sid), (None, False, 0))   # timestamp-invariant: resolve a drifted trail seg id
+                    if _u and (_best is None or (_sub, _t) > (_best[0], _best[1])):
+                        _best = (_sub, _t, _u)
+            if _best:
+                _sa_u = _best[2]
+        if not _sa_u:
+            # LAST RESORT (the user 2026-07-02: a completed card's summary was unclickable — the cited
+            # atom fell outside every segment, and no trail segment offered prose either). Fall back to
+            # the newest trail segment's WORK anchor (seg_uuid — the same target the modal's node rows
+            # nav to), so the summary still deep-links to roughly where the work concluded. Only a goal
+            # with NO resolvable trail at all ends up link-less.
+            for _x in _subtree(nid):
+                for _sid in reversed(nodes[_x].get("trail") or []):
+                    _u = seg_uuid.get(_seg_key(_sid))
+                    if _u:
+                        _sa_u = _u
+                        break
+                if _sa_u:
+                    break
+        if _sa_u is None and ps is None:
+            # COLD-PARSE fallback (the user 2026-07-20): every tier above reads parse-derived maps,
+            # and right after a kernel restart ps is None until _warm_fleet_bg — so for that window
+            # EVERY card shipped summaryAnchorUuid null and the summary click hit the "no anchor was
+            # recorded" toast (a lie: the anchor is on the node). With no parse to validate against,
+            # serve the distiller's stored citation raw — the chat's own landing handles a bad uuid
+            # honestly, and the validated tiers take back over on the first warm push.
+            _sa_u = _cited
+        card = {
+            "itemId": nid, "sid": fsid, "name": name, "color": color, "text": card_text,
+            "t": disp_t, "live": live,
+            "_ageT": disp_t,                 # the epoch the tint is computed from; trgb is the fold's (_feed_fold_card)
+            "turnId": nid, "origin": origin,
+            **({"handoffTo": handoff_to} if handoff_to else {}),
+            **({"delegTracked": _tracked_peers} if _tracked_peers else {}),
+            # the satellite hides ONLY while the pair is INTACT and the work runs its normal
+            # course: a needs-you block always surfaces (interrupt only when the human is the
+            # bottleneck), and a primary that closed or cleared un-hides the copy — origin.live
+            # reads the PRIMARY handoff node, so every pair divergence self-heals to a visible
+            # card instead of work running in secret (review 2026-08-24).
+            **({"satellite": True} if isinstance(o, dict) and o.get("tracked")
+               and origin and origin.get("live") and column != "needs_input" else {}),
+            "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
+            "followupAt": nodes[nid].get("followupAt") or None,   # WHEN the follow-up/continue went — the latched button's honest age (T150)
+            # DONE-CONFIRMING (the user 2026-07-24): the done verdict is in; only the settle event is
+            # pending. The card STAYS in Working (the settle gate exists precisely so the column never
+            # flickers working↔done) and wears a steady "done, confirming" cue instead. From the
+            # rollup's authoritative export, never the raw nodeComplete flag (which lies for agent-open
+            # umbrellas is_complete refuses).
+            "doneConfirming": (True if (column == "working" and nid in confirming) else None),
+            "waitingOn": (wmap.get(fsid) if (column == "working" and _peer_wait) else None),   # 'waiting on <peer>' chip: unanswered outbound to a live peer, only on a goal that predates the question (the user 2026-06-22/28)
+            # awaiting flavor: held in Working with a ⏳ awaiting badge (waiting on dispatched/delegated
+            # work) — the user 2026-06-22. `tasks` = the live bg-task descriptions (the user 2026-07-13):
+            # when present the card wears the compact "Waiting on task" pill (expands to this list, like
+            # Sub-goals) instead of the boxed why; empty for subagent/overlay flavors, which keep the box.
+            "awaiting": ({"why": await_why, "kind": await_kind, "since": await_since,
+                          "count": await_count,   # the one number every surface words itself from (T228)
+                          "peers": await_peers,   # delegation wait → [{name, host, sid, color}] for the identity-coloured box (the user 2026-08-23)
+                          "items": await_items,   # the awaited rows, grouped by the pill's expansion (slice 2)
+                          "tasks": _awaiting_task_descs(fsid, s["path"])} if col == "awaiting" else None),
+            "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
+            "distillState": distill_state,   # "completed" | "blocked" | null — the GENUINE state the distiller line keys on, so the brief/takeaway doesn't flicker off when recheck/rejudging drops `column` to working (the user 2026-07-21)
+            "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
+            "relayNote": nodes[nid].get("relayCarried") or None,   # a far host still holds a relayed question after its wait ended (relayCarried): the card's own line under the brief, never a brief paragraph (the per-paragraph stamps map briefParts onto the brief's paragraphs and allow exactly one extra)
+            "briefParts": nodes[nid].get("briefParts") or None,   # MULTI-item brief: [{id, since}] one per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null for single-item briefs, whose stamp is the card header's age (the user 2026-07-24)
+            "summaryParts": nodes[nid].get("summaryParts") or None,
+            # the user FOLLOWED UP after the takeaway they read (followupAt postdates what the
+            # summary covers) → the summary section says so instead of presenting the old takeaway
+            # as current; self-clears when the re-distill stamps a newer distilledMt (16 live cards
+            # measured reading stale, the user 2026-08-19)
+            "summaryStale": bool((nodes[nid].get("followupAt") or 0) > (nodes[nid].get("distilledMt") or 0)
+                                 and (nodes[nid].get("summary") or "").strip()) or None,   # the DONE twin: [{id, since}] per takeaway paragraph when the distiller split by <completed-items>; done-event times (the user 2026-07-24)
+            "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
+            "summaryAnchorUuid": _sa_u,    # click the summary line → the completion turn's wrap-up (completed pin), else the cited/latest prose (the user 2026-07-14)
+            # the supporting SPAN (T218): the distiller's verbatim quote, located in the cited atom at
+            # write time — shipped ONLY while the resolved anchor IS the cited atom (the fallback tiers
+            # land elsewhere, where the span would highlight the wrong text); the landing scrolls to
+            # and highlights it, and a null keeps today's whole-message behavior
+            "summaryAnchorQuote": (nodes[nid].get("summaryQuote")
+                                   if _sa_u and _sa_u == nodes[nid].get("summaryAnchor") else None),
+            # per-paragraph landings (T220, the user's ruling): each cited paragraph's own atom +
+            # located span, aligned to the takeaway's paragraphs (None = that paragraph falls back
+            # to the whole-summary landing). Gated exactly like the quote above: the cited tier
+            # must hold authority (the T153 outrun rule) — absent on old stores forever, no sweep.
+            "summaryAnchorsPara": ([({"u": e["a"], **({"q": e["q"]} if e.get("q") else {})} if e else None)
+                                    for e in nodes[nid].get("summaryAnchors") or []]
+                                   if (nodes[nid].get("summaryAnchors")
+                                       and _sa_u and _sa_u == nodes[nid].get("summaryAnchor")) else None),
+            "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
+            "failLog": nodes[nid].get("failLog") or None,   # the summarizer's failed attempts (judge _fail_log): model + literal error per try → the chip's hover history + modal "What was tried" (the user 2026-08-18)
+            "nudged": ({"count": int(nrec.get("count", 0)), "times": _nudge_times().get(nid, [])[-8:]}
+                       if nrec.get("count") else None),   # auto-nudge HISTORY (fires + when) → the stalled chip's evidence, on the chip tooltip + modal (the user 2026-07-02)
+            "blocked": ({"state": "apiError",
+                         # the OFFER (2026-08-30): login-billed + capped window + a key on hand →
+                         # the card proposes switching THIS session's billing; the pick is the
+                         # user's alone, both directions (see _cap_switch_offer)
+                         **({"capOffer": _cap_off} if _cap_off else {}),
+                         "status": aerr.get("status"),
+                         "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
+                         "spendLimit": bool(aerr.get("spendLimit")),
+                         "modelLimit": bool(aerr.get("modelLimit")),
+                         "authErr": bool(aerr.get("authErr")),
+                         "refusal": bool(aerr.get("refusal")),
+                         "what": ("this account hit its monthly spend limit — raise it at claude.ai/settings/usage to continue" if aerr.get("spendLimit")
+                                  else "this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
+                                  # the CLI's own text names the model and the two remedies; the card
+                                  # states them, because "Retry to resume" is false here (the user 2026-08-01)
+                                  else "this session's model is out of allowance — switch its model or add credits to continue" if aerr.get("modelLimit")
+                                  # a dead credential: retrying re-presents it forever — name the fix
+                                  # (per-session auth, the user 2026-08-08)
+                                  else "this session's sign-in or API key isn't working — fix the login (claude /login) or the key, or switch which one it bills" if aerr.get("authErr")
+                                  # a refusal is deterministic: retrying re-sends the same prompt and
+                                  # collects the same refusal — name the real fix (the user 2026-08-15)
+                                  else "the model's safeguards refused this prompt — rewrite it or drop this thread" if aerr.get("refusal")
+                                  else "this session stopped on an API error — Retry to resume")} if nid == api_top
+                        # the session itself is fine — it's romp's ANALYSIS of it whose credential is
+                        # refused, so the copy blames the judges, not the session (the user 2026-08-12)
+                        else {"state": "judgeAuth", "mode": jerr.get("mode"),
+                              "since": jerr.get("t"), "text": jerr.get("note") or "",
+                              "what": ("romp can't analyze this session — the API key its judges bill is being refused. Fix the key behind Claude Code's apiKeyHelper (rotate the vault item) or switch which account this session bills"
+                                       if jerr.get("mode") == "key" else
+                                       "romp can't analyze this session — the login its judges bill is being refused. Sign in again (claude /login) or switch which account this session bills")} if nid == jauth_top
+                        else {"state": perm_state,
+                              "what": ("this session is stopped awaiting your input" if perm_state == "picker"
+                                       else "this session is stopped awaiting your approval")} if nid == perm_top
+                        else None),
+            "retrying": (sess_retrying if column == "working" else None),   # api-retry storm in the OPEN turn → "retrying since HH:MM" chip on the working card; chip only, no column move (the user 2026-07-09)
+            "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (plans/stalled-open-todos-nudge.md)
+            # STALLED (the user 2026-07-23): romp's nudge gate is holding this card behind a reviver that
+            # isn't retiring, so nothing is moving it and nothing was saying so. `why` is the kernel's own
+            # mechanical reason; `note` is the staller's plain-language version of it (null until the judge
+            # writes one). Read-side gated on the LIVE stall record, so the note vanishes the moment the
+            # wait clears, without anyone having to erase it. Working column only: a stall is romp being
+            # the bottleneck, never the user, so it must not read as needs-you.
+            "stalled": ({"why": _stall_rec["why"], "since": _stall_rec["since"],
+                         "note": nodes[nid].get("stallSummary") or None,
+                         "blocked": _stall_block}
+                        if (_stall_rec and not nudge_failed
+                            and (column == "working" or _stall_block)) else None),
+            "interrupting": bool(sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # a user interrupt is IN FLIGHT → steady "interrupting…" badge until it settles (the user 2026-07-07)
+            "interrupted": bool(sess_interrupted and not sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge (only ONCE the interrupt has settled); nudge suppressed until their next message (the user 2026-07-05)
+            "column": column,
+            "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
+            "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
+            "judging": bool((sess_judging or _stall_inflight) and column == "working"),
+            "working": (sess_progress if column == "working" else None),   # open-turn narration: tool count + since (the user 2026-08-13)   # turn settled, closer verdict pending → "Analyzing…" swirl covers the finished-but-still-Working beat (the user 2026-07-13); same key the provisional card wears
+            "sessState": (sess_state if column == "working" else None),   # the mute-proof floor: open | quiet | unknown (the user 2026-08-14 — a working card ALWAYS says its state)
+            "warnRows": (_card_warn_rows(dbg_rows, fsid, set(_subtree(nid)),
+                                         store.get("placements") or {}) or None)
+                        if dbg_rows is not None else None,   # debug mode only: the card's judge failures, modal "Warnings" section
+            # T319: this root is work the SESSION started (a planner-born step whose parent is gone, or a
+            # pre-rule machine-rooted top the heal found no request to nest under): the face names the
+            # parent request when one is known and says why the work exists, in one line
+            "sessionStarted": _session_started_face(nodes, nid, healed),
+            "tree": flatten(nid, [], boundary=jd.review_boundary(nodes[nid]))}
+        # THE SERVING FOLD, candidate side (the user 2026-08-28, T137: fan-out lives inside the
+        # ask card — the T101 ruling applied to the mirror, view-side): a to-do mirror top the
+        # sync stamped as SERVING a dispatch folds into the sender's ask card instead of
+        # standing alone on the board. Candidate only — the fold commits in the post-pass IFF
+        # the sender's tracker row actually rendered this build (never orphan rows into an
+        # unrendered card; the candidate falls back to its own card). NEEDS-YOU BREAKS THROUGH:
+        # a serving mirror folds ONLY from the quiet columns (working/completed) — any
+        # needs-input state stands on the board like any needs-you card until it lifts, the
+        # store-independent breakthrough rule.
+        _srv = nodes[nid].get("serving")
+        if (isinstance(_srv, dict) and _srv.get("goalId")
+                and column in ("working", "completed")):
+            ent_folds.append({"tracker": _srv["goalId"], "card": card})
+        else:
+            ent_asks.append(card)
+    # A session actively working a brand-new ask shows NO card until the planner classifies the held
+    # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing
+    # already covers it (no working card); replaced by the real card once the planner places it.
+    # THE INVARIANT (the user 2026-08-01): a card sitting in Working must be explained by something —
+    # an actively working session, a judgment in flight, an awaiting, or an error. A session whose only
+    # explanation is "one of my cards is awaiting" was reading READY at the session level while that
+    # very card said "waiting on a background task", because this dot lit ONLY from the session-wide
+    # sources (`sess_awaiting_why`), which deliberately ignore a judge-placed launch. The cards are the
+    # per-goal answer this build already computed — so take it from them. Scoped to the session's own
+    # verdicts, so no sibling card is floored by it (what the session-wide _await_ok would have done).
+    if had_awaiting and not who_working and ent_awaiting is None:
+        ent_awaiting = name
+    if not had_working and perm_top is None and ps:   # cache-only: the live-prompt placeholder needs the parse → after the warm
+        # perm_top excluded: a live-blocked focus card no longer counts as "working" (it reports needs_input
+        # now), so without this guard a session whose ONLY card is the picker-blocked one would ALSO get a
+        # provisional working placeholder — a duplicate. A floored perm_top already covers the live prompt.
+        # store_faulted excluded: "the planner has not placed this yet" is an inference from placements we
+        # could not read, so a session whose store faulted gets no provisional card (its row says why).
+        pc = _provisional_card(s, name, color, fsid, live, now, store) if not store_faulted else None
+        if pc:
+            ent_asks.append(pc)
+        elif perm_state in _NEEDS_INPUT_STATES:      # perm_top is None here (outer guard) → no goal to floor
+            # Hard-blocked on a live permission/picker prompt but with NO goal to floor (the planner hasn't
+            # run — nothing to plan until the ask is answered). Surface a needs-input placeholder so the
+            # block reaches the Blocked column instead of being invisible (the user 2026-06-27). Replaced
+            # by the real card once the planner places the answered work.
+            ent_asks.append(_blocked_placeholder(s, name, color, fsid, live, now, perm_state,
+                                                 tm.get("since") if tm else None))
+        elif sess_awaiting_why:
+            # AWAITING a dispatched background task with NO goal to floor (the user 2026-07-13): the
+            # session's work is all placed/done, but a background task it dispatched is still running
+            # (the same signal the timeline's faded awaiting stretch reads). Surface a working-column
+            # awaiting card so the wait shows in the FEED, not just on the timeline — the hole the user
+            # hit ("there's no card there"). Ephemeral: gone the moment sess_awaiting_why clears.
+            ent_asks.append(_awaiting_card(s, name, color, fsid, live, now, sess_awaiting_why,
+                                           kind=sess_awaiting_kind, since=sess_awaiting_since,
+                                           count=sess_awaiting_count, items=sess_awaiting_items))
+    return {"asks": ent_asks, "working": ent_working, "awaiting": ent_awaiting, "bgServices": ent_bg,
+            "servingFolds": ent_folds, "heal": heal_total, "hidden": hidden_total, "cold": cold_parse,
+            "peers": sorted(peers_read), "reads": reads}
+
+
+def _feed_fold_card(card, now, cmap):
+    """Stamp the clock-derived fields onto one card from a memoized entry, per build: `trgb` from its `_ageT` (the
+    epoch the tint is computed from; popped) on the build's colormap, and `t := now` for a placeholder whose time
+    IS the clock (`_ageT` None); the same for every row of its tree. The card is the fold's own object (a fresh
+    decode of the entry), never the memoized string."""
+    age_t = card.pop("_ageT", None)
+    if age_t is None:
+        card["t"] = now                              # a placeholder with no turn to date it: the build's clock, as before
+        age_t = now
+    card["trgb"] = list(cm.age_rgb(now - age_t, cmap))
+    for r in card.get("tree") or []:
+        rt = r.pop("_ageT", None)
+        r["trgb"] = list(cm.age_rgb(now - (rt if rt is not None else now), cmap))
+    return card
+
+
+def _feed_fold_entry(entry, now, cmap, name, asks, working, awaiting, bg_services, serving_folds):
+    """Fold one session's entry (a fresh decode of its memoized JSON, or the derivation just made) into the build's
+    cross-session accumulators, in the session's place in `alive` order: its cards onto `asks` (tinted for this
+    build), its serving-fold candidates, its dot names, its service chip under `name`. Returns (heal, hidden, cold)
+    for the caller's totals. None (a muted session) folds nothing."""
+    if entry is None:
+        return 0, 0, False
+    for c in entry.get("asks") or []:
+        asks.append(_feed_fold_card(c, now, cmap))
+    for f in entry.get("servingFolds") or []:
+        _feed_fold_card(f["card"], now, cmap)
+        serving_folds.append(f)
+    if entry.get("working"):
+        working.append(entry["working"])
+    if entry.get("awaiting"):
+        awaiting.append(entry["awaiting"])
+    if entry.get("bgServices"):
+        bg_services[name] = entry["bgServices"]
+    return int(entry.get("heal") or 0), int(entry.get("hidden") or 0), bool(entry.get("cold"))
+
+
 def build_feed(now, live_map=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
     card's tree, rolled-up status → the Working/Blocked/Completed column, dead-concept fields
     (relevance/liveness/suspects/openQuestions/decision-briefs) left empty so the render's
-    conditional paths hide them — no edits to the tuned card code. Stream = turn captions."""
+    conditional paths hide them — no edits to the tuned card code. Stream = turn captions.
+
+    PER-SESSION MEMO (T368): each living session's contribution (its cards, dot names, service chip, serving-fold
+    candidates, heal counts) is derived by _feed_session_entry and held in _feed_memo under _feed_session_key, a tuple
+    of every input that derivation reads (files by identity, in-memory state by value, the clock only as the two
+    booleans it decides), so a rebuild re-derives only the sessions whose inputs moved; the clock-derived tint is
+    stamped per build by the fold (_feed_fold_entry), the cross-session sections below recompose per build from the
+    per-session results, and GET /perf reports hits, misses by component, evictions and bytes under
+    builds.feed.memo."""
     if live_map is None:
         live_map = _live_map()
     cleared = _cleared_ids()
@@ -36053,989 +37570,35 @@ def build_feed(now, live_map=None):
     _jauth_map = jd._auth_down_map()                 # judge-auth-down latch → the per-session card floor below
     _jactive = {r.get("fsid") for r in jd.active_runs()}   # judge calls in flight NOW → the Analyzing… prong
     cold_parse = False                               # any living session not yet parsed → warm it in the background
+    cmap = _colormap()                               # the age tint's colormap, once per build: the FOLD's input (never the memo's)
+    ctx = {"now": now, "live_map": live_map, "cleared": cleared, "dbg_rows": dbg_rows, "wmap": wmap,
+           "stalls": _stalls, "jauth_map": _jauth_map, "jactive": _jactive}
     for s in alive:
-        fsid, name = s["sid"], s["name"]
-        if _session_flag(fsid, "hideFromFeed"):      # muted from the feed (the user 2026-06-19) → timeline-only
-            continue
-        color = _name_color(fsid)
-        tm = live_map.get(fsid); live = tm is not None
-        # CACHE-ONLY parse (the user 2026-06-26): the CARDS come from the goal store (cheap) and must paint at
-        # once on a cold start, so the working-dot + the deep-link anchors read the parse ONLY if it's already
-        # cached — never paying the ~1s cold parse here. _warm_fleet_bg fills the cache + re-pushes; the dots
-        # and anchors snap in a beat later.
-        ps = _parse_cached(s["path"])
-        if ps is None:
-            if _warm_wanted(s, tm):                      # cold by design otherwise (T323 stage 1): no warm to chase
-                cold_parse = True
+        # THE PER-SESSION CARD MEMO (T368, see _feed_session_key): the session's entry is served while every input
+        # of its derivation stands, re-derived when one moved, and folded into the board here in `alive` order.
+        fsid = s["sid"]
+        tm = live_map.get(fsid)
+        ent = _feed_memo_get(fsid)
+        prev = json.loads(ent[1]) if ent is not None else None   # the ONE decode per session per build: a hit's fresh
+        #                                                          objects to fold, and the dependency record the key reads
+        key = _feed_session_key(s, tm, ctx, prev)
+        if ent is not None and ent[0] == key:
+            _feed_memo_count("hit")
+            entry = prev
         else:
-            ps = _merge_live_atoms(ps, fsid)         # the same LIVE-MERGED session the chat chip + timeline lane read
-            #                                          (the feed was the one surface deriving from the bare cache, 2026-07-05)
-        try:                                             # WORKING from the EVENT MODEL (open turn), not the row's state —
-            who_working = _session_working(ps["turns"]) if ps else False   # one backend-agnostic dot signal
-        except Exception:
-            who_working = False
-        if who_working:
-            working.append(name)
-        # the open turn's live narration (the user 2026-08-13) — computed once per session, ridden by
-        # every working card below; cache-warm like the dot (a cold start paints plain, then snaps in)
-        sess_progress = _open_turn_progress(ps["turns"]) if (ps and who_working) else None
-        # The card-floor disposition (the user 2026-08-14: NO working card is ever mute — even unknown
-        # shows as such): "open" = a turn is running (the narration above rides when parsed), "quiet" =
-        # parsed and between turns, "unknown" = no parse to read (a cold cache, or a machine that isn't
-        # reporting). The feed's spin ladder renders a floor line for each — see spin-caption.ts.
-        sess_state = "open" if who_working else ("quiet" if ps else "unknown")
-        # The user's LAST action on this session was an INTERRUPT (no message from them since): its quiet
-        # is user-chosen, not a stall — auto-nudge is suppressed (same predicate, _auto_nudge_tick) and
-        # the working card wears an "interrupted" badge saying so (the user 2026-07-05). Cache-only,
-        # like the working dot: the badge snaps in once _warm_fleet_bg fills the parse. The read is memoized
-        # on that cache object's identity (_interrupt_marks, the "display" family), so an unchanged parse
-        # costs no scan per build.
-        try:
-            sess_interrupted = bool(ps) and not who_working and \
-                _interrupt_suppresses_nudge(ps["turns"], fsid, family="display")
-        except Exception:
-            sess_interrupted = False
-        # A user interrupt still IN FLIGHT (dispatched, not yet settled): the card wears a steady
-        # "interrupting…" badge from the click until it settles, THEN falls to the past-tense "interrupted"
-        # badge — never flickering between "working" and "interrupted" while the SDK live-tail retires mid-
-        # settle (the user 2026-07-07). Same derivation as the chat chip + timeline lane (_interrupting):
-        # SDK's own in-flight flag for SDK sessions, the stop record for a row without it. Safe to call again in this push.
-        sess_interrupting = _interrupting(fsid, ps or {}, now, tm)
-        # An api-retry storm INSIDE an open turn (the user 2026-07-09): the live backend state says
-        # "retrying" → the working card wears a "retrying since HH:MM" chip. The API-error badge below
-        # (aerr) only fires once the session is idle-stalled, so without this a storm reads as plain
-        # healthy Working for its whole life — nimbus's card said Working through an ~80-minute storm.
-        sess_retrying = _session_retrying(fsid, tm)
-        store = _feed_goals(fsid)                # pre-pass snapshot while a judge pass is mid-flight → the card's
-                                                 # status never shows a half-applied intermediate (atomic visibility)
-        store_faulted = store is None            # this session's store could not be READ (EACCES, EIO, a directory
-        if store_faulted:                        # at the path): its row is filed (jd.load_goals_or_fault) and THIS
-            store = {"nodes": {}, "status": {}}  # session renders with no goal-derived content — no cards (so no
-            #                                      floors and no swirl, which land only on cards) and nothing
-            #                                      inferred from the absence (the provisional card is gated on the
-            #                                      flag below). A render-only stand-in, never saved. Every other
-            #                                      session is untouched; before this, one such file aborted the
-            #                                      whole build.
-        # ANALYZING (the user 2026-07-13; broadened 2026-08-12): the card must say when romp is working
-        # on it. Two prongs, either lights the swirl:
-        #   * the SETTLE GAP — the turn just settled but the closer hasn't delivered its verdict yet
-        #     (cache-warm only: it needs the parse; the swirl snaps in after _warm_fleet_bg);
-        #   * a judge call for this session ACTUALLY IN FLIGHT — jd.active_runs(), the same in-process
-        #     registry the nudge gate trusts (_revivers_pending), whose comment always claimed "the
-        #     Analyzing… swirl already says so"; now it does. This is what a backlog drain looks like:
-        #     when the judge-auth outage healed, 201 calls swept an 18-hour backlog while every card
-        #     sat inertly in Working (the user 2026-08-12, who asked for the queue to be visible on
-        #     the card) — planner/grouper work on OLDER turns never trips the settle gap, and a fresh
-        #     kernel's caches are cold exactly when the drain runs, so the closer prong alone stayed
-        #     dark. The active prong deliberately needs neither `live` nor a warm parse: the registry
-        #     is an in-process fact, free to read.
-        # Session-scoped (we don't know WHICH goal a verdict will land on until it does); each working
-        # card wears the Analyzing… swirl meanwhile (feed.ts spinCaption).
-        sess_judging = bool(not who_working
-                            and (fsid in _jactive
-                                 or (live and ps and _closer_pending(fsid, s["path"], now, store))))
-        nodes, status = store.get("nodes", {}), store.get("status", {})
-        confirming = set(store.get("confirming") or ())   # rollup export: done verdict in, settle pending (judge rollup_status, the user 2026-07-24)
-        # Exact click-to-jump anchors: map each goal segment → the work/reply uuid — the SAME anchors the
-        # timeline/ledger already use — so a card click deep-links to the precise turn BY ID instead of the
-        # old time-nearest heuristic. _parse is cache-backed (cheap); reply uuid preferred (the readable
-        # assistant text). A missing entry → anchorUuid None → feed falls back to time. (the user 2026-06-17.)
-        # seg_uuid → the WORK anchor (reply/work assistant atom, for the mark/time zones); seg_trig → the
-        # PROMPT anchor (the segment's TRIGGER atom = the user's message that opened it, for the TITLE). A
-        # title is prompt-intent and must land on the USER turn — passing the trigger uuid (which the chat
-        # tags + the kind guard accepts as turn-user) lets it resolve BY ID instead of a kind-restricted
-        # nearest-time landing (the user 2026-06-17). (Both are emitted .turn[data-uuid]s in the chat.)
-        seg_uuid, seg_trig, seg_best, cite_uuids = {}, {}, {}, set()
-        try:
-            for turn in (ps["turns"] if ps else []):     # cached parse only; anchors fill in after _warm_fleet_bg
-                for seg in _segs_seam(turn, store):
-                    w, r = _seg_anchors(seg["atoms"])
-                    seg_uuid[_seg_key(seg["id"])] = r or _seg_jump(seg["atoms"])   # timestamp-invariant key; landable
-                    #                                  anchors only — never a thinking-only uuid (SDK echo/real drift)
-                    seg_trig[_seg_key(seg["id"])] = jd._prompt_anchor_uuid(seg)   # attachment-safe: a
-                    #                                  title click must land on the USER message, never an
-                    #                                  attachment record no chat event carries (2026-08-25)
-                    _lu, _lsub = _seg_last_text(seg["atoms"])
-                    seg_best[_seg_key(seg["id"])] = (_lu, _lsub, seg.get("t", 0))   # latest prose → summary deep-link fallback
-                    pcs_ = em.turn_scalar(turn, "pcs")
-                    if pcs_ is not None:                 # a restored pre-cut turn: its stored prose chars, no atom built (T358)
-                        cite_uuids.update(u_ for u_, n_ in pcs_.items() if n_ >= jd.CITE_MIN_CHARS)
-                        continue
-                    for _a in seg["atoms"]:              # citable-uuid set: gates the distiller's CITED anchor.
-                        # Resolvable in THIS parse AND substantive (the user 2026-07-14): a stored citation
-                        # pointing at a connective stub (a lead-in that merely names the goal) is a wrong
-                        # link by construction — the outcome never lives there — so it falls through to the
-                        # deterministic fallback below, healing bad anchors already in stores at read time.
-                        if _a.get("uuid") and _atom_prose_chars(_a) >= jd.CITE_MIN_CHARS:
-                            cite_uuids.add(_a["uuid"])
-        except Exception:
-            pass
-        healed = _heal_session_tops(s.get("path"), nodes, status)   # T319: machine-rooted tops nest (read-side)
-        heal_total += sum(1 for v in healed.values() if v[0])
-        _hidden = {k for k, v in healed.items() if v[1].get("hidden")}   # T333: rooted in a skill the harness loaded, no
-        hidden_total += len(_hidden)                                     #   request in the store to sit under: no card
-        children = {}
-        for nid, nd in nodes.items():
-            if nid in _hidden:
-                continue                             # the session's own view keeps the work
-            _hp = healed.get(nid)
-            _pk = _hp[0] if (_hp and _hp[0]) else nd.get("parentId")
-            if _pk is not None and _pk not in nodes and isinstance(nd.get("born"), dict):
-                _pk = None                           # T319: a born step whose parent is gone renders as a root that says so
-            children.setdefault(_pk, []).append(nid)
-        agent_open = _agent_open_set(nodes, children)   # authoritative-open subtree → never rendered 'done' (see helper)
-        parked_rows = _parked_rows(nodes, children)     # leapfrogged open rows → the quiet "parked" row cue (see helper)
-
-        def _subtree(root):                          # all node ids at/under root (pre-order)
-            stack, acc = [root], []
-            while stack:
-                x = stack.pop(); acc.append(x); stack.extend(children.get(x, []))
-            return acc
-
-        # VERDICTS ONLY (the user 2026-07-15; roll-UP removed — it painted an authored-looking ✓ on a
-        # goal nobody ruled done, see build_session's _subtree_done twin): a node is "done" if it's
-        # explicitly nodeComplete (verdict or roll-down cache), OR if a done ancestor checks it off
-        # (roll-DOWN, threaded by flatten through ancestor_done — dimmed disc). All-children-done alone
-        # no longer checks a parent; the closer rules those (_subtree_done_candidates) and the check
-        # appears when its verdict lands.
-        _cdone = {}
-        def _closure_done(nid):
-            if nid in _cdone:
-                return _cdone[nid]
-            nd = nodes.get(nid)
-            if not nd:
-                _cdone[nid] = False
-                return False
-            res = bool(nd.get("nodeComplete"))
-            if not res and nd.get("umbrella"):         # ARCHIVED pre-T101 container — history renders
-                # structurally-complete (mints retired; live ones dissolve every rollup): the
-                kids = [c for c in children.get(nid, []) if not nodes[c].get("cleared")]
-                res = bool(kids) and all(_closure_done(c) for c in kids)
-            _cdone[nid] = res
-            return res
-
-        # Order children MOST-RECENT-FIRST by subtree-max mt — the SAME recency key the ledger tree uses
-        # (build_session _submax), so every goal-tree view reads newest-first: the card's inline sub-goal
-        # checklist, the modal tree, and the ledger TOC all agree (the user 2026-06-17). mt (last-touched)
-        # falls back to t for never-modified nodes.
-        _fsmemo = {}
-        def _fsubmax(cid):
-            if cid in _fsmemo:
-                return _fsmemo[cid]
-            cn = nodes.get(cid) or {}
-            m = cn.get("mt", cn.get("t", 0))
-            for k in children.get(cid, []):
-                m = max(m, _fsubmax(k))
-            _fsmemo[cid] = m
-            return m
-
-        # BLOCKED rolls UP the tree (the user 2026-07-11: nimbus's Needs-you traced to a block buried
-        # under a collapsed row — "shouldn't the block propagate up so I see it?"). Mirror of the judge's
-        # any_blocked: a node reads "question" when it — or any descendant chain not inside a completed
-        # subtree — holds an open block (a done subtree's block is moot, same short-circuit). This is
-        # also what the CLIENT was designed for: hasQuestionDescendant exists to find the LOWEST ? (the
-        # actual ask) beneath rolled-up ancestors.
-        _qmemo = {}
-        def _closure_blocked(nid):
-            if nid in _qmemo:
-                return _qmemo[nid]
-            nd = nodes.get(nid)
-            if not nd or nd.get("cleared") or (_closure_done(nid) and nid not in agent_open):
-                _qmemo[nid] = False
-                return False
-            res = bool(nd.get("blocked")) or any(_closure_blocked(c) for c in children.get(nid, []))
-            _qmemo[nid] = res
-            return res
-
-        # The rejudging latch's CLEAR bound (the user 2026-07-31): the block a top card surfaces may
-        # live on a DESCENDANT (blocked rolls up, _closure_blocked above), and the unblocker stamps
-        # blockCheckT on the node it EXAMINES — the blocked child — never on the top. The latch used
-        # to read the top's own watermark, which for a child-held block stays None forever: every
-        # plain reply dropped the card to Working (plain_user_t > 0 is always true) and every landing
-        # turn advanced disp_t past the reply and lifted it back to Needs-You — the same strobe the
-        # watermark bound fixed for top-level blocks (PR #144), reintroduced one level down. The
-        # audited card flipped seconds-apart pairs at every conversational turn for half an hour.
-        # The bound is therefore the OLDEST watermark among the subtree's OPEN blocked nodes (the
-        # exact closure _closure_blocked walks, same done/cleared gates): the card returns to
-        # Needs-You only once EVERY block it is surfacing has been re-examined with evidence
-        # covering the reply. None when the walk finds no open block (a stale rollup) — the caller
-        # falls back to the top's own watermark, the pre-existing semantics.
-        _bcmemo = {}
-        def _block_check_floor(nid):
-            if nid in _bcmemo:
-                return _bcmemo[nid]
-            nd = nodes.get(nid)
-            if not nd or nd.get("cleared") or (_closure_done(nid) and nid not in agent_open):
-                _bcmemo[nid] = None
-                return None
-            vals = [int(nd.get("blockCheckT") or 0)] if nd.get("blocked") else []
-            vals += [v for v in (_block_check_floor(c) for c in children.get(nid, [])) if v is not None]
-            res = min(vals) if vals else None
-            _bcmemo[nid] = res
-            return res
-
-        def flatten(nid, out, ancestor_done=False, boundary=None):  # AskTreeNode flat list, root first; nest via children ids
-            nd = nodes[nid]
-            kids = sorted(children.get(nid, []), key=_fsubmax, reverse=True)   # most-recent-first (matches the ledger)
-            explicit = bool(nd.get("nodeComplete"))
-            # AUTHORITATIVE-open override (the user 2026-07-01): an open agent to-do item — or an umbrella
-            # holding one — is NEVER done, even if a nodeComplete ancestor would roll 'done' down onto it.
-            # Mirrors the judge's rollup_status; without it the open item read 'done' → the "checked off" hover.
-            done = (explicit or _closure_done(nid) or ancestor_done) and nid not in agent_open
-            derived = done and not explicit            # roll-up / roll-down → DIMMED ✓ disc, not the full one
-            st = "done" if done else ("question" if _closure_blocked(nid) else "open")
-            # The node's deep-link target SEGMENT: its NEWEST trail seg — the resolve turn for
-            # done/blocked nodes, the latest activity for open ones (where it stands, not where born).
-            _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid)
-            # A HANDOFF tracking node ("↪ delegated to <peer>") finally ships as its designed kind: the
-            # feed's delegations section (fask-delegations, built to the 2026-06-10 handoff spec) keys on
-            # kind "handoff" and had sat dormant because flatten hardcoded "ask" — the sender's card
-            # showed a bare text row with no recipient identity and no visible cross-card LINK (the user
-            # 2026-08-16, who watched a clear take the linked card with it and had no way to see why).
-            # who/whoSid/whoColor become the RECIPIENT's identity for these rows — exact, from the
-            # courier-recorded handoff.peer, never inferred.
-            _ho = nd.get("handoff") if isinstance(nd.get("handoff"), dict) else None
-            _ho_sid = str(_ho.get("peer") or "") if _ho else ""
-            _born = nd.get("born") if isinstance(nd.get("born"), dict) else (healed.get(nid) or (None, None))[1]
-            out.append({"id": nid, "kind": "handoff" if _ho_sid else "ask", "text": nd["text"],
-                        "born": _born or None,   # T319: a step the session started on its own (why it sits here)
-                        "who": (_name_of(_ho_sid) or _ho_sid[:8]) if _ho_sid else name,
-                        "whoSid": _ho_sid or fsid,
-                        "whoColor": _name_color(_ho_sid) if _ho_sid else color,
-                        "whoWorking": who_working, "status": st, "derived": derived,
-                        # user-cleared sub (nodeOverride op:clear) → renders struck-through + faded with a
-                        # "cleared" chip; `status` above stays honest (box = done, the user 2026-07-26)
-                        "cleared": bool(nd.get("cleared")),
-                        # this DONE sub's outcome was already REVIEWED: its done predates the top's
-                        # review boundary (jd.review_boundary — the same boundary the distiller scopes
-                        # the takeaway with, so the fold and the summary can never disagree). The card
-                        # collapses these behind one "N reviewed earlier" row instead of re-presenting
-                        # them on every re-completion (the user 2026-08-19). `out` is empty only for
-                        # the ROOT row, which is the card head, never a checklist row.
-                        "reviewedEarlier": bool(boundary and out and done
-                                                and jd._done_since(nd) <= boundary) or None,
-                        # a rolled-UP question (the block lives in a descendant, not here) — the client's
-                        # mark tooltip says "blocked inside", and the actual ask keeps its own ⏸ below
-                        "qderived": st == "question" and not nd.get("blocked"),
-                        # LEAPFROGGED row (the user 2026-08-24): open, nothing filed under it, while N
-                        # younger siblings were dispatched past it — the quiet "parked" tag + the card's
-                        # dim sub-goals suffix. Gated on the OPEN render state so a rolled-down or
-                        # closed row can never wear it; mint/retire events live in _parked_rows.
-                        "parked": ({"n": parked_rows[nid]} if (st == "open" and nid in parked_rows) else None),
-                        # AUTHORITATIVE tier: this node mirrors an item on the agent's OWN to-do list, so its
-                        # open/done is agent-asserted (solidity = authority in the disc render). None = a plain
-                        # judge-inferred node. (the user 2026-07-01)
-                        "auth": (nd.get("agentTask") or {}).get("status"),
-                        # `last` drives each row's "(Xm ago)" age + recency tint: the node's LAST ACTIVITY
-                        # (newest mt in its subtree, _fsubmax), so a replied-to / re-touched node freshens in
-                        # the modal tree just as its card does — not pinned to the mint `t` (the user
-                        # 2026-07-01). `t` stays the mint time (the node's nav-time fallback).
-                        "t": nd["t"], "last": _fsubmax(nid), "trgb": list(cm.age_rgb(now - _fsubmax(nid), _colormap())),
-                        # mt = last-modified (the segment the planner applied done / block) → a blocked or
-                        # done node deep-links to WHERE IT RESOLVED, not where it was minted. Falls back to
-                        # t for never-modified nodes (open work, derived done). (the user 2026-06-16.)
-                        "mt": nd.get("mt", nd["t"]),
-                        # anchorUuid = the WORK anchor (reply assistant atom of the resolve/mint segment) →
-                        # the mark/time zones deep-link here. promptAnchorUuid = the PROMPT anchor (the
-                        # MINTING segment's trigger = the user's message) → the TITLE deep-links here, by id,
-                        # landing on the user turn (no kind-restricted nearest-time needed). (2026-06-17.)
-                        "anchorUuid": _wa,
-                        "promptAnchorUuid": _pa,
-                        "summary": nd.get("summary"),                   # distiller's key takeaway — shown in the MODAL only — the user 2026-06-17
-                        "blockSummary": nd.get("blockSummary"),         # block-distiller's DECISION BRIEF (MODAL); null until produced — the user 2026-06-18
-                        "relayNote": nd.get("relayCarried") or None,    # a far host still holds a relayed question after its wait ended (relayCarried): its own line under the brief, never a brief paragraph (briefParts maps those)
-                        "followupPending": nd.get("followupPending"),   # per-node "Followed up" chip in the modal tree (business 2026-06-17)
-                        # the per-item story (MODAL, non-done only): newest block/unblock/verdict rows with
-                        # anchors, so an open sub answers 'is this still active?' in place (the user 2026-07-20)
-                        "log": _node_log_rows(nd, seg_uuid) if st != "done" else None,
-                        "children": kids})
-            for c in kids:
-                flatten(c, out, ancestor_done=done, boundary=boundary)
-            return out
-        # HARD blocked floor: a session stopped RIGHT NOW on a live permission prompt (the live row's state)
-        # floors its ACTIVE-FOCUS card under BLOCKED — the strongest signal, beats the goal's planner
-        # status. (The planner's SOFT block, nd["blocked"], is the model's "needs user" verdict; this is
-        # the live event.) Gated on the ROLLED-UP status, NOT the raw nodeComplete flag: a focus that is
-        # nodeComplete but the settled gate still holds at "working" (the session marked it done, then kept
-        # working under it and live-blocked) IS floored — so a live block always surfaces; only a genuinely
-        # settled "completed" (or user-"cleared") card is left alone, its block being for new, not-yet-placed
-        # work. (the user 2026-06-18: a live-blocked nodeComplete-but-working focus wasn't reaching BLOCKED.)
-        perm_top = None
-        perm_state = tm.get("state") if tm else None
-        if perm_state in _NEEDS_INPUT_STATES:               # live prompt (permission Allow/Deny OR a picker)
-            f = store.get("lastNode")
-            while f and nodes.get(f, {}).get("parentId") is not None:
-                f = nodes[f]["parentId"]
-            if f in nodes and status.get(f) not in ("completed", "cleared"):
-                perm_top = f
-        # AWAITING signal (event-model, the user 2026-06-22): the session is paused on AGENT work it
-        # dispatched — a WORKING flavor, never needs-input. Sourced from the live subagent snapshot, the
-        # PENDING background tasks (launch not yet judge-placed; a placed launch's story belongs to the
-        # judge's stamp or the service chip — see _session_awaiting/_bg_split), or the SDK producer's
-        # states overlay; None when actively working.
-        # Computed BEFORE the API-error floor, which must yield to it (the user 2026-07-05).
-        _sess_aw = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
-        sess_awaiting_why = _sess_aw["why"] if _sess_aw else None
-        sess_awaiting_kind = _sess_aw["kind"] if _sess_aw else None
-        sess_awaiting_since = _sess_aw.get("since") if _sess_aw else None   # the wait's own event time (the user 2026-08-23)
-        sess_awaiting_count = _sess_aw.get("count") if _sess_aw else None   # how many are awaited — the pill's word agrees in number (T225)
-        sess_awaiting_peers = _sess_aw.get("peers") if _sess_aw else None   # named identities when the arm knows them (2026-08-26)
-        sess_awaiting_items = list(_sess_aw.get("items") or []) if _sess_aw else []   # the awaited rows (slice 2) — the pill lists them grouped
-        if sess_awaiting_why and not who_working:
-            awaiting.append(name)                    # the AWAITING dot list (await-green, the user 2026-07-13) — the
-            #                                          same split _session_chip makes; feed/chat dots match the chip
-        # API-error floor: a session stopped on an API error (transcript isApiErrorMessage, event-based)
-        # floors its focus top-goal under BLOCKED with an apiError reason → the feed card shows a red
-        # "API error" badge + a Retry button (the user 2026-06-16). Same focus-goal walk as the perm floor.
-        # GATED on awaiting, like _session_chip (4699) and build_session (5512) — this was the ONE ungated
-        # _api_error read (the user 2026-07-05, jld_audit): a main thread erroring BETWEEN agent waits is
-        # still IN MOTION, but the raw floor made the feed card wear red "API error" + "stalled" while the
-        # chat chip said Working — and api_top then suppressed the very awaiting flip that would have told
-        # the truth. One formula, one truth: awaiting wins; the floor applies only to a session truly dead
-        # in the water.
-        aerr = _api_error(s["path"]) if (ps and not who_working and not sess_awaiting_why) else None   # cache-only: fills in after the warm
-        _cap_off = _cap_switch_offer(fsid, aerr) if aerr else None   # the billing-switch OFFER (never a silent switch, 2026-08-30)
-        api_top = None
-        if aerr:
-            f = store.get("lastNode")
-            while f and nodes.get(f, {}).get("parentId") is not None:
-                f = nodes[f]["parentId"]
-            if f in nodes and status.get(f) not in ("completed", "cleared"):   # rollup status, not raw nodeComplete (see perm floor)
-                api_top = f
-        # JUDGE-AUTH floor (the user 2026-08-12): this session's judges are failing on their CREDENTIAL
-        # (judge.py latched a credential-class error envelope; its next successful call clears it) — romp
-        # cannot analyze the session, so no card here can move on its own, and only the user can fix it
-        # (the key, the login, or the session's billing pick). Floor the focus top to needs-you wearing
-        # the story: the alternative was a board silently frozen in Working, which is exactly how a
-        # login-less host spent 13 hours and ~53k refused calls without a pixel changing. Yields to the
-        # LIVE floors (a permission prompt, the session's own API error): one interrupt at a time, the
-        # present event first — and the api floor's authErr copy already names the same credential fix.
-        jerr = _jauth_map.get(fsid)
-        jauth_top = None
-        if jerr and api_top is None and perm_top is None:
-            f = store.get("lastNode")
-            while f and nodes.get(f, {}).get("parentId") is not None:
-                f = nodes[f]["parentId"]
-            if f in nodes and status.get(f) not in ("completed", "cleared"):
-                jauth_top = f
-        _unnested = False
-        for _f in (perm_top, api_top, jauth_top):    # T319: a floor that RESOLVES to a healed top un-nests exactly that top:
-            _h = healed.get(_f) if _f else None      #   it keeps its card (the floor keys the card on it) and its face; the
-            if _h and _h[0] and _f in children.get(_h[0], []):   #   host's other rows are untouched
-                children[_h[0]].remove(_f)
-                children.setdefault(None, []).append(_f)
-                healed[_f] = (None, _h[1])
-                heal_total -= 1
-                _unnested = True
-            elif _h and _h[1].get("hidden") and _f in _hidden:   # T333: a hidden top the floor keys on comes back as a card
-                children.setdefault(None, []).append(_f)
-                healed[_f] = (None, {k: v for k, v in _h[1].items() if k != "hidden"})
-                _hidden.discard(_f)
-                hidden_total -= 1
-                _unnested = True
-        if _unnested:                                # the derivations below read the tree the card SHOWS (item 8 of the
-            agent_open = _agent_open_set(nodes, children)   #   fourth review): recomputed over the un-nested layout
-            parked_rows = _parked_rows(nodes, children)
-        plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
-        had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
-        had_awaiting = False                         # …and does any of them read AWAITING? → the session's await-green dot (below)
-        # The live background-task set, once per session: OWNERSHIP for the blocked-yield below (any live
-        # task counts there — the yield keys on the dispatch event, not on classification), and the
-        # judge-classified SERVICES for the neutral per-session chip (the user 2026-07-24). Idle-gated
-        # like the awaiting signal: an actively producing turn is just working.
-        live_tasks = _bg_live_norm(fsid, s["path"]) if (ps and not who_working) else []
-        owned = _bg_owner_tops(fsid, s["path"], live_tasks) if live_tasks else {}
-        if live_tasks and live:
-            svc = _bg_service_descs(fsid, s["path"])
-            if svc:
-                bg_services[name] = svc
-        for nid in children.get(None, []):
-            col = status.get(nid, "working")
-            if col == "cleared" or nid in cleared:
-                continue
-            if _pure_delegation_top(nodes, nid, sid=fsid, path=s["path"]):   # whole top is just peer
-                continue                                 # handoffs → coordination, not an inbox card
-            # AWAITING floor (event-based, the user 2026-06-22): a session paused on dispatched/delegated
-            # work is a WORKING flavor, never needs-input. Floor a working OR stale-blocked top to awaiting
-            # from (a) the session-level awaiting signal (live subagents / SDK states overlay),
-            # or (b) an unanswered outbound to a LIVE peer (postal wait-for — a stale block on a peer-waiting
-            # session yields to it). The live permission / API-error floors still win (the present event).
-            # the peer-wait only applies to a goal that EXISTED when the question was sent — a goal minted
-            # AFTER it can't be awaiting that answer (the user 2026-06-28). Scopes the stale session-level
-            # wait off unrelated newer goals; if every pre-question goal is resolved, nothing floors.
-            _peer_wait = (fsid in wmap and nodes[nid]["t"] <= wmap[fsid]["since"])
-            # A blocked top yields ONLY to a background task ITS OWN subtree dispatched, and only when
-            # that dispatch is NEWER than the block's own evidence. Two guards, both exact:
-            #  - OWNERSHIP (the user 2026-07-17, quartz): the 07-15 time-only guard compared the
-            #    session-wide newest dispatch — a campaign watcher relaunched after a kernel restart
-            #    (89s after an UNRELATED card's block) re-dressed a genuine needs-you as the await-green
-            #    awaiting badge. _bg_owner_tops resolves each live task's launch to its placed top;
-            #    a task owned elsewhere — or one whose launch can't be attributed (subagents, the
-            #    overlay, an unplaced launch) — never flips a blocked card. Genuinely stale blocks are
-            #    retired by the judge's own unblock path (new work filed on this branch), which is
-            #    placement-exact; this floor no longer approximates it session-wide.
-            #  - EVENT ORDER (the user 2026-07-15): even an owned task yields only when dispatched at/
-            #    after the block — an ask newer than the dispatch is live (nimbus ended its turn asking
-            #    the user questions while its own background timer ran).
-            _await_ok = bool(sess_awaiting_why)
-            _owned_why = None
-            _owned_since = None
-            if col == "blocked":
-                _blk_t = max([nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
-                              if nodes[x].get("blocked") and not _closure_done(x)] or [0])
-                _own = owned.get(nid)
-                # The yield stands on ownership + event order ALONE (no session-awaiting gate): under the
-                # service split, a placed launch no longer feeds sess_awaiting_why, but a dispatch from
-                # the blocked card's own thread still proves the thread moved past the block.
-                _await_ok = bool(_own) and _own["since"] >= _blk_t
-                if _await_ok:
-                    _owned_why = "waiting on a background command%s" % (   # the chip's word for in-harness work (2026-09-05)
-                        (": " + _own["descs"][0]) if _own["descs"] else "")
-                    _owned_since = _own["since"]           # the dispatch event that proved the yield
-            # The JUDGE's durable ⏳ stamp (the closer's awaiting verdict, kernel/judge.py): this goal's
-            # latest audited turn ended waiting on async work it set in motion. Store-backed, so it holds
-            # across kernel restarts — exactly where the live snapshot signals above go dark and a
-            # genuinely-waiting goal used to read as plain working, then "stalled". It floors WORKING
-            # only: a real needs-you (block) always outranks the annotation.
-            _sf = (_goal_awaiting_stamp_full(nodes, nid, children, answered_at=_peer_answered(fsid))
-                   if col == "working" else None)
-            _stamp_why = _sf[1] if _sf else None
-            _stamp_kind = _sf[2] if _sf else None
-            _stamp_since = (_sf[0] or None) if _sf else None   # the stamp's awaitingAt — when the judge filed the wait
-            # the stamp arm NAMES its peers too (2026-08-26): the judge's awaitPeers keys resolve through
-            # the one identity ladder, so a judge-classified peer wait wears the same identity chips the
-            # delegation arm always has — before this the or-chain hardcoded peers=None on this arm
-            _stamp_peers = (sorted((_peer_identity(p) for p in _sf[3]), key=lambda d_: d_["name"])
-                            if _sf and _stamp_kind == "peer" and _sf[3] else None)
-            # DELEGATION-derived awaiting (the courier's durable handoff graph, not the question-regex):
-            # every OPEN leaf under this top is a handoff-tracking node → the only outstanding work lives
-            # with peers, so the card reads ⏳ "delegated to <peer>" instead of plain working (which reads
-            # as "this session should be doing something"). Ends on the graph's own event: run_propagate
-            # checks the handoff off the moment the peer's linked goal completes. The session-scoped
-            # surfaces (rail/chat/timeline) read the SAME evidence via _session_delegated_why in
-            # _session_awaiting's stamp branch — keep the two in step (the user 2026-08-08).
-            _deleg_why = None
-            _deleg_since = None
-            _deleg_peers = None
-            if col == "working" and not _stamp_why and not _await_ok \
-                    and _all_outstanding_delegated(nodes, nid):
-                # the SAME open test the gate used (2026-08-26): _all_outstanding_delegated proved every
-                # OPEN LEAF is a handoff via _open_leaves (whose agent-open pierce ignores a done marker),
-                # so the peers/since read here must walk the same set — the raw nodeComplete filter this
-                # replaces could see an EMPTY set the gate saw as non-empty, minting a nameless, durationless
-                # "delegated to a peer" card
-                _hnodes = [x for x in _open_leaves(nodes, nid)
-                           if isinstance(nodes[x].get("handoff"), dict)]
-                _deleg_peers = _handoff_peer_identities(nodes, _hnodes)
-                _peers = sorted({d["name"] for d in (_deleg_peers or [])} or {"a peer"})
-                _deleg_why = "delegated to %s; waiting on their result" % ", ".join(_peers)
-                # the newest outstanding handoff's mint — the last local act before the wait began
-                _deleg_since = max([nodes[x].get("t") or 0 for x in _hnodes] or [0]) or None
-            if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
-                    _await_ok or _stamp_why or _deleg_why or (col == "blocked" and _peer_wait)):
-                col = "awaiting"
-            # TRACKED delegation payloads (the user 2026-08-24): a report-back handoff renders as ONE
-            # card homed under the DELEGATOR. The sender's card is the PRIMARY — delegTracked names
-            # the recipient identities so the feed shows their live status right on it — and the
-            # recipient's planted copy is the SATELLITE (origin.tracked below) the feed collapses
-            # off the default board, still one click away via that session's own views (nothing runs
-            # in secret, 2026-08-11). Both keys ship only when present, so every untracked payload
-            # is byte-identical to before. The pair link stays the courier's msgId graph: clears and
-            # run_propagate cross it unchanged.
-            _tracked_hn = [x for x in _subtree(nid)
-                           if isinstance(nodes[x].get("handoff"), dict) and nodes[x]["handoff"].get("tracked")
-                           and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")]
-            _tracked_peers = (_handoff_peer_identities(nodes, _tracked_hn) or None) if _tracked_hn else None
-            o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
-            origin = None
-            if isinstance(o, dict) and o.get("peer"):
-                # The "↪ from <peer>" badge is PROVENANCE and stays for the card's life (the user
-                # 2026-08-16: the badge used to vanish at the exact moment the recipient finished —
-                # run_propagate completes the sender's tracking node instantly — so a COMPLETED card
-                # never showed where its work came from, and a propagated clear read as one card
-                # mysteriously taking another with it). origin_live says whether the sender's linked
-                # goal is still OPEN: live → the affordance of an active handoff; absorbed → the same
-                # badge, dimmed, purely historical. This is the completed-column MERGE, heuristic-free:
-                # the one surviving card wears both identities, keyed on the courier's recorded link.
-                # NAMED origin_live, never `live`: this block once reused the session-level `live` —
-                # the backend-alive bit set at the top of the session loop — so every LATER card of
-                # the session, and the placeholders built after the loop, wore the badge's bool: a
-                # live session's cards dressed .dead and took the revive path; a dead session's
-                # offered Continue. Badges persist for the card's life, so one absorbed badge
-                # poisoned the session's whole card tail.
-                psid, gid = o["peer"], o.get("goalId")
-                pstore, pfault = jd.load_goals_shared_or_fault(psid) if gid else (None, None)   # read-only peer view
-                sgoal = pstore.get("nodes", {}).get(gid) if pstore is not None else None
-                origin_live = bool(sgoal and not sgoal.get("nodeComplete") and not sgoal.get("cleared")
-                                   and gid not in cleared)   # a sender whose store faults reads absorbed (dimmed,
-                #                                              no affordance) rather than aborting the build
-                # Name resolution: the live names registry first (a local sender may have been
-                # renamed), then the courier's plant-time snapshot (the only source for a
-                # FEDERATED sender, whose sid this kernel can't resolve), then the sid stub.
-                # peerHost renders as the same quiet "host:" prefix remote sessions wear on the
-                # timeline (host-prefix.ts) — a local resolve means a local sender, no host.
-                pname = _name_of(psid)
-                origin = {"peer": pname or o.get("peerName") or psid[:8],
-                          "peerHost": ("" if pname else o.get("peerHost") or ""),
-                          "peerSid": psid, "color": _name_color(psid), "live": origin_live}
-            # SENDER-SIDE handoff provenance (the user 2026-08-24): a TOP-LEVEL "↪ delegated to
-            # <peer>" tracking node wore its provenance as the card TITLE, arrow and all. The card
-            # now titles the WORK and ships the delegation as the badge mirroring origin above —
-            # see _handoff_card_fields. Every other card keeps its text untouched.
-            handoff_to, card_text = _handoff_card_fields(nodes, nid)
-            await_why = (sess_awaiting_why or _stamp_why or _deleg_why or _owned_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph, then the blocked-yield's owned dispatch (None for the postal-only case → the waitingOn chip names the peer)
-            await_kind = None                        # the winning why's KIND and SINCE ride beside it,
-            await_since = None                       # mirroring the or-chain exactly (a kindless winner
-            await_peers = None                       # stays kindless; since = the wait's own event time).
-            await_count = None                       # how many are awaited — the SAME number the chat chip words itself
-            await_items = []                         # the awaited ROWS the pill lists, grouped by kind (slice 2, 2026-09-05)
-            if col == "awaiting":                    # from (T228, the user's one-count rule): the live snapshot's own
-                # count, the peers a stamp or delegation names, one owned dispatch; None when the arm cannot know
-                for _w, _k, _s, _p, _n, _it in ((sess_awaiting_why, sess_awaiting_kind, sess_awaiting_since, sess_awaiting_peers, sess_awaiting_count, sess_awaiting_items),
-                                                (_stamp_why, _stamp_kind, _stamp_since, _stamp_peers, (len(_stamp_peers) if _stamp_peers else None), _awaiting_peer_items(_stamp_peers)),
-                                                (_deleg_why, "peer", _deleg_since, _deleg_peers, (len(_deleg_peers) if _deleg_peers else None), _awaiting_peer_items(_deleg_peers)),
-                                                (_owned_why, "task", _owned_since, None, 1, [])):
-                    if _w:
-                        await_kind, await_since, await_peers, await_items = _k, _s, _p, _it
-                        await_count = _n if isinstance(_n, int) and _n > 0 else None
-                        break
-            # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
-            # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
-            # such node in its subtree — else (working/awaiting) its LAST ACTIVITY (the newest mt anywhere in
-            # its subtree, _fsubmax). Keying the time badge to the mint `t` made a goal OPENED hours ago but
-            # FINISHED moments ago read as "done hours ago" (the user 2026-06-19); the same pin made a WORKING
-            # goal you JUST replied to still read "15m ago" instead of freshening — a reply advances the goal's
-            # mt, so the card must too (the user 2026-07-01). `created` keeps the true mint time for the record.
-            disp_t = _fsubmax(nid)
-            if col == "completed":
-                # A completed card's time is when the WORK finished / it SETTLED — NEVER a later re-judge that
-                # re-touches the UMBRELLA node's own mt without changing anything (the user 2026-07-08: an
-                # hours-old completed card jumped to "3m ago" after a no-op re-judge re-stamped the top node's
-                # mt; a re-materialize can advance mt even when nothing changed). So derive ONLY from stable
-                # evidence: the settle time + the done DESCENDANTS' completion mt — excluding the top node `nid`
-                # itself, whose (re-touchable) mt _fsubmax had already folded in.
-                dts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid) if x != nid and _closure_done(x)]
-                # settledAt = when the card actually ENTERED the Completed column (the judge stamps it ONCE at
-                # settlement — NOT re-bumped by a no-op re-judge, verified stable while the umbrella mt drifted;
-                # it can lag the done op's mt by many segments). The column sorts by `t` oldest-at-top, so a
-                # just-settled card drops to the BOTTOM where the eye expects it, above older completions whose
-                # stale mt was even further back (the user 2026-06-29).
-                cand = max([nodes[nid].get("settledAt") or 0] + dts)   # settle time OR a real late-completing leaf
-                disp_t = cand or disp_t                                # both absent (legacy/childless) → keep _fsubmax
-            elif col == "blocked":
-                bts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
-                       if nodes[x].get("blocked") and not _closure_done(x)]
-                if bts:
-                    disp_t = max(bts)
-            # followupAt = when a follow-up OPTIMISTICALLY moved this card into Working (optimistic_followup
-            # stamps it at the flip). Same idea as the Completed column's settledAt: the column sorts
-            # oldest-at-top, so without this the card sorts by its stale blocked-era mt and appears at the TOP,
-            # then the judge re-files the real follow-up work (≈now) and it lurches to the BOTTOM. Flooring
-            # disp_t to now at the flip lands it at the bottom AT ONCE, where the re-file will keep it — no jump
-            # (the user 2026-07-03). Once real work lands, _fsubmax passes followupAt and this is moot.
-            if col == "working":
-                disp_t = max(disp_t, nodes[nid].get("followupAt") or 0)
-            # RE-CHECK (the user 2026-06-27): a SOFT-blocked top you've answered with a TARGETED card-reply/nudge
-            # (followupPending on the top — precise, only this card) is no longer on YOU. It de-urgents (dotted,
-            # dropped from the needs-you tally) and drops to WORKING until the judge resolves or re-blocks it.
-            recheck = bool(col == "blocked" and nid != api_top and nid != perm_top
-                           and nodes[nid].get("followupPending"))
-            # RE-JUDGING (the user 2026-06-30; MOVED to Working 2026-07-02): a PLAIN reply on the thread
-            # AFTER the block moves the card to WORKING — it's the agent's move now, and the delay before
-            # the card left Needs-You was the user's complaint (2026-07-02). The flag holds until the
-            # UNBLOCKER has re-examined the block with evidence covering the reply (blockCheckT, its
-            # persisted watermark, reaches the reply); then the card returns to Needs-You exactly once —
-            # or leaves authoritatively if the judge lifted the block. The "Re-judging…" swirl rides along
-            # in Working. Never the hard floors (api/permission).
-            #
-            # LATCHED ON THE WATERMARK, NOT THE OPEN TURN (the user 2026-07-29). The flag used to be
-            # bounded by who_working, which made a blocked card on an ACTIVE session strobe
-            # working↔needs-you at every turn boundary — the audited card flipped seven times in six
-            # minutes while nothing about it changed. The turn-bound was a proxy for "the judge hasn't
-            # ruled on the reply yet"; blockCheckT IS that event: the unblocker advances it on every
-            # examine AND on the parse give-up path, so the latch cannot stick past a judge look. This is
-            # the same trust the TARGETED-reply arm (followupPending) already places in the judge to
-            # clear its store-backed flag. Cards move on new information, never on activity boundaries.
-            #
-            # NO ECHO ARM (the user 2026-07-22): the flip used to ALSO ride the backend send-echo
-            # (echo_send_t), for a sub-second flip before the turn's atom lands in the cached parse. At the
-            # time a composer slash-command echo never retired (its transcript form is the "<command-name>"
-            # wrapper, which did not text-match the raw echo; since 2026-09-10 the echo lands under
-            # sb.command_text_key, see _echo_landed_in), and the parser skips it from the human floor, so
-            # the stale echo pinned rejudging TRUE forever: the card sat in Working, idle, invisible to the
-            # nudge (which reads the still-blocked store). The latch arms only off the PARSE's plain-reply
-            # turn (a real transcript atom, never the echo), and the watermark clear is judge-driven, so
-            # the stranded-echo failure stays impossible whatever an echo does.
-            # The watermark that bounds the latch is the one covering THE BLOCK THE CARD SURFACES —
-            # a descendant's, when the block rolled up (_block_check_floor above; the user 2026-07-31).
-            _bct = _block_check_floor(nid)
-            rejudging = bool(col == "blocked" and nid != api_top and nid != perm_top
-                             and not nodes[nid].get("followupPending")
-                             and plain_user_t > disp_t
-                             and plain_user_t > (_bct if _bct is not None
-                                                 else (nodes[nid].get("blockCheckT") or 0)))
-            # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
-            # A RE-CHECK'd soft-block (targeted follow-up) drops to WORKING (the user 2026-06-27): once you've
-            # replied to THAT card it's the agent's move, not yours, so it leaves the needs-input column entirely
-            # (still dotted + a "Re-judging…" swirl so you can see it pending). A plain reply (rejudging) now
-            # ALSO drops to Working — but only WHILE in flight (see the rejudging comment above).
-            # A TRANSIENT API error is NOT blocking either (the user 2026-06-29):
-            # auto-retry recovers it, so the card STAYS in Working with the "⚠ API error" chip. But a "prompt
-            # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
-            # only api_top WHEN tooLong, or a genuine soft block (col blocked & not recheck), keeps needs_input.
-            # A MODEL-scoped usage limit joins them (the user 2026-08-01): the session cannot run another
-            # turn until you switch model or top up, so leaving the card in Working left a working card on
-            # a session nothing could move — not nudged (the api-error gate suppresses it), not blocked,
-            # not awaiting, for 80 minutes.
-            # A safeguards REFUSAL joins them (the user 2026-08-15): deterministic on the same input,
-            # never auto-retried, so a Working card would sit on a session nothing can move — the
-            # human rewriting or dropping the ask IS the only unblock.
-            api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit")
-                                                          or aerr.get("modelLimit")
-                                                          or aerr.get("authErr") or aerr.get("refusal"))))
-            # NUDGE FAILED (plans/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
-            # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
-            # was still working-stalled; per the anti-loop rule it is never re-nudged, so the card carries
-            # the story instead. Surfaced only while the goal still reads working (a later block/completion
-            # resolves it, and `awaiting` means it's genuinely in flight — no failure to show then). A FORK
-            # nudge (`stalled` — the goal had open authoritative to-dos) that failed additionally FLOORS the
-            # card to needs-you: the agent can't self-block a to-do, we asked once, nothing moved — the
-            # human is the bottleneck now. The floor keeps requiring open to-dos AT DISPLAY TIME (agent_open)
-            # so it self-heals the instant the agent crosses the items off; the live api/permission floors
-            # still win (the present event).
-            nrec = _auto_nudge_data().get("nudged", {}).get(nid) or {}
-            _stall_rec = _stalls.get(nid)             # romp is holding this card (see "stalled" in the payload)
-            # ROUTING (2026-08-13): an in-flight-class hold (jd.WHY_IN_FLIGHT — romp's own review is the
-            # wait) presents as the Analyzing… swirl, never the stalled chip; every other hold paints the
-            # Stalled section. The old screen hid the in-flight records from BOTH surfaces, so one frozen
-            # between retries showed nothing — now the sweep retires them on their events and whatever
-            # stands presents somewhere by definition.
-            _stall_inflight = bool(_stall_rec and _stall_rec.get("why") in jd.WHY_IN_FLIGHT)
-            if _stall_inflight:
-                _stall_rec = None
-            # HARD RULE (the user 2026-08-13): a stalled card on a session that isn't doing anything
-            # files under BLOCKED — it needs eyes, whoever's bottleneck it is; Working is where it hid.
-            # This supersedes the 2026-07-23 "Working column only" stance. Keyed on the stall RECORD
-            # (event-latched: minted by the walk, popped by the sweep) plus the session's idle read —
-            # the same displacement precedent as recheck/rejudging's de-urgent smoothing: the session
-            # taking a turn IS new information, and the card returns to Blocked if the hold outlives it.
-            _stall_block = bool(_stall_rec and not who_working and not sess_awaiting_why)
-            # the chip shows while the failure is the live story: the goal still working, OR blocked BY the
-            # failure itself (the diary's latest block has src "nudge", 2026-07-07). A real judge verdict
-            # (planner/closer block, or completion) takes the story over and the chip yields.
-            _lastblk = next((e.get("src") for e in reversed(nodes[nid].get("log") or [])
-                             if e.get("kind") == "block"), None)
-            # ...and "takes the story over" must survive the card going BACK to working (the user 2026-07-09:
-            # g143 wore "stalled" although the closer had ruled it done after the failed nudge and a later
-            # user follow-up reopened it). The `failed` flag only resets on the NEXT nudge fire, so the
-            # working arm alone would resurrect the chip forever. Event-based retire: any diary event from a
-            # real actor (planner/closer/courier/user/agent) AFTER the nudge's own block means the stall was
-            # answered — the chip yields for good, whatever column the card is in now.
-            _nlog = nodes[nid].get("log") or []
-            _nblk_at = next(((e.get("at") or e.get("ev_t") or 0) for e in reversed(_nlog)
-                             if e.get("kind") == "block" and e.get("src") == "nudge"), None)
-            # The row is the retire anchor, but it's also the write most exposed to a judge pass's
-            # stale save (g52, 2026-07-16: the planner's held-store save erased it while `failed`
-            # survived in auto-nudge.json — with _nblk_at None the chip could never retire, and it
-            # said "waiting on you" straight through the user's own follow-up). Fall back to the
-            # failure stamp's own time (failedAt, written with `failed`); a legacy record carrying
-            # neither retires on any user event at all — of the two failure modes, a false
-            # "waiting on you" is the one that breaks flow.
-            _nfloor = _nblk_at if _nblk_at is not None else nrec.get("failedAt")
-            # "unblocker" is a real actor here (the user 2026-08-14: its unblock ruled the nudge's
-            # block answered and moved the card back to Working, while the chip — whose claim IS that
-            # block — survived it, a red "waiting on you" on a card the judges had just un-waited)
-            _story_moved = (any((e.get("at") or e.get("ev_t") or 0) > _nfloor
-                                and e.get("src") in ("planner", "closer", "courier", "user", "agent",
-                                                     "unblocker")
-                                for e in _nlog) if _nfloor is not None
-                            else any(e.get("src") == "user" for e in _nlog))
-            nudge_failed = (bool(nrec.get("failed")) and not _story_moved
-                            and (col == "working" or (col == "blocked" and _lastblk == "nudge")))
-            # A live picker/permission floor (perm_top) is a GENUINE block, so the kernel reports its column as
-            # needs_input — NOT "working" with the client re-routing it by it.blocked (which was crafty + split
-            # the truth: build_feed said working while the card showed under Blocked, and the distiller line,
-            # keyed on it.column, then stayed hidden). Now it.column is authoritative: the card IS blocked, the
-            # client files by it.column, and the distiller line shows (the user 2026-06-29).
-            column = ("needs_input" if (api_block or nid == jauth_top or nid == perm_top or _stall_block
-                                        or (col == "blocked" and not recheck and not rejudging))
-                      else "completed" if col == "completed" else "working")
-            had_working = had_working or column == "working"
-            had_awaiting = had_awaiting or col == "awaiting"   # the FLAVOR, not the column: awaiting rides Working
-            # distillState (the user 2026-07-21): which distilled line the CARD should show — keyed on the
-            # GENUINE resolution state, NOT the transient `column`. recheck/rejudging drop a still-blocked
-            # card to Working the moment its session takes a turn (de-urgent smoothing), and `column`, keyed
-            # on that, flickered the decision brief OFF every time — so a busy session's blocked card read as
-            # "unblocked, no summary" (the docs thread). distillState rides the real block (api_block /
-            # perm_top / col=="blocked"), so the brief/takeaway stays put through the re-judge window; the
-            # column still moves for placement. Completed is stable (never recheck/rejudged), so it matches.
-            distill_state = ("completed" if col == "completed"
-                             else "blocked" if (api_block or nid == jauth_top or nid == perm_top
-                                                or col == "blocked")
-                             else None)
-            # summaryAnchorUuid: where a click on the distilled summary line lands.
-            # COMPLETED goals pin to the COMPLETION TURN'S wrap-up — event-derived, not a guess: the
-            # closer's DONE-ANCHOR appended the completing turn's final segment as the node's trail tail
-            # (judge _close_turn), so that segment's last substantive assistant block is the big turn-end
-            # recap the user expects the summary to open on (the user 2026-07-14: the distiller's own
-            # citation kept naming a mid-turn status note that merely passed the prose floor).
-            # NEXT: the anchor the distiller/brief itself CITED while writing the line
-            # (node["summaryAnchor"], judge _split_source) — the reader that wrote the summary names what
-            # it read (the user 2026-07-01); honored only when the uuid resolves in this parse AND carries
-            # substantive prose (cite_uuids — a citation on a connective stub is wrong by construction,
-            # the user 2026-07-14). This is the primary tier for a BLOCKED brief (no completion turn
-            # exists) and for a completed goal whose recap segment is tool-only.
-            # FALLBACK (older goals, no/invalid/stub citation): the most CURRENT substantive assistant
-            # message across the goal's whole subtree trail (mint→resolution). Never the old
-            # biggest-text-block pick: "longest ever" is monotone, so a long early analysis held the
-            # anchor forever while the real outcome landed later (the user 2026-07-01).
-            _sa_u, _cited = None, nodes[nid].get("summaryAnchor")
-            if col == "completed":
-                # The newest trail TAIL across the SUBTREE, not just the top's own (the user 2026-07-15,
-                # the g91 click): a BOTTOM-UP-completed umbrella (all children done) has no done verdict
-                # of its own, so the DONE-ANCHOR never appended a completing segment to ITS trail —
-                # trail[-1] was still the MINT segment and the pin sent the summary click to the goal's
-                # oldest prose instead of the wrap-up the distiller correctly cited. A child's
-                # done-anchored tail IS its completing turn's segment, so the newest substantive tail is
-                # the completion recap for both shapes (an explicitly-done top's own tail stays newest).
-                _tail = None                             # (seg_t, uuid) of the newest substantive tail
-                for _x in _subtree(nid):
-                    _tr = nodes[_x].get("trail") or []
-                    if not _tr:
-                        continue
-                    _u, _sub, _t = seg_best.get(_seg_key(_tr[-1]), (None, False, 0))
-                    if _u and _sub and (_tail is None or _t > _tail[0]):
-                        _tail = (_t, _u)
-                if _tail:
-                    _sa_u = _tail[1]
-            if _sa_u is None and _cited and _cited in cite_uuids:
-                # THE GROUNDING CAN BE OUTRUN (the user 2026-08-28, T153): the citation names what
-                # the summary was WRITTEN FROM — but a reply that reopens the card adds stretches
-                # the stored summary has never seen (no re-completion yet, so no re-distill event),
-                # and the click then lands in the stale FIRST stretch of a visibly two-stretch
-                # card. When the follow-up stamp or any subtree trail segment postdates the
-                # summary's own coverage stamp, the cited tier YIELDS to the most-current-
-                # substantive walk below, so the click follows the freshest evidence; the citation
-                # resumes authority the moment a re-distill lands (the stamp catches up).
-                # Display-only: no column implication.
-                _cov = max(int(nodes[nid].get("distilledMt") or 0),
-                           int(nodes[nid].get("briefedMt") or 0))
-                _outrun = bool(_cov) and (
-                    (nodes[nid].get("followupAt") or 0) > _cov
-                    or any((seg_best.get(_seg_key(_sid), (None, False, 0))[2] or 0) > _cov
-                           for _x in _subtree(nid) for _sid in (nodes[_x].get("trail") or [])))
-                if not _outrun:
-                    _sa_u = _cited
-            if _sa_u is None:
-                _best = None                             # (substantive, seg_t): prefer substantive, then latest
-                for _x in _subtree(nid):
-                    for _sid in (nodes[_x].get("trail") or []):
-                        _u, _sub, _t = seg_best.get(_seg_key(_sid), (None, False, 0))   # timestamp-invariant: resolve a drifted trail seg id
-                        if _u and (_best is None or (_sub, _t) > (_best[0], _best[1])):
-                            _best = (_sub, _t, _u)
-                if _best:
-                    _sa_u = _best[2]
-            if not _sa_u:
-                # LAST RESORT (the user 2026-07-02: a completed card's summary was unclickable — the cited
-                # atom fell outside every segment, and no trail segment offered prose either). Fall back to
-                # the newest trail segment's WORK anchor (seg_uuid — the same target the modal's node rows
-                # nav to), so the summary still deep-links to roughly where the work concluded. Only a goal
-                # with NO resolvable trail at all ends up link-less.
-                for _x in _subtree(nid):
-                    for _sid in reversed(nodes[_x].get("trail") or []):
-                        _u = seg_uuid.get(_seg_key(_sid))
-                        if _u:
-                            _sa_u = _u
-                            break
-                    if _sa_u:
-                        break
-            if _sa_u is None and ps is None:
-                # COLD-PARSE fallback (the user 2026-07-20): every tier above reads parse-derived maps,
-                # and right after a kernel restart ps is None until _warm_fleet_bg — so for that window
-                # EVERY card shipped summaryAnchorUuid null and the summary click hit the "no anchor was
-                # recorded" toast (a lie: the anchor is on the node). With no parse to validate against,
-                # serve the distiller's stored citation raw — the chat's own landing handles a bad uuid
-                # honestly, and the validated tiers take back over on the first warm push.
-                _sa_u = _cited
-            card = {
-                "itemId": nid, "sid": fsid, "name": name, "color": color, "text": card_text,
-                "t": disp_t, "live": live,
-                "trgb": list(cm.age_rgb(now - disp_t, _colormap())),
-                "turnId": nid, "origin": origin,
-                **({"handoffTo": handoff_to} if handoff_to else {}),
-                **({"delegTracked": _tracked_peers} if _tracked_peers else {}),
-                # the satellite hides ONLY while the pair is INTACT and the work runs its normal
-                # course: a needs-you block always surfaces (interrupt only when the human is the
-                # bottleneck), and a primary that closed or cleared un-hides the copy — origin.live
-                # reads the PRIMARY handoff node, so every pair divergence self-heals to a visible
-                # card instead of work running in secret (review 2026-08-24).
-                **({"satellite": True} if isinstance(o, dict) and o.get("tracked")
-                   and origin and origin.get("live") and column != "needs_input" else {}),
-                "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
-                "followupAt": nodes[nid].get("followupAt") or None,   # WHEN the follow-up/continue went — the latched button's honest age (T150)
-                # DONE-CONFIRMING (the user 2026-07-24): the done verdict is in; only the settle event is
-                # pending. The card STAYS in Working (the settle gate exists precisely so the column never
-                # flickers working↔done) and wears a steady "done, confirming" cue instead. From the
-                # rollup's authoritative export, never the raw nodeComplete flag (which lies for agent-open
-                # umbrellas is_complete refuses).
-                "doneConfirming": (True if (column == "working" and nid in confirming) else None),
-                "waitingOn": (wmap.get(fsid) if (column == "working" and _peer_wait) else None),   # 'waiting on <peer>' chip: unanswered outbound to a live peer, only on a goal that predates the question (the user 2026-06-22/28)
-                # awaiting flavor: held in Working with a ⏳ awaiting badge (waiting on dispatched/delegated
-                # work) — the user 2026-06-22. `tasks` = the live bg-task descriptions (the user 2026-07-13):
-                # when present the card wears the compact "Waiting on task" pill (expands to this list, like
-                # Sub-goals) instead of the boxed why; empty for subagent/overlay flavors, which keep the box.
-                "awaiting": ({"why": await_why, "kind": await_kind, "since": await_since,
-                              "count": await_count,   # the one number every surface words itself from (T228)
-                              "peers": await_peers,   # delegation wait → [{name, host, sid, color}] for the identity-coloured box (the user 2026-08-23)
-                              "items": await_items,   # the awaited rows, grouped by the pill's expansion (slice 2)
-                              "tasks": _awaiting_task_descs(fsid, s["path"])} if col == "awaiting" else None),
-                "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
-                "distillState": distill_state,   # "completed" | "blocked" | null — the GENUINE state the distiller line keys on, so the brief/takeaway doesn't flicker off when recheck/rejudging drops `column` to working (the user 2026-07-21)
-                "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
-                "relayNote": nodes[nid].get("relayCarried") or None,   # a far host still holds a relayed question after its wait ended (relayCarried): the card's own line under the brief, never a brief paragraph (the per-paragraph stamps map briefParts onto the brief's paragraphs and allow exactly one extra)
-                "briefParts": nodes[nid].get("briefParts") or None,   # MULTI-item brief: [{id, since}] one per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null for single-item briefs, whose stamp is the card header's age (the user 2026-07-24)
-                "summaryParts": nodes[nid].get("summaryParts") or None,
-                # the user FOLLOWED UP after the takeaway they read (followupAt postdates what the
-                # summary covers) → the summary section says so instead of presenting the old takeaway
-                # as current; self-clears when the re-distill stamps a newer distilledMt (16 live cards
-                # measured reading stale, the user 2026-08-19)
-                "summaryStale": bool((nodes[nid].get("followupAt") or 0) > (nodes[nid].get("distilledMt") or 0)
-                                     and (nodes[nid].get("summary") or "").strip()) or None,   # the DONE twin: [{id, since}] per takeaway paragraph when the distiller split by <completed-items>; done-event times (the user 2026-07-24)
-                "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
-                "summaryAnchorUuid": _sa_u,    # click the summary line → the completion turn's wrap-up (completed pin), else the cited/latest prose (the user 2026-07-14)
-                # the supporting SPAN (T218): the distiller's verbatim quote, located in the cited atom at
-                # write time — shipped ONLY while the resolved anchor IS the cited atom (the fallback tiers
-                # land elsewhere, where the span would highlight the wrong text); the landing scrolls to
-                # and highlights it, and a null keeps today's whole-message behavior
-                "summaryAnchorQuote": (nodes[nid].get("summaryQuote")
-                                       if _sa_u and _sa_u == nodes[nid].get("summaryAnchor") else None),
-                # per-paragraph landings (T220, the user's ruling): each cited paragraph's own atom +
-                # located span, aligned to the takeaway's paragraphs (None = that paragraph falls back
-                # to the whole-summary landing). Gated exactly like the quote above: the cited tier
-                # must hold authority (the T153 outrun rule) — absent on old stores forever, no sweep.
-                "summaryAnchorsPara": ([({"u": e["a"], **({"q": e["q"]} if e.get("q") else {})} if e else None)
-                                        for e in nodes[nid].get("summaryAnchors") or []]
-                                       if (nodes[nid].get("summaryAnchors")
-                                           and _sa_u and _sa_u == nodes[nid].get("summaryAnchor")) else None),
-                "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
-                "failLog": nodes[nid].get("failLog") or None,   # the summarizer's failed attempts (judge _fail_log): model + literal error per try → the chip's hover history + modal "What was tried" (the user 2026-08-18)
-                "nudged": ({"count": int(nrec.get("count", 0)), "times": _nudge_times().get(nid, [])[-8:]}
-                           if nrec.get("count") else None),   # auto-nudge HISTORY (fires + when) → the stalled chip's evidence, on the chip tooltip + modal (the user 2026-07-02)
-                "blocked": ({"state": "apiError",
-                             # the OFFER (2026-08-30): login-billed + capped window + a key on hand →
-                             # the card proposes switching THIS session's billing; the pick is the
-                             # user's alone, both directions (see _cap_switch_offer)
-                             **({"capOffer": _cap_off} if _cap_off else {}),
-                             "status": aerr.get("status"),
-                             "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
-                             "spendLimit": bool(aerr.get("spendLimit")),
-                             "modelLimit": bool(aerr.get("modelLimit")),
-                             "authErr": bool(aerr.get("authErr")),
-                             "refusal": bool(aerr.get("refusal")),
-                             "what": ("this account hit its monthly spend limit — raise it at claude.ai/settings/usage to continue" if aerr.get("spendLimit")
-                                      else "this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
-                                      # the CLI's own text names the model and the two remedies; the card
-                                      # states them, because "Retry to resume" is false here (the user 2026-08-01)
-                                      else "this session's model is out of allowance — switch its model or add credits to continue" if aerr.get("modelLimit")
-                                      # a dead credential: retrying re-presents it forever — name the fix
-                                      # (per-session auth, the user 2026-08-08)
-                                      else "this session's sign-in or API key isn't working — fix the login (claude /login) or the key, or switch which one it bills" if aerr.get("authErr")
-                                      # a refusal is deterministic: retrying re-sends the same prompt and
-                                      # collects the same refusal — name the real fix (the user 2026-08-15)
-                                      else "the model's safeguards refused this prompt — rewrite it or drop this thread" if aerr.get("refusal")
-                                      else "this session stopped on an API error — Retry to resume")} if nid == api_top
-                            # the session itself is fine — it's romp's ANALYSIS of it whose credential is
-                            # refused, so the copy blames the judges, not the session (the user 2026-08-12)
-                            else {"state": "judgeAuth", "mode": jerr.get("mode"),
-                                  "since": jerr.get("t"), "text": jerr.get("note") or "",
-                                  "what": ("romp can't analyze this session — the API key its judges bill is being refused. Fix the key behind Claude Code's apiKeyHelper (rotate the vault item) or switch which account this session bills"
-                                           if jerr.get("mode") == "key" else
-                                           "romp can't analyze this session — the login its judges bill is being refused. Sign in again (claude /login) or switch which account this session bills")} if nid == jauth_top
-                            else {"state": perm_state,
-                                  "what": ("this session is stopped awaiting your input" if perm_state == "picker"
-                                           else "this session is stopped awaiting your approval")} if nid == perm_top
-                            else None),
-                "retrying": (sess_retrying if column == "working" else None),   # api-retry storm in the OPEN turn → "retrying since HH:MM" chip on the working card; chip only, no column move (the user 2026-07-09)
-                "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (plans/stalled-open-todos-nudge.md)
-                # STALLED (the user 2026-07-23): romp's nudge gate is holding this card behind a reviver that
-                # isn't retiring, so nothing is moving it and nothing was saying so. `why` is the kernel's own
-                # mechanical reason; `note` is the staller's plain-language version of it (null until the judge
-                # writes one). Read-side gated on the LIVE stall record, so the note vanishes the moment the
-                # wait clears, without anyone having to erase it. Working column only: a stall is romp being
-                # the bottleneck, never the user, so it must not read as needs-you.
-                "stalled": ({"why": _stall_rec["why"], "since": _stall_rec["since"],
-                             "note": nodes[nid].get("stallSummary") or None,
-                             "blocked": _stall_block}
-                            if (_stall_rec and not nudge_failed
-                                and (column == "working" or _stall_block)) else None),
-                "interrupting": bool(sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # a user interrupt is IN FLIGHT → steady "interrupting…" badge until it settles (the user 2026-07-07)
-                "interrupted": bool(sess_interrupted and not sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge (only ONCE the interrupt has settled); nudge suppressed until their next message (the user 2026-07-05)
-                "column": column,
-                "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
-                "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
-                "judging": bool((sess_judging or _stall_inflight) and column == "working"),
-                "working": (sess_progress if column == "working" else None),   # open-turn narration: tool count + since (the user 2026-08-13)   # turn settled, closer verdict pending → "Analyzing…" swirl covers the finished-but-still-Working beat (the user 2026-07-13); same key the provisional card wears
-                "sessState": (sess_state if column == "working" else None),   # the mute-proof floor: open | quiet | unknown (the user 2026-08-14 — a working card ALWAYS says its state)
-                "warnRows": (_card_warn_rows(dbg_rows, fsid, set(_subtree(nid)),
-                                             store.get("placements") or {}) or None)
-                            if dbg_rows is not None else None,   # debug mode only: the card's judge failures, modal "Warnings" section
-                # T319: this root is work the SESSION started (a planner-born step whose parent is gone, or a
-                # pre-rule machine-rooted top the heal found no request to nest under): the face names the
-                # parent request when one is known and says why the work exists, in one line
-                "sessionStarted": _session_started_face(nodes, nid, healed),
-                "tree": flatten(nid, [], boundary=jd.review_boundary(nodes[nid]))}
-            # THE SERVING FOLD, candidate side (the user 2026-08-28, T137: fan-out lives inside the
-            # ask card — the T101 ruling applied to the mirror, view-side): a to-do mirror top the
-            # sync stamped as SERVING a dispatch folds into the sender's ask card instead of
-            # standing alone on the board. Candidate only — the fold commits in the post-pass IFF
-            # the sender's tracker row actually rendered this build (never orphan rows into an
-            # unrendered card; the candidate falls back to its own card). NEEDS-YOU BREAKS THROUGH:
-            # a serving mirror folds ONLY from the quiet columns (working/completed) — any
-            # needs-input state stands on the board like any needs-you card until it lifts, the
-            # store-independent breakthrough rule.
-            _srv = nodes[nid].get("serving")
-            if (isinstance(_srv, dict) and _srv.get("goalId")
-                    and column in ("working", "completed")):
-                serving_folds.append({"tracker": _srv["goalId"], "card": card})
-            else:
-                asks.append(card)
-        # A session actively working a brand-new ask shows NO card until the planner classifies the held
-        # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing
-        # already covers it (no working card); replaced by the real card once the planner places it.
-        # THE INVARIANT (the user 2026-08-01): a card sitting in Working must be explained by something —
-        # an actively working session, a judgment in flight, an awaiting, or an error. A session whose only
-        # explanation is "one of my cards is awaiting" was reading READY at the session level while that
-        # very card said "waiting on a background task", because this dot lit ONLY from the session-wide
-        # sources (`sess_awaiting_why`), which deliberately ignore a judge-placed launch. The cards are the
-        # per-goal answer this build already computed — so take it from them. Scoped to the session's own
-        # verdicts, so no sibling card is floored by it (what the session-wide _await_ok would have done).
-        if had_awaiting and not who_working and name not in awaiting:
-            awaiting.append(name)
-        if not had_working and perm_top is None and ps:   # cache-only: the live-prompt placeholder needs the parse → after the warm
-            # perm_top excluded: a live-blocked focus card no longer counts as "working" (it reports needs_input
-            # now), so without this guard a session whose ONLY card is the picker-blocked one would ALSO get a
-            # provisional working placeholder — a duplicate. A floored perm_top already covers the live prompt.
-            # store_faulted excluded: "the planner has not placed this yet" is an inference from placements we
-            # could not read, so a session whose store faulted gets no provisional card (its row says why).
-            pc = _provisional_card(s, name, color, fsid, live, now, store) if not store_faulted else None
-            if pc:
-                asks.append(pc)
-            elif perm_state in _NEEDS_INPUT_STATES:      # perm_top is None here (outer guard) → no goal to floor
-                # Hard-blocked on a live permission/picker prompt but with NO goal to floor (the planner hasn't
-                # run — nothing to plan until the ask is answered). Surface a needs-input placeholder so the
-                # block reaches the Blocked column instead of being invisible (the user 2026-06-27). Replaced
-                # by the real card once the planner places the answered work.
-                asks.append(_blocked_placeholder(s, name, color, fsid, live, now, perm_state,
-                                                 tm.get("since") if tm else None))
-            elif sess_awaiting_why:
-                # AWAITING a dispatched background task with NO goal to floor (the user 2026-07-13): the
-                # session's work is all placed/done, but a background task it dispatched is still running
-                # (the same signal the timeline's faded awaiting stretch reads). Surface a working-column
-                # awaiting card so the wait shows in the FEED, not just on the timeline — the hole the user
-                # hit ("there's no card there"). Ephemeral: gone the moment sess_awaiting_why clears.
-                asks.append(_awaiting_card(s, name, color, fsid, live, now, sess_awaiting_why,
-                                           kind=sess_awaiting_kind, since=sess_awaiting_since,
-                                           count=sess_awaiting_count, items=sess_awaiting_items))
+            _feed_memo_miss(ent[0] if ent is not None else None, key)
+            _feed_memo_count("derived")
+            entry = _feed_session_entry(s, ctx)
+            key = _feed_key_with_deps(key, ctx, entry)   # the peers and reads THIS derivation recorded
+            js = json.dumps(entry, default=_wire_default_in("_feed_memo"))   # str() of an unencodable value, said once
+            _feed_memo_put(fsid, key, js)
+            entry = json.loads(js)                   # the fold's objects come from the string on a miss too, so a hit and
+            #                                          a miss hand the board the same shapes, byte for byte
+        _heal, _hid, _cold = _feed_fold_entry(entry, now, cmap, s["name"], asks, working, awaiting, bg_services, serving_folds)
+        heal_total += _heal
+        hidden_total += _hid
+        cold_parse = cold_parse or _cold
+    _feed_memo_forget({s["sid"] for s in alive})     # a departed session's entry drops with it
     # THE SERVING FOLD, commit side (T137): join each candidate's rows under its dispatch's
     # tracker row — a read-only render-time join across stores (the node itself stays in the
     # WORKER's store, where plan-sync completion, nudge freshness, and clears live; node ids are
@@ -37750,6 +38313,8 @@ def _spend_tree_memo_bound():
 
 SPEND_GUARD_TREE_MEMO_BYTES = _spend_tree_memo_bound()   # the tree memos together (their path strings, estimated); over
 #                                                          it the largest goes first, and only the deficit is shed
+FEED_MEMO_BYTES = _feed_memo_bound()             # the feed's per-session card memo (T368, defined beside build_feed): its
+_FEED_MEMO_STATS["bound"] = FEED_MEMO_BYTES      #  entries' JSON bytes together; over it the least recently served goes first
 
 
 def _spend_ceiling():
