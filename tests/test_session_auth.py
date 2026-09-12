@@ -269,6 +269,35 @@ class OptionsInjection(_OptionsHarness):
         self.assertEqual(s._pick_fell_said, "", "nothing to fall to: no fall, no notice")
 
 
+class UnpickedFollowsTheExplicitDefaultAtLaunch(_OptionsHarness):
+    def test_the_launch_suppresses_the_helper_for_an_unpicked_session_once_the_default_is_login(self):
+        """The round-2 review: the explicit default reached an unpicked session's STATUS but not its LAUNCH (the
+        options read sess.auth, empty when unpicked, so the helper ran and the turn billed the key while the flyout
+        said Login). The launch now resolves the side by the status's rule."""
+        s = self._sess(7)                                        # minted before any default: no pick of its own
+        kw0 = self._options_kw(s)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw0), "no default: the launch stays plain, the CLI decides")
+        self.assertTrue(s._launched_keyed, "…and on a helper box that means the key")
+        self.assertTrue(self.be.set_auth_default("login"))
+        kw = self._options_kw(s)
+        self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), "", "the explicit login default suppresses the helper for the next connect")
+        self.assertFalse(s._launched_keyed, "the launch means the login, as the status says")
+        self.assertEqual(s.effective_auth(), "login")
+        self.assertNotIn("ANTHROPIC_API_KEY", kw["env"])
+        self.assertFalse([p for p in self.be.problems(10) if "cannot apply" in p["text"]], "following a default is no fall: no problem row")
+        self.assertTrue(self.be.set_auth_default("key"))
+        kw2 = self._options_kw(s)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw2), "an explicit key default: the helper runs")
+        self.assertTrue(s._launched_keyed)
+        self.assertTrue(self.be.set_auth_default("auto"))
+        kw3 = self._options_kw(s)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw3), "automatic again: plain")
+        # a session with its own pick is untouched by the default
+        p = self._sess(8, auth="login")
+        self.assertTrue(self.be.set_auth_default("key"))
+        self.assertEqual(self._settings_of(self._options_kw(p)).get("apiKeyHelper"), "", "its own login pick still suppresses the helper")
+
+
 class PickFallsToTheAvailableSide(_OptionsHarness):
     """The user 2026-09-08: no login on the box means everything bills the key, never a dead login — and
     the mirror. A pick this box cannot bill launches on the side it can, says so once per session in the
@@ -775,8 +804,27 @@ class SetAuth(_Keyed):
             km.Sessions.backend_for = staticmethod(lambda sid: Refuser())
             km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "key", "scope": "machine"}, client)
             self.assertEqual(sent[-1]["text"], "Couldn't set this machine's default billing: no apiKeyHelper configured.")
+            # a session-scoped "auto" (an older remote kernel's flyout would post it) is refused with a toast, never dropped (review)
+            km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "auto"}, client)
+            self.assertEqual(sent[-1]["type"], "warn")
+            self.assertIn("not for one session", sent[-1]["text"])
         finally:
             km.Sessions.backend_for, km._kernel_knows, km._push_soon = saved
+
+    def test_the_explicit_default_probe_sees_a_same_size_rewrite_with_an_unchanged_mtime(self):
+        """The review's forced probe: (mtime, size) alone kept login while the file said key."""
+        self.assertTrue(self.be.set_auth_default("login"))
+        self.assertEqual(self.be.explicit_default_auth(), "login")
+        p = sb._defaults_path(self.be.state_dir)
+        st = p.stat()
+        raw = p.read_text()
+        self.assertIn('"login"', raw)
+        rewritten = raw.replace('"login"', '"key"')
+        p.write_text(rewritten + " " * (len(raw) - len(rewritten)))   # the same byte length (trailing blanks are JSON's to ignore)
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))       # the mtime held back on purpose
+        self.assertEqual(p.stat().st_size, st.st_size, "same size")
+        self.assertEqual(p.stat().st_mtime_ns, st.st_mtime_ns, "same mtime")
+        self.assertEqual(self.be.explicit_default_auth(), "key", "ctime (or the inode) tells the rewrite apart")
 
     def test_the_machine_default_refuses_a_side_this_box_cannot_bill_with_the_reason(self):
         self._no_helper()

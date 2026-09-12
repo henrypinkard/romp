@@ -17279,6 +17279,12 @@ def _drive(msg, client):
                                        "text": ("Couldn't set this machine's default billing: %s." % why) if why
                                        else "Couldn't set this machine's default billing."}))
         _push_soon()
+    elif t == "setAuth" and msg.get("value") == "auto":
+        # Automatic is a choice for the MACHINE default only (T380 review): a session's own billing is Login or API
+        # key. Reachable from an older remote kernel's flyout, which shows the radio and posts the scoped value the
+        # host cannot take; said, never swallowed.
+        client["send"](json.dumps({"type": "warn",
+                                   "text": "Automatic is a choice for the machine's default billing, not for one session: pick Login or API key here."}))
     elif t == "setAuth" and msg.get("value") in ("login", "key"):
         # per-session billing (login vs the manager env's API key) — SDK-only, applied via reconnect
         # like /effort; mid-compaction → parked in the same FIFO. LOUD on refusal (fail loudly): Codex

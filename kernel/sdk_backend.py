@@ -11893,13 +11893,20 @@ class SdkBackend:
         # pick the box cannot bill with NOTHING to fall to (a key pick on a box with neither) launches
         # plain and the CLI decides, as before.
         side = self.pick_fall(sess.auth) or sess.auth   # the ONE decision, shared with the status rows (authPickFell)
+        if sess.auth not in ("login", "key"):
+            # NO pick of its own (T380 review): the launch follows the machine's EXPLICIT default when one is set and
+            # this box can bill it, the rule the status already uses (effective_auth / fallback_auth), so the readout
+            # and the launch agree (before, an unpicked session read Login in its status and billed the key at launch,
+            # the helper unsuppressed); without one the launch stays plain and the CLI decides, as ever
+            _exp = self.explicit_default_auth()
+            side = _exp if (_exp and not self.auth_unavailable_why(_exp)) else ""
         if side == sess.auth and sess.auth in ("login", "key") and sess._pick_unknown_said != sess.auth:
             why = self.pick_unknown(sess.auth)          # cannot tell just now: the pick stands, said once per session
             if why:
                 sess._pick_unknown_said = sess.auth
                 self._log("auth (%s): cannot tell whether this box can bill '%s' (%s); launching with the pick as is"
                           % (sess.name, sess.auth, why), problem=True)
-        if side != sess.auth and sess._pick_fell_said != sess.auth:
+        if sess.auth in ("login", "key") and side != sess.auth and sess._pick_fell_said != sess.auth:   # a PICK fell; a default followed is no fall
             sess._pick_fell_said = sess.auth
             self._log("auth (%s): billing pick '%s' cannot apply: %s; billing the %s"
                       % (sess.name, sess.auth, self.auth_unavailable_why(sess.auth),
@@ -14129,7 +14136,7 @@ class SdkBackend:
         p = _defaults_path(self.state_dir)
         try:
             st = p.stat()
-            key = (st.st_mtime_ns, st.st_size)
+            key = (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)   # ino and ctime too: a same-size rewrite whose mtime did not advance (review)
         except OSError:
             key = None
         cache = _EXPLICIT_DEFAULT_CACHE.get(str(self.state_dir))

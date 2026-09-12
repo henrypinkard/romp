@@ -1682,9 +1682,11 @@ def _judge_auth(fsid):
     never a silent fall to the other one — a judge quietly billing the login on a session the user
     put on the key is the same wrong-account failure the per-session picker exists to prevent).
     Same resolution as the picker (sdk_backend default_auth / effective_auth), read from the same
-    registry file: an explicit 'login' pick → login; anything else → the key when Claude Code's
-    settings carry an apiKeyHelper, else login. A call with no session (rows with no session) takes the same default a
-    fresh session would."""
+    registry file: an explicit 'login' or 'key' pick → that side; anything else → the machine's EXPLICIT
+    default when one is set (T380: sdk-defaults.json auth with authExplicit, the Billing flyout's Default
+    group; a key default with no helper on this box falls to the login, as the picker's rule does), else the
+    key when Claude Code's settings carry an apiKeyHelper, else login. A call with no session (rows with no
+    session) takes the same default a fresh session would."""
     a = ""
     if fsid:
         try:
@@ -1693,6 +1695,15 @@ def _judge_auth(fsid):
             a = ""
     if a in ("login", "key"):
         return a
+    try:
+        d = json.loads((STATE / "sdk-defaults.json").read_text())
+        d = d if isinstance(d, dict) else {}
+    except Exception:
+        d = {}
+    if d.get("authExplicit") and d.get("auth") in ("login", "key"):
+        if d["auth"] == "key" and not _key_available():
+            return "login"
+        return d["auth"]
     return "key" if _key_available() else "login"
 
 

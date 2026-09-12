@@ -7323,15 +7323,18 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
         const hs = el("span", "ctx-item-sub");
         // the sub-line says which rule holds (review): set here, or automatic (the helper rule) as before
         hs.textContent = explicit
-          ? "set here: new sessions, and sessions that follow the default; a session with its own pick keeps it"
-          : "automatic: the API key when a helper is configured, else the login; new sessions and sessions with no pick of their own";
+          ? "set here: new and unpicked sessions follow it; a session's own pick stays"
+          : "automatic: the API key when a helper is configured, else the login; new and unpicked sessions follow it";
         hb.appendChild(hs);
         head.appendChild(hb); sub.appendChild(head);
         // the same choices as radios, then Automatic (the helper rule), which clears the explicit default (review: the flag
         // was one-way and invisible); the current mark sits on the explicit side, else on Automatic
         const autoWord = avail.key ? "API key" : "Login";
-        const radios = [...choices.map((c) => ({ ...c, cur: explicit && avail.default === c.value })),
-                        { label: `Automatic (${autoWord} here)`, value: "auto", why: "", cur: !explicit }];
+        // an older kernel sends no defaultExplicit and takes no "auto": its flyout marks the side it computed and offers no
+        // Automatic radio (review: the click would be swallowed there)
+        const olderKernel = avail.defaultExplicit === undefined;
+        const radios = [...choices.map((c) => ({ ...c, cur: olderKernel ? avail.default === c.value : (explicit && avail.default === c.value) })),
+                        ...(olderKernel ? [] : [{ label: `Automatic (${autoWord})`, value: "auto", why: "", cur: !explicit }])];
         for (const c of radios) {
           const opt = el("div", "ctx-item ctx-radio" + (c.cur ? " current" : "") + (c.why ? " disabled" : ""));
           opt.textContent = c.label;
@@ -7351,11 +7354,15 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       menu.appendChild(sub);
       const ir = item.getBoundingClientRect();
       const sr = sub.getBoundingClientRect();
-      // the side rule (Tags, the model-version submenus): PREFER right; fall LEFT only when the right edge would
-      // clip — never slide over the row (review: the widened flyout slid over its own menu below about 886 px)
-      if (ir.right + 2 + sr.width <= window.innerWidth - 8) sub.style.left = Math.round(ir.right + 2) + "px";
-      else sub.style.left = Math.max(8, Math.round(ir.left) - sr.width - 2) + "px";
-      sub.style.top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4)) + "px";
+      // the side rule (Tags, the model-version submenus): PREFER right; fall LEFT when the right edge would clip and
+      // the left has room; with room on neither side (a narrow window) the flyout drops BELOW the row, clamped inside
+      // the viewport — never over the row or off-screen (review: at 560 px it covered its menu and ran 33 px out)
+      let left: number, top: number = ir.top;
+      if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
+      else if (ir.left - 2 - sr.width >= 8) left = Math.round(ir.left) - sr.width - 2;
+      else { left = Math.max(8, Math.min(Math.round(ir.left), window.innerWidth - sr.width - 8)); top = ir.bottom + 2; }
+      sub.style.left = left + "px";
+      sub.style.top = Math.max(0, Math.min(top, window.innerHeight - sr.height - 4)) + "px";
       return sub;
     };
     wireFlyout(menu, item, ".ctx-sub-billing", () => openBillingFly());

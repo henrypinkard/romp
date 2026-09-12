@@ -701,6 +701,11 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 /* a flyout's group head (the Billing flyout's "Default for this machine", T380): a row that names the radios under it
    and takes no gesture, so no hover wash; the radios below wear the menu's own current mark */
 .ctx-sub-head, .ctx-sub-head:hover { cursor: default; background: transparent; }
+/* the Billing flyout stays a menu's width (review: the note had grown it to 585 px, past narrow windows): the head's
+   note wraps inside it instead of stretching it */
+.ctx-sub-billing { max-width: 22em; }
+.ctx-sub-billing .ctx-sub-head { white-space: normal; }
+.ctx-sub-billing .ctx-sub-head .ctx-item-sub { display: block; white-space: normal; line-height: 1.3; }
 .ctx-item-toggle { display: flex; align-items: flex-start; gap: 8px; }
 /* ON = the romp accent blue, matching the timeline lane's feed/mail icons (the user 2026-06-26); OFF = dim
    gray + slashed. So the same blue marks "enabled" in both the menu and the timeline. */

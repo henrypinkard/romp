@@ -86,7 +86,10 @@ const readFly = () => page.evaluate(() => {
   const radios = Array.from(fly.querySelectorAll(".ctx-radio")).map((i) => ({ text: i.textContent.trim(), current: i.classList.contains("current"), disabled: i.classList.contains("disabled"), scope: i.dataset.scope }));
   const r = fly.getBoundingClientRect();
   const row = document.querySelector(".ctx-menu .ctx-item-billing .ctx-item-sub");
-  return { choices, head: head ? head.querySelector(".ctx-item-label").textContent : null, note: head ? head.querySelector(".ctx-item-sub").textContent : null, radios, sep: !!fly.querySelector(".ctx-sep"), rect: { left: r.left, top: r.top, w: r.width, h: r.height }, subLine: row ? row.textContent : null };
+  const rowEl = document.querySelector(".ctx-menu .ctx-item-billing"); const rr = rowEl ? rowEl.getBoundingClientRect() : null;
+  const menuEl = document.querySelector(".ctx-menu:not(.ctx-sub)"); const mr = menuEl ? menuEl.getBoundingClientRect() : null;
+  return { choices, head: head ? head.querySelector(".ctx-item-label").textContent : null, note: head ? head.querySelector(".ctx-item-sub").textContent : null, radios, sep: !!fly.querySelector(".ctx-sep"), rect: { left: r.left, top: r.top, w: r.width, h: r.height, right: r.right, bottom: r.bottom }, subLine: row ? row.textContent : null,
+    rowRect: rr ? { left: rr.left, right: rr.right, top: rr.top, bottom: rr.bottom } : null, menuRect: mr ? { left: mr.left, right: mr.right } : null, viewport: window.innerWidth };
 });
 const out = {};
 out.tabs = await page.evaluate(() => Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => ({ id: t.dataset.id, name: (t.querySelector(".tab-label") || t).textContent.trim(), active: t.classList.contains("active") })));
@@ -120,6 +123,18 @@ for (const theme of ["dark", "light"]) {
   await page.keyboard.press("Escape"); await page.waitForTimeout(100);
 }
 await page.evaluate(() => document.body.classList.remove("theme-light"));
+// narrow windows (review: at 560, 760 and 886 px the flyout covered its menu and ran off-screen): inside the viewport, never over the row
+out.narrow = {};
+for (const w of [560, 760, 886]) {
+  await page.setViewportSize({ width: w, height: 700 }); await page.waitForTimeout(150);
+  await menuOpen(); row = await billingRow(); bb = await row.boundingBox();
+  await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+  await page.waitForSelector(".ctx-sub-billing", { timeout: 1500 }).catch(async () => { await row.click(); });
+  await page.waitForTimeout(150);
+  out.narrow[w] = await readFly();
+  await page.keyboard.press("Escape"); await page.waitForTimeout(100);
+}
+await page.setViewportSize({ width: 1100, height: 700 }); await page.waitForTimeout(150);
 // the default pick: the Login radio (the seed reads key: the helper is the box's default), posting setAuth with scope machine
 await menuOpen(); row = await billingRow(); bb = await row.boundingBox();
 await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
@@ -299,12 +314,13 @@ class ServedTabTipTones(unittest.TestCase):
         self.assertEqual([c["text"].split(" (")[0] for c in f["choices"]], ["Login", "API key"], table)
         self.assertTrue(f["sep"], "a divider before the group" + table)
         self.assertEqual(f["head"], "Default for this machine", table)
-        self.assertIn("sessions with no pick of their own", f["note"] or "", "the note says which sessions it affects (the automatic rule before any explicit default)" + table)
+        self.assertIn("new and unpicked sessions follow it", f["note"] or "", "the note says which sessions it affects (the automatic rule before any explicit default)" + table)
         self.assertEqual([x["text"].split(" (")[0] for x in f["radios"]], ["Login", "API key", "Automatic"], "the same choices as radios, then Automatic (the helper rule)" + table)
         self.assertTrue(all(x["scope"] == "machine" for x in f["radios"]), table)
         self.assertEqual([x["current"] for x in f["radios"]], [False, False, True], "no explicit default yet: Automatic is marked" + table)
         self.assertIn("automatic:", f["note"], "the sub-line says the helper rule holds" + table)
-        self.assertEqual(f["radios"][2]["text"], "Automatic (API key here)", "and what it resolves to on this machine" + table)
+        self.assertEqual(f["radios"][2]["text"], "Automatic (API key)", "and what it resolves to on this machine" + table)
+        self.assertLessEqual(f["rect"]["w"], 380, "a menu's width, not a paragraph's (review: 585 px)" + table)
         self.assertFalse(any(x["disabled"] for x in f["radios"]), "both sides are available on this machine" + table)
         self.assertEqual(f["subLine"], "API key", "web follows the automatic default: the key (the helper)" + table)
 
@@ -327,7 +343,19 @@ class ServedTabTipTones(unittest.TestCase):
         self.assertEqual([c["current"] for c in a["choices"]], [True, False], "…and its own choice marks the login it follows" + table)
         self.assertEqual([x["current"] for x in a["radios"]], [True, False, False], "the Login default is marked, Automatic no longer" + table)
         self.assertIn("set here:", a["note"], "the sub-line says the default is explicit" + table)
-        self.assertIn("own pick keeps it", a["note"], table)
+        self.assertIn("own pick stays", a["note"], table)
+
+    def test_in_a_narrow_window_the_flyout_stays_inside_the_viewport_and_never_covers_its_row(self):
+        r = self._run()
+        for w, f in r["narrow"].items():
+            table = "\n  %s px: %s" % (w, json.dumps(f)[:700])
+            self.assertIsNotNone(f, table)
+            self.assertGreaterEqual(f["rect"]["left"], 8 - 0.5, "inside the viewport, left" + table)
+            self.assertLessEqual(f["rect"]["right"], f["viewport"] - 8 + 0.5, "inside the viewport, right" + table)
+            rr = f["rowRect"]
+            beside = f["rect"]["left"] >= rr["right"] - 0.5 or f["rect"]["right"] <= rr["left"] + 0.5
+            below = f["rect"]["top"] >= rr["bottom"] - 0.5
+            self.assertTrue(beside or below, "never over its own row: beside it, or below it" + table)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ is stripped; the staged helper is a path that is read and never run.
 """
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -65,6 +66,36 @@ HELPER_OFF = ["--settings", '{"apiKeyHelper": ""}']   # the login-billed call's 
 def _op_names():
     """Every 1Password CLI name the judge boundary strips: the fixed names plus one under the prefix."""
     return tuple(jd._cred.OP_ENV_NAMES) + (jd._cred.OP_ENV_PREFIX + "acct",)
+
+
+class TheJudgesFollowTheMachineDefault(unittest.TestCase):
+    """T380 review: _judge_auth resolved an unpicked session as key-when-helper-else-login while the launch honours the
+    machine's explicit default; the judges read the same seed (sdk-defaults.json) so they bill the session's account."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        jd._rebind_state(Path(self.tmp))
+        (jd.STATE / "sdk").mkdir(parents=True, exist_ok=True)
+        self.fsid = "11111111-2222-3333-4444-555555555555"
+        (jd.SDKDIR / (self.fsid + ".json")).write_text(json.dumps({"sid": self.fsid, "name": "web"}))   # no pick of its own
+        self._key = jd._key_available
+
+    def tearDown(self):
+        jd._key_available = self._key
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_an_unpicked_session_follows_the_explicit_default_and_a_key_default_without_a_helper_falls_to_the_login(self):
+        jd._key_available = lambda: True
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "no default: the helper rule")
+        (jd.STATE / "sdk-defaults.json").write_text(json.dumps({"auth": "login", "authExplicit": True}))
+        self.assertEqual(jd._judge_auth(self.fsid), "login", "the explicit login default, as the launch does")
+        self.assertEqual(jd._judge_auth(""), "login", "a call with no session takes the same default a fresh session would")
+        (jd.STATE / "sdk-defaults.json").write_text(json.dumps({"auth": "login"}))
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "a remembered pick that is not explicit: the helper rule (a new session seeds from it, an existing one does not follow)")
+        (jd.STATE / "sdk-defaults.json").write_text(json.dumps({"auth": "key", "authExplicit": True}))
+        jd._key_available = lambda: False
+        self.assertEqual(jd._judge_auth(self.fsid), "login", "an explicit key default on a box without a helper falls to the login")
+        (jd.SDKDIR / (self.fsid + ".json")).write_text(json.dumps({"sid": self.fsid, "auth": "key"}))
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "a session's own pick beats the default")
 
 
 class _JudgeAuthBase(unittest.TestCase):
