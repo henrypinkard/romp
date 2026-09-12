@@ -85,7 +85,8 @@ const readFly = () => page.evaluate(() => {
   const head = fly.querySelector(".ctx-sub-head");
   const radios = Array.from(fly.querySelectorAll(".ctx-radio")).map((i) => ({ text: i.textContent.trim(), current: i.classList.contains("current"), disabled: i.classList.contains("disabled"), scope: i.dataset.scope }));
   const r = fly.getBoundingClientRect();
-  return { choices, head: head ? head.querySelector(".ctx-item-label").textContent : null, note: head ? head.querySelector(".ctx-item-sub").textContent : null, radios, sep: !!fly.querySelector(".ctx-sep"), rect: { left: r.left, top: r.top, w: r.width, h: r.height } };
+  const row = document.querySelector(".ctx-menu .ctx-item-billing .ctx-item-sub");
+  return { choices, head: head ? head.querySelector(".ctx-item-label").textContent : null, note: head ? head.querySelector(".ctx-item-sub").textContent : null, radios, sep: !!fly.querySelector(".ctx-sep"), rect: { left: r.left, top: r.top, w: r.width, h: r.height }, subLine: row ? row.textContent : null };
 });
 const out = {};
 out.tabs = await page.evaluate(() => Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => ({ id: t.dataset.id, name: (t.querySelector(".tab-label") || t).textContent.trim(), active: t.classList.contains("active") })));
@@ -115,7 +116,7 @@ for (const theme of ["dark", "light"]) {
   await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
   await page.waitForSelector(".ctx-sub-billing", { timeout: 1500 }).catch(async () => { await row.click(); });
   await page.waitForTimeout(150);
-  if (cfg.shots) await page.screenshot({ path: cfg.shots + "-" + theme + ".png", clip: { x: 0, y: 0, width: 960, height: 480 } });
+  if (cfg.shots) await page.screenshot({ path: cfg.shots + "-" + theme + ".png", clip: { x: 0, y: 0, width: 1100, height: 520 } });
   await page.keyboard.press("Escape"); await page.waitForTimeout(100);
 }
 await page.evaluate(() => document.body.classList.remove("theme-light"));
@@ -131,6 +132,14 @@ out.pick = await page.evaluate(() => {
   return { found: true, disabled, menuGone: !document.querySelector(".ctx-menu") };
 });
 await page.waitForTimeout(1200);   // the op reaches the kernel over the socket and the seed is written
+await page.waitForFunction(() => { const s = document.querySelector('#tabs .tab.active'); return !!s; }, null, { timeout: 5000 });
+await page.waitForTimeout(800);     // the next push carries web's new effective side
+await menuOpen(); row = await billingRow(); bb = await row.boundingBox();
+await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+await page.waitForSelector(".ctx-sub-billing", { timeout: 1500 }).catch(async () => { await row.click(); });
+await page.waitForTimeout(150);
+out.afterPick = await readFly();
+await page.keyboard.press("Escape");
 } catch (e) { out.error = String(e && e.stack || e); }
 fs.writeFileSync(cfg.out, JSON.stringify(out));
 await browser.close();
@@ -223,8 +232,16 @@ class ServedTabTipTones(unittest.TestCase):
     def tearDownClass(cls):
         k = getattr(cls, "kernel", None)
         if k:
-            k.kill(); k.wait()
-        shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
+            k.terminate()
+            try:
+                k.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                k.kill(); k.wait()
+            time.sleep(0.5)                # a kernel child still writing into the lab's config dir finishes (review: stray dirs)
+        lab = getattr(cls, "lab", "")
+        shutil.rmtree(lab, ignore_errors=True)
+        time.sleep(0.3)
+        shutil.rmtree(lab, ignore_errors=True)   # …and whatever landed between the two
 
     @classmethod
     def _run(cls):
@@ -282,12 +299,14 @@ class ServedTabTipTones(unittest.TestCase):
         self.assertEqual([c["text"].split(" (")[0] for c in f["choices"]], ["Login", "API key"], table)
         self.assertTrue(f["sep"], "a divider before the group" + table)
         self.assertEqual(f["head"], "Default for this machine", table)
-        self.assertIn("sessions that follow the default", f["note"] or "", "the note says which sessions it affects" + table)
-        self.assertIn("own pick keeps it", f["note"] or "", table)
-        self.assertEqual([x["text"].split(" (")[0] for x in f["radios"]], ["Login", "API key"], "the same choices as radios" + table)
+        self.assertIn("sessions with no pick of their own", f["note"] or "", "the note says which sessions it affects (the automatic rule before any explicit default)" + table)
+        self.assertEqual([x["text"].split(" (")[0] for x in f["radios"]], ["Login", "API key", "Automatic"], "the same choices as radios, then Automatic (the helper rule)" + table)
         self.assertTrue(all(x["scope"] == "machine" for x in f["radios"]), table)
-        self.assertEqual([x["current"] for x in f["radios"]], [False, True], "the helper makes the key this box's default until set" + table)
+        self.assertEqual([x["current"] for x in f["radios"]], [False, False, True], "no explicit default yet: Automatic is marked" + table)
+        self.assertIn("automatic:", f["note"], "the sub-line says the helper rule holds" + table)
+        self.assertEqual(f["radios"][2]["text"], "Automatic (API key here)", "and what it resolves to on this machine" + table)
         self.assertFalse(any(x["disabled"] for x in f["radios"]), "both sides are available on this machine" + table)
+        self.assertEqual(f["subLine"], "API key", "web follows the automatic default: the key (the helper)" + table)
 
     def test_a_default_pick_writes_the_seed_and_touches_no_session(self):
         r = self._run()
@@ -299,6 +318,16 @@ class ServedTabTipTones(unittest.TestCase):
         self.assertEqual(api.get("auth"), "key", "a session with its own pick is untouched")
         web = json.loads(Path(self.state, "sdk", SIDS["web"] + ".json").read_text())
         self.assertNotIn("auth", web, "a session that follows the default carries no pick of its own; it takes the new side at its next launch")
+        # the review's shape: an unpicked session FOLLOWS the default at once, in its status and the flyout's marks
+        a = r["afterPick"]
+        self.assertIsNotNone(a, "the flyout was read again after the pick")
+        table = "\n  " + json.dumps(a)
+        # the review's medium first: an unpicked session FOLLOWS the default at once (its status, the flyout's marks)
+        self.assertTrue((a["subLine"] or "").startswith("Login"), "web (no pick of its own) now reads the login, at once" + table)
+        self.assertEqual([c["current"] for c in a["choices"]], [True, False], "…and its own choice marks the login it follows" + table)
+        self.assertEqual([x["current"] for x in a["radios"]], [True, False, False], "the Login default is marked, Automatic no longer" + table)
+        self.assertIn("set here:", a["note"], "the sub-line says the default is explicit" + table)
+        self.assertIn("own pick keeps it", a["note"], table)
 
 
 if __name__ == "__main__":

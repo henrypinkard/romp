@@ -316,11 +316,15 @@ Below the session's choices the flyout carries **Default for this machine**:
 the same choices as a radio group, the current default marked. That default is
 the seed every new session, and every session with no pick of its own, launches
 on; it lives in the state root's `sdk-defaults.json` as `auth` (never a token),
-and a pick there changes no session that carries its own pick. Until the
-default is set here, the last per-session pick seeds it (as a model or effort
-pick does); once set here, a per-session pick is about that session alone and
-moves no default. A remote session's flyout names its host, and the pick sets
-that host's default (the op routes to the session's owning kernel).
+and a pick there changes no session that carries its own pick; a session
+with no pick of its own follows it, in its status at once and at its next
+launch. A third choice, Automatic, is the rule that held before: the API key
+when a helper is configured, else the login; it clears the explicit default,
+and the group's sub-line says which rule holds. Until the default is set here,
+the last per-session pick seeds it (as a model or effort pick does); once set
+here, a per-session pick is about that session alone and moves no default. A
+remote session's flyout names its host, and the pick sets that host's default
+(the op routes to the session's owning kernel).
 
 On a one-auth box the picker never chooses the missing side. The remembered
 default falls to the side that exists, in both directions: a remembered login

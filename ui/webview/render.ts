@@ -309,7 +309,7 @@ interface TodoTask { id: string; subject: string; activeForm?: string; status: s
 type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: string; fg: string } | null };   // a named peer behind a peer-kind wait (kernel _peer_identity, 2026-08-26)
 // which billing sides this box can bill, and why not for the other (kernel _auth_avail, 2026-09-08): the
 // Billing submenu lists both and greys the unavailable one with the reason in its hover
-interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string }
+interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
 interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
@@ -7316,13 +7316,24 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       // its own pick. A remote session's flyout names ITS host, whose kernel holds the seed.
       if (avail.default) {
         sub.appendChild(el("div", "ctx-sep"));
+        const explicit = !!avail.defaultExplicit;
         const head = el("div", "ctx-item ctx-item-toggle ctx-sub-head");
         const hb = el("span", "ctx-item-body");
         const hl = el("span", "ctx-item-label"); hl.textContent = "Default for " + (hostOf(id) || "this machine"); hb.appendChild(hl);
-        const hs = el("span", "ctx-item-sub"); hs.textContent = "new sessions, and sessions that follow the default; a session with its own pick keeps it"; hb.appendChild(hs);
+        const hs = el("span", "ctx-item-sub");
+        // the sub-line says which rule holds (review): set here, or automatic (the helper rule) as before
+        hs.textContent = explicit
+          ? "set here: new sessions, and sessions that follow the default; a session with its own pick keeps it"
+          : "automatic: the API key when a helper is configured, else the login; new sessions and sessions with no pick of their own";
+        hb.appendChild(hs);
         head.appendChild(hb); sub.appendChild(head);
-        for (const c of choices) {
-          const opt = el("div", "ctx-item ctx-radio" + (avail.default === c.value ? " current" : "") + (c.why ? " disabled" : ""));
+        // the same choices as radios, then Automatic (the helper rule), which clears the explicit default (review: the flag
+        // was one-way and invisible); the current mark sits on the explicit side, else on Automatic
+        const autoWord = avail.key ? "API key" : "Login";
+        const radios = [...choices.map((c) => ({ ...c, cur: explicit && avail.default === c.value })),
+                        { label: `Automatic (${autoWord} here)`, value: "auto", why: "", cur: !explicit }];
+        for (const c of radios) {
+          const opt = el("div", "ctx-item ctx-radio" + (c.cur ? " current" : "") + (c.why ? " disabled" : ""));
           opt.textContent = c.label;
           opt.dataset.scope = "machine";
           if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
@@ -7330,7 +7341,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
             ev2.stopPropagation();
             if (c.why) return;
             dismissTabMenu();
-            if (avail.default !== c.value && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value, scope: "machine" });
+            if (!c.cur && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value, scope: "machine" });
           });
           sub.appendChild(opt);
         }
@@ -7340,7 +7351,10 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       menu.appendChild(sub);
       const ir = item.getBoundingClientRect();
       const sr = sub.getBoundingClientRect();
-      sub.style.left = Math.max(0, Math.min(ir.right + 2, window.innerWidth - sr.width - 4)) + "px";
+      // the side rule (Tags, the model-version submenus): PREFER right; fall LEFT only when the right edge would
+      // clip — never slide over the row (review: the widened flyout slid over its own menu below about 886 px)
+      if (ir.right + 2 + sr.width <= window.innerWidth - 8) sub.style.left = Math.round(ir.right + 2) + "px";
+      else sub.style.left = Math.max(8, Math.round(ir.left) - sr.width - 2) + "px";
       sub.style.top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4)) + "px";
       return sub;
     };

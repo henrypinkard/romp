@@ -16251,7 +16251,10 @@ def _auth_avail():
     elif default == "login" and not login_ok and key:
         default = "key"
     out = {"login": login_ok, "key": key,
-           "acct": _claude_account_label(), "default": default}
+           "acct": _claude_account_label(), "default": default,
+           # T380: the default is EXPLICIT (set in the Billing flyout's Default group) or the helper rule; the
+           # group marks Automatic otherwise and its sub-line says which
+           "defaultExplicit": bool(d.get("authExplicit")) and d.get("auth") in ("login", "key")}
     if not login_ok:
         out["loginWhy"] = jd._cred.WHY_MANAGED_HELPER if managed else jd._cred.WHY_NO_LOGIN
     if not key:
@@ -16271,7 +16274,7 @@ def _auth_avail_status():
     if memo is not None and "avail_status" in memo:
         return dict(memo["avail_status"])
     a = _auth_avail()
-    out = {k: a[k] for k in ("login", "key", "loginWhy", "keyWhy", "default") if k in a}
+    out = {k: a[k] for k in ("login", "key", "loginWhy", "keyWhy", "default", "defaultExplicit") if k in a}
     if memo is not None:
         memo["avail_status"] = dict(out)
     return out
@@ -17259,12 +17262,18 @@ def _drive(msg, client):
                     "The permission mode could not be changed: no running backend owns this session.")
             client["send"](json.dumps({"type": "warn", "text": text}))
         _push_soon()
-    elif t == "setAuth" and msg.get("value") in ("login", "key") and msg.get("scope") == "machine":
+    elif t == "setAuth" and msg.get("scope") == "machine" and msg.get("value") in ("login", "key", "auto"):
         # the machine's DEFAULT billing (T380, the user 2026-09-12): the seed every new session and every
-        # session with no pick of its own launches on. Written on THIS kernel (the op routes to the session's
-        # owning host, so a remote session's flyout sets that host's default); no session is touched, so
-        # nothing reconnects. LOUD on refusal, the same reason vocabulary as a per-session pick.
-        if not be.set_auth_default(str(msg["value"])):
+        # session with no pick of its own launches on ("auto" = the helper rule again). Written on THIS kernel
+        # (the op routes to the session's owning host, so a remote session's flyout sets that host's default);
+        # no session's own pick is touched, so nothing reconnects. LOUD on refusal, the same reason vocabulary as
+        # a per-session pick; a backend that keeps no machine default (Codex) is refused by name, never a raise
+        # swallowed inside the drive (review).
+        _set_def = getattr(be, "set_auth_default", None)
+        if _set_def is None:
+            client["send"](json.dumps({"type": "warn",
+                                       "text": "Couldn't set this machine's default billing: this session's backend keeps no machine billing default."}))
+        elif not _set_def(str(msg["value"])):
             why = str(getattr(be, "auth_unavailable_why", lambda v: "")(str(msg["value"])) or "")
             client["send"](json.dumps({"type": "warn",
                                        "text": ("Couldn't set this machine's default billing: %s." % why) if why
