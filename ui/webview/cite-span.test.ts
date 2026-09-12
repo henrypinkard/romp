@@ -21,8 +21,10 @@ test("the span rides the payload only while it was located IN the landing atom",
   // located in the very atom it returns (T388); the latest-prose walk and the work-anchor last resort carry none
   assert.match(KERNEL, /"summaryAnchorQuote": \(nodes\[nid\]\.get\("summaryQuote"\)\s*\n\s*if _sa_u and _sa_u == nodes\[nid\]\.get\("summaryAnchor"\) else \(_sa_q or None\)\)/,
     "a fallback-tier anchor lands elsewhere — its quote would highlight the wrong text; the located span is the one exception");
-  assert.match(KERNEL, /_sa_u, _sa_q = _summary_text_anchor\(seg_turn\.get\(_sk\), _line, memo_key=\(fsid, nid, _sk\)\)/,
-    "the only writer of _sa_q is the tier that located the span in the atom it returns");
+  assert.match(KERNEL, /_sa_u, _sa_q = _brief_landing\(nid, col == "completed", _line\)/,
+    "the card takes the one resolve of the brief's landing (_brief_landing), the same the modal row takes");
+  assert.match(KERNEL, /u, q = _summary_text_anchor\(seg_turn\.get\(sk\), line, memo_key=\(fsid, nid, sk\)\)/,
+    "the only writer of the quote inside it is the tier that located the span in the atom it returns");
   assert.match(FEED, /summaryAnchorQuote\?: string \| null;/);
   assert.match(FEED, /anchorUuid: it\.summaryAnchorUuid, quote: it\.summaryAnchorQuote \|\| undefined/,
     "the click carries the span");
