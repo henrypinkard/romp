@@ -15,6 +15,7 @@ through, (2) an append costs only its delta, (3) the cap still bounds the cache.
 import json
 import os
 import sys
+import shutil
 import tempfile
 import threading
 import time
@@ -285,6 +286,38 @@ class DropAfterQuiescentFold(unittest.TestCase):
         self.assertIn('"recordCache": em.record_cache_stats(),', src, "/perf carries the record cache")
         unit = open(os.path.join(BIN, "romp-service")).read()
         self.assertIn("Environment=MALLOC_ARENA_MAX=2", unit, "the service unit hands the allocator setting to the manager and its kernels")
+
+
+class WholeReadsByCaller(unittest.TestCase):
+    """T384: every read that pulls a file whole is counted on /perf by the reader's kind and the first frame outside the event
+    model, so a boot's whole reads are named the way hydratedBy named the planner. A tail entry served, an append, and a
+    restore's tail read are not whole reads."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.clear(); em._RECORD_CACHE_STATS["wholeReads"] = {}
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_a_from_zero_read_and_an_upgrade_are_named_and_an_append_is_not(self):
+        path = os.path.join(self.dir, "leaf.jsonl"); _write_jsonl(path, 20)
+        size = os.path.getsize(path)
+        def some_boot_reader():
+            return em._read_jsonl_incremental(path)
+        self.assertEqual(len(some_boot_reader()), 20)
+        wr = em.record_cache_stats()["wholeReads"]
+        self.assertEqual(wr, {"zero<-some_boot_reader": {"count": 1, "bytes": size}}, "%s" % wr)
+        _write_jsonl(path, 25)                                         # an append: a tail read, not a whole one
+        self.assertEqual(len(some_boot_reader()), 25)
+        self.assertEqual(em.record_cache_stats()["wholeReads"]["zero<-some_boot_reader"]["count"], 1, "the append did not count")
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.clear()
+        cache = {}
+        em.fold_records(cache, path, lambda: 0, lambda st, o: st + 1)   # a fold's first read: whole, named for the fold's caller
+        keys = em.record_cache_stats()["wholeReads"]
+        self.assertTrue(any(k.startswith("zero<-") and k.endswith("test_a_from_zero_read_and_an_upgrade_are_named_and_an_append_is_not") for k in keys), "%s" % keys)
 
 
 class RecordCacheDefaultBudget(unittest.TestCase):
