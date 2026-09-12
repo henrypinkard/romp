@@ -109,6 +109,28 @@ class TheBriefsMaterial(unittest.TestCase):
         self.assertFalse(nd2.get("blockWhyCut"))
         self.assertEqual(jd._owed_why(nd2), "Decide the client now.")
 
+    def test_the_cut_fact_survives_a_re_assert_of_the_block(self):
+        sid = "11111111-2222-3333-4444-555555555555"
+        st = {"rompUuid": sid, "seq": 1, "nodes": {}, "placements": {}, "status": {}}
+        nd = {"id": sid + ":g1", "text": "Decide the client", "parentId": None, "nodeComplete": False, "blocked": False,
+              "cleared": False, "trail": [], "t": 1781300000, "mt": 1781300000, "log": []}
+        st["nodes"][nd["id"]] = nd
+        cut = jd._cut_why("Should the exporter keep the old client for this tenant too? " * 12, jd.WHY_MAX)
+        self.assertTrue(jd.record_verdict(st, nd, "closer", "block", 1781300100, why=cut))
+        jd.rollup_status(st, False)
+        self.assertTrue(nd.get("blockWhyCut"))
+        why_text = str(nd["blockWhy"])
+        self.assertTrue(jd.record_verdict(st, nd, "user", "reopen", 1781300400, msg=True))   # the user's reply lifts the block
+        jd.rollup_status(st, False)
+        self.assertFalse(nd["blocked"]); self.assertNotIn("blockWhyCut", nd, "the flag goes with the block")
+        jd._reassert_blocks(st, sid + ":seg-2", 1781300500, [(nd["id"], why_text)])   # the reply answered nothing: re-recorded
+        rows = [e for e in nd["log"] if e.get("kind") == "block"]
+        self.assertEqual(len(rows), 2, "the re-assert wrote a second block row")
+        self.assertTrue(rows[-1].get("whyCut"), "…carrying the cut fact from the source row")
+        jd.rollup_status(st, False)
+        self.assertTrue(nd.get("blockWhyCut"))
+        self.assertIn("the recorded reason ends here", jd._owed_why(nd))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36725,6 +36725,66 @@ def _feed_session_entry(s, ctx):
         _bcmemo[nid] = res
         return res
 
+    def _brief_landing(nid, completed, line):
+        """(uuid, quote): where a node's brief or summary line lands, resolved ONCE for the card and its modal row from
+        one input set (the node's whole subtree's trails, the same column rule, the same tier order), so one brief
+        never lands in two places by the surface clicked (the verifier's second round on T388: the card read the
+        subtree while the row read its own trail, and a completed card pinned its recap while the row took the
+        citation). Tiers, in order: a COMPLETED node pins the newest substantive tail across its subtree (the
+        completion recap the user expects the summary to open on, the user 2026-07-14); else the node's validated
+        citation unless outrun (T153, _summary_outrun); else the text atom carrying the line's opening sentence in
+        the newest subtree segment's turn, or its newest substantive text atom (_summary_text_anchor); else the
+        latest-prose walk over the subtree's trails; else that newest segment's last text atom; else the newest
+        trail segment's work anchor (a landable atom, a tool group at worst). `quote` rides only with the cited
+        atom's stored span or the tier's located span."""
+        nd = nodes[nid]
+        sub = _subtree(nid)
+        u, q, cited = None, None, nd.get("summaryAnchor")
+        if completed:
+            tail = None                                  # (seg_t, uuid) of the newest substantive tail
+            for x in sub:
+                tr = nodes[x].get("trail") or []
+                if tr:
+                    tu, tsub, tt = seg_best.get(_seg_key(tr[-1]), (None, False, 0))
+                    if tu and tsub and (tail is None or tt > tail[0]):
+                        tail = (tt, tu)
+            if tail:
+                u = tail[1]
+        if u is None and cited and cited in cite_uuids \
+                and not _summary_outrun(nd, [nodes[x].get("trail") for x in sub], seg_best):
+            u, q = cited, nd.get("summaryQuote")
+        sk, skt = None, -1                               # the newest trail segment across the subtree, by its time
+        if line:
+            for x in sub:
+                for s in (nodes[x].get("trail") or []):
+                    k = _seg_key(s)
+                    t = seg_best.get(k, (None, False, 0))[2] or 0
+                    if k in seg_turn and t >= skt:
+                        sk, skt = k, t
+        if u is None and line and sk is not None:
+            u, q = _summary_text_anchor(seg_turn.get(sk), line, memo_key=(fsid, nid, sk))
+        if u is None:
+            best = None                                  # (substantive, seg_t): prefer substantive, then latest
+            for x in sub:
+                for s in (nodes[x].get("trail") or []):
+                    bu, bsub, bt = seg_best.get(_seg_key(s), (None, False, 0))
+                    if bu and (best is None or (bsub, bt) > (best[0], best[1])):
+                        best = (bsub, bt, bu)
+            if best:
+                u = best[2]
+        if u is None and line and sk is not None:       # a text stub still beats the work anchor's tool group
+            u, q = _summary_text_anchor(seg_turn.get(sk), line, memo_key=(fsid, nid, sk), stub_ok=True)
+        if u is None:                                    # LAST RESORT (the user 2026-07-02): the newest segment's work anchor
+            for x in sub:
+                for s in reversed(nodes[x].get("trail") or []):
+                    wu = seg_uuid.get(_seg_key(s))
+                    if wu:
+                        u = wu
+                        break
+                if u:
+                    break
+        return u, (q or None)
+
     def flatten(nid, out, ancestor_done=False, boundary=None):  # AskTreeNode flat list, root first; nest via children ids
         nd = nodes[nid]
         kids = sorted(children.get(nid, []), key=_fsubmax, reverse=True)   # most-recent-first (matches the ledger)
@@ -36738,22 +36798,6 @@ def _feed_session_entry(s, ctx):
         # The node's deep-link target SEGMENT: its NEWEST trail seg — the resolve turn for
         # done/blocked nodes, the latest activity for open ones (where it stands, not where born).
         _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid)
-        # The node's BRIEF or SUMMARY line lands on the text that carries it (T388): a validated citation when the
-        # node has one, else the text atom of its newest trail segment's turn that holds the line's opening sentence
-        # (_summary_text_anchor), never the work anchor, which may be a tool call inside a collapsed group.
-        _nline = nd.get("blockSummary") if st == "question" else nd.get("summary")
-        _nline = _nline or nd.get("blockSummary") or nd.get("summary")
-        _nsa_u, _nsa_q = None, None
-        if _nline:
-            _ntr = nd.get("trail") or []
-            if nd.get("summaryAnchor") and nd.get("summaryAnchor") in cite_uuids \
-                    and not _summary_outrun(nd, [_ntr], seg_best):   # the T153 rule, the card's own (one landing per brief)
-                _nsa_u, _nsa_q = nd["summaryAnchor"], nd.get("summaryQuote")
-            else:
-                _nk = _seg_key(_ntr[-1]) if _ntr else None
-                _nsa_u, _nsa_q = _summary_text_anchor(seg_turn.get(_nk), _nline, memo_key=(fsid, nid, _nk))
-                if _nsa_u is None:                   # a text stub still beats the work anchor's tool group
-                    _nsa_u, _nsa_q = _summary_text_anchor(seg_turn.get(_nk), _nline, memo_key=(fsid, nid, _nk), stub_ok=True)
         # A HANDOFF tracking node ("↪ delegated to <peer>") finally ships as its designed kind: the
         # feed's delegations section (fask-delegations, built to the 2026-06-10 handoff spec) keys on
         # kind "handoff" and had sat dormant because flatten hardcoded "ask" — the sender's card
@@ -36765,6 +36809,13 @@ def _feed_session_entry(s, ctx):
         _ho_sid = str(_ho.get("peer") or "") if _ho else ""
         if _ho_sid:
             peers_read.add(_ho_sid)              # a peer this row names (its registry entry is a dependency)
+        # The node's BRIEF or SUMMARY line lands where the card's does: _brief_landing, one resolve from the node's
+        # subtree (T388). A HANDOFF row gets none: its session is the peer's (whoSid) while any landing here would be
+        # an atom of THIS session's parse, a foreign atom to the peer's chat; the row's line falls to goWork, whose
+        # target the tracker's own row wears (the verifier's second round).
+        _nline = nd.get("blockSummary") if st == "question" else nd.get("summary")
+        _nline = _nline or nd.get("blockSummary") or nd.get("summary")
+        _nsa_u, _nsa_q = (None, None) if (_ho_sid or not _nline) else _brief_landing(nid, st == "done", _nline)
         _born = nd.get("born") if isinstance(nd.get("born"), dict) else (healed.get(nid) or (None, None))[1]
         out.append({"id": nid, "kind": "handoff" if _ho_sid else "ask", "text": nd["text"],
                     "born": _born or None,   # T319: a step the session started on its own (why it sits here)
@@ -37271,83 +37322,13 @@ def _feed_session_entry(s, ctx):
         # message across the goal's whole subtree trail (mint→resolution). Never the old
         # biggest-text-block pick: "longest ever" is monotone, so a long early analysis held the
         # anchor forever while the real outcome landed later (the user 2026-07-01).
-        _sa_u, _cited = None, nodes[nid].get("summaryAnchor")
-        if col == "completed":
-            # The newest trail TAIL across the SUBTREE, not just the top's own (the user 2026-07-15,
-            # the g91 click): a BOTTOM-UP-completed umbrella (all children done) has no done verdict
-            # of its own, so the DONE-ANCHOR never appended a completing segment to ITS trail —
-            # trail[-1] was still the MINT segment and the pin sent the summary click to the goal's
-            # oldest prose instead of the wrap-up the distiller correctly cited. A child's
-            # done-anchored tail IS its completing turn's segment, so the newest substantive tail is
-            # the completion recap for both shapes (an explicitly-done top's own tail stays newest).
-            _tail = None                             # (seg_t, uuid) of the newest substantive tail
-            for _x in _subtree(nid):
-                _tr = nodes[_x].get("trail") or []
-                if not _tr:
-                    continue
-                _u, _sub, _t = seg_best.get(_seg_key(_tr[-1]), (None, False, 0))
-                if _u and _sub and (_tail is None or _t > _tail[0]):
-                    _tail = (_t, _u)
-            if _tail:
-                _sa_u = _tail[1]
-        if _sa_u is None and _cited and _cited in cite_uuids:
-            # THE GROUNDING CAN BE OUTRUN (the user 2026-08-28, T153): the citation names what
-            # the summary was WRITTEN FROM — but a reply that reopens the card adds stretches
-            # the stored summary has never seen (no re-completion yet, so no re-distill event),
-            # and the click then lands in the stale FIRST stretch of a visibly two-stretch
-            # card. When the follow-up stamp or any subtree trail segment postdates the
-            # summary's own coverage stamp, the cited tier YIELDS to the most-current-
-            # substantive walk below, so the click follows the freshest evidence; the citation
-            # resumes authority the moment a re-distill lands (the stamp catches up).
-            # Display-only: no column implication.
-            if not _summary_outrun(nodes[nid], [nodes[_x].get("trail") for _x in _subtree(nid)], seg_best):
-                _sa_u = _cited
-        _sa_q, _sk = None, None                      # the located span when the text-atom tier resolves (T388)
+        # ONE resolve for the card and its modal row (_brief_landing, above flatten): the completed pin, the cited
+        # tier with the T153 outrun rule, the text-atom tier, the latest-prose walk, the stub, the work anchor, all
+        # over the whole subtree's trails, so one brief never lands in two places by the surface clicked (T388).
         _line = nodes[nid].get("blockSummary") if col in ("blocked", "awaiting") else nodes[nid].get("summary")
         _line = _line or nodes[nid].get("blockSummary") or nodes[nid].get("summary")
-        if _line:
-            _st = -1                                 # the newest trail segment across the subtree, by its time
-            for _x in _subtree(nid):
-                for _sid in (nodes[_x].get("trail") or []):
-                    _k = _seg_key(_sid)
-                    _t = seg_best.get(_k, (None, False, 0))[2] or 0
-                    if _k in seg_turn and _t >= _st:
-                        _sk, _st = _k, _t
-        if _sa_u is None and _line:
-            # NO VALIDATED CITATION, a brief or summary on the card (T388, the manager 2026-09-12): land on the
-            # assistant TEXT atom of the newest trail segment's turn that carries the line's opening sentence,
-            # else that turn's last text atom; never a tool_use or thinking atom. The walk below picks the latest
-            # PROSE segment, and the last resort the WORK anchor, which for a long turn was a shell call inside a
-            # collapsed tool group, thirteen minutes before the quoted questions in the same turn's last text atom.
-            if _sk is not None:
-                _sa_u, _sa_q = _summary_text_anchor(seg_turn.get(_sk), _line, memo_key=(fsid, nid, _sk))
-        if _sa_u is None:
-            _best = None                             # (substantive, seg_t): prefer substantive, then latest
-            for _x in _subtree(nid):
-                for _sid in (nodes[_x].get("trail") or []):
-                    _u, _sub, _t = seg_best.get(_seg_key(_sid), (None, False, 0))   # timestamp-invariant: resolve a drifted trail seg id
-                    if _u and (_best is None or (_sub, _t) > (_best[0], _best[1])):
-                        _best = (_sub, _t, _u)
-            if _best:
-                _sa_u = _best[2]
-        if not _sa_u and _line and _sk is not None:
-            # the newest segment's last TEXT atom, whatever its length (T388): a connective stub is still a text
-            # row the reader can read from, where the work anchor below may be a collapsed tool group
-            _sa_u, _sa_q = _summary_text_anchor(seg_turn.get(_sk), _line, memo_key=(fsid, nid, _sk), stub_ok=True)
-        if not _sa_u:
-            # LAST RESORT (the user 2026-07-02: a completed card's summary was unclickable — the cited
-            # atom fell outside every segment, and no trail segment offered prose either). Fall back to
-            # the newest trail segment's WORK anchor (seg_uuid — the same target the modal's node rows
-            # nav to), so the summary still deep-links to roughly where the work concluded. Only a goal
-            # with NO resolvable trail at all ends up link-less.
-            for _x in _subtree(nid):
-                for _sid in reversed(nodes[_x].get("trail") or []):
-                    _u = seg_uuid.get(_seg_key(_sid))
-                    if _u:
-                        _sa_u = _u
-                        break
-                if _sa_u:
-                    break
+        _cited = nodes[nid].get("summaryAnchor")
+        _sa_u, _sa_q = _brief_landing(nid, col == "completed", _line)
         if _sa_u is None and ps is None:
             # COLD-PARSE fallback (the user 2026-07-20): every tier above reads parse-derived maps,
             # and right after a kernel restart ps is None until _warm_fleet_bg — so for that window
@@ -39957,6 +39938,8 @@ def _summary_text_anchor(turn_seg, line, memo_key=None, stub_ok=False):
         hit = _summary_anchor_memo_get(key)
         if hit is not None:
             return hit
+    faults0 = _SUMMARY_ANCHOR_STATS["fault"]           # a search that met an unreadable body is answered but not memoized:
+    #                                                    a transient fault must not pin a degraded landing until eviction
     seg_texts = _text_atoms(seg_atoms)
     turn_texts = [a for a in _text_atoms((turn or {}).get("atoms")) if not any(a is s for s in seg_texts)]   # the rest of the turn
     opening = _opening_sentence(line)
@@ -39986,7 +39969,7 @@ def _summary_text_anchor(turn_seg, line, memo_key=None, stub_ok=False):
     if not out[0] and stub_ok:                         # the last resort only: a stub still beats a tool group
         last = (seg_texts or turn_texts or [None])[-1]
         out = ((last or {}).get("uuid"), None)
-    if key is not None:
+    if key is not None and _SUMMARY_ANCHOR_STATS["fault"] == faults0:
         _summary_anchor_memo_put(key, out)
     return out
 

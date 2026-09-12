@@ -179,7 +179,8 @@ CTX = {
 }
 
 # closures defined inside the body: pure over its locals, no component
-LOCAL = ("_subtree", "_closure_done", "_fsubmax", "_closure_blocked", "_block_check_floor", "_note_peers", "flatten")
+LOCAL = ("_subtree", "_closure_done", "_fsubmax", "_closure_blocked", "_block_check_floor", "_note_peers", "flatten",
+         "_brief_landing")   # T388: the one resolve of a node's brief landing, a closure over the body's segment maps
 
 KINDS = {"sig", "pure", "clock"}          # HELPERS and CTX
 READ_KINDS = {"const", "sig", "pure"}     # MODULE_READS

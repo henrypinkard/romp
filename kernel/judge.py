@@ -9843,6 +9843,9 @@ def _reassert_blocks(store, seg_id, seg_t, items):
         if nd is None or nd.get("blocked") or nd.get("cleared") or nd.get("nodeComplete"):
             continue
         ev = max(seg_t or 0, _floor_of(store, nd) + 1)
+        src_rows = [e for e in (nd.get("log") or []) if e.get("kind") == "block" and str(e.get("why") or "") == str(why)]
+        if src_rows and src_rows[-1].get("whyCut"):    # the why comes back from a row the parser cut: the fact rides the new
+            why = _CutWhy(why)                         # row too, or the brief judge's note would vanish on the re-assert (T388)
         if record_verdict(store, nd, "planner", "block", ev, why=why, seg=seg_id):
             nd["mt"] = seg_t or ev
             if seg_id and seg_id not in (nd.get("trail") or []):

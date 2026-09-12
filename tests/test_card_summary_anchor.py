@@ -92,12 +92,13 @@ class TheTextAtom(unittest.TestCase):
         before = km._SUMMARY_ANCHOR_STATS.get("fault", 0)
         try:
             try:
-                out = km._summary_text_anchor((turn, seg), BRIEF)
+                out = km._summary_text_anchor((turn, seg), BRIEF, memo_key=("11111111-2222-3333-4444-555555555555", "gf", "kf"))
             except Exception as e:
                 self.fail("the tier raised on an unreadable body instead of skipping it: %r" % (e,))
         finally:
             km.jd._atom_text = real
         self.assertIn("fault", km._SUMMARY_ANCHOR_STATS, "the fault counter exists beside hit, miss and evict")
+        self.assertEqual(len(km._SUMMARY_ANCHOR_MEMO), 0, "a faulted search is not memoized: a transient fault never pins a degraded landing")
         self.assertEqual(km._SUMMARY_ANCHOR_STATS["fault"], before + 2, "every unreadable candidate is counted (two text atoms)")
         self.assertEqual(out, ("t5", None), "…and the tier goes on without a body: the substantive fallback, never a raise")
 
@@ -135,9 +136,19 @@ class TheTextAtom(unittest.TestCase):
 class TheWiring(unittest.TestCase):
     def test_the_card_chain_tries_the_text_atom_before_the_latest_prose_walk_and_the_tree_rows_carry_it(self):
         src = open(os.path.join(ROOT, "kernel", "kernel.py"), encoding="utf-8").read()
-        tier = src.index("_sa_u, _sa_q = _summary_text_anchor(seg_turn.get(_sk), _line, memo_key=(fsid, nid, _sk))")
-        walk = src.index("_best = None                             # (substantive, seg_t): prefer substantive, then latest")
-        self.assertLess(tier, walk, "the text-atom tier runs before the latest-prose walk and the work-anchor last resort")
+        land = src.index("    def _brief_landing(nid, completed, line):")
+        flat = src.index("    def flatten(nid, out, ancestor_done=False, boundary=None):")
+        self.assertLess(land, flat, "one landing function, defined before the flatten, serves the card and every row")
+        body = src[land:flat]
+        tier = body.index("u, q = _summary_text_anchor(seg_turn.get(sk), line, memo_key=(fsid, nid, sk))")
+        walk = body.index("best = None                                  # (substantive, seg_t): prefer substantive, then latest")
+        stub = body.index("stub_ok=True)")
+        work = body.index("wu = seg_uuid.get(_seg_key(s))")
+        self.assertLess(tier, walk, "the text-atom tier runs before the latest-prose walk")
+        self.assertLess(walk, stub, "…the stub only after the walk")
+        self.assertLess(stub, work, "…and the work anchor last")
+        self.assertIn('_sa_u, _sa_q = _brief_landing(nid, col == "completed", _line)', src, "the card takes the one resolve")
+        self.assertIn('_brief_landing(nid, st == "done", _nline)', src, "…and so does each row, from the same function")
         self.assertIn('"summaryAnchorUuid": _nsa_u,', src, "every tree row carries the brief line's own landing")
         self.assertIn('"summaryAnchorQuote": _nsa_q,', src)
         self.assertIn("else (_sa_q or None)),", src, "the card's quote falls to the text-atom tier's span")
@@ -146,8 +157,10 @@ class TheWiring(unittest.TestCase):
         self.assertIn("anchorUuid: su, quote: sq", ts, "…and sends its span as the click's quote")
         self.assertIn("ss = navSidOf(it, node);", ts, "the click names the ROW's session (a serving-folded worker row), never the card's")
         self.assertIn("focusEcho(ss); vscodeApi?.postMessage({ type: \"showOnTimeline\", itemId: node.id || it.turnId, sid: ss,", ts)
-        self.assertIn("and not _summary_outrun(nd, [_ntr], seg_best):", src, "the modal row's cited tier applies the card's outrun rule")
-        self.assertIn("if not _summary_outrun(nodes[nid], [nodes[_x].get(\"trail\") for _x in _subtree(nid)], seg_best):", src)
+        self.assertIn("and not _summary_outrun(nd, [nodes[x].get(\"trail\") for x in sub], seg_best):", src,
+                      "the cited tier applies the outrun rule over the whole subtree, once, for the card and the row alike")
+        self.assertIn("_nsa_u, _nsa_q = (None, None) if (_ho_sid or not _nline) else _brief_landing(nid, st == \"done\", _nline)", src,
+                      "a handoff row carries no landing: its session is the peer's")
         self.assertIn("summaryAnchorUuid?: string | null;                            // the brief/summary line's own landing", ts)
 
 
