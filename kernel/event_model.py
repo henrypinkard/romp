@@ -648,7 +648,7 @@ _JSONL_CACHE_MAX = 1024           # bounds MEMORY only (384 → 1024 on 2026-09-
 # recently used entries go first, one at a time, under the same LRU order the count uses, so a hot leaf survives a
 # cold flood of subagent files exactly as before. A single entry larger than the whole budget still inserts: a leaf is
 # never refused, the budget then holds that one entry. Counters under /perf recordCache.
-# The default is a QUARTER of the machine's memory, never under 4 GiB (2026-09-11, the day the budget shipped at 1 GiB):
+# The default is HALF of the machine's memory (the user's direction, 2026-09-11: use the memory we have), never under 4 GiB (2026-09-11, the day the budget shipped at 1 GiB):
 # the working set of a devbox running 50 sessions is their live leaves, read by every build in every pusher cycle, and
 # a budget below it does not save memory, it thrashes: 18 entries filled the 1 GiB, every build re-read whole
 # transcripts (14.9 GB read in the first 3.5 minutes, 724 evictions, one pusher cycle of 132 s, chat builds of 3 s
@@ -656,11 +656,11 @@ _JSONL_CACHE_MAX = 1024           # bounds MEMORY only (384 → 1024 on 2026-09-
 # (subagent transcripts) leaves through drop_after="quiescent" folds instead; the budget is the backstop, not the
 # mechanism. ROMP_RECORD_CACHE_BUDGET_MB still sets it outright.
 RECORD_CACHE_BUDGET_FLOOR_BYTES = 4 * 1024 ** 3
-RECORD_CACHE_BUDGET_FRACTION = 0.25
+RECORD_CACHE_BUDGET_FRACTION = 0.5
 
 
 def _record_cache_default_budget_bytes(meminfo_text=None):
-    """A quarter of MemTotal (from /proc/meminfo, or the text given), floored at 4 GiB; the floor alone when the file
+    """Half of MemTotal (from /proc/meminfo, or the text given), floored at 4 GiB; the floor alone when the file
     is unreadable (macOS, a container without procfs)."""
     try:
         text = meminfo_text if meminfo_text is not None else open("/proc/meminfo", encoding="utf-8").read()
@@ -767,6 +767,10 @@ _CKPT_STATS = {"restored": 0, "writes": 0, "swept": 0, "skippedFolds": 0, "fallb
                "oversizeFolds": {}, "coldFolds": {}, "coldWrites": {}}
 _COLD = object()                  # a restored cursor with no state (its fold was oversize): fold_records inits it and steps the tail
 _COLD_FOLDS = set()               # (path, fold name) whose state in this process began cold at a cut: a TAIL-ONLY state, written as a
+_COLD_OVER_KB = {}                # (path, fold name) -> the KB an over-the-cap state measured, carried through a cold write (T359)
+_COLD_REASONS = {}                # (path, fold name) -> why it restarts cold: "over" (its state was over the cap: by design, every
+#                                   boot) or "cold" (its document carried a cursor without a state: a tail-only state written by
+#                                   a process where it began cold, or an older kernel's entry; the settle's primer heals it once)
                                   #  cursor without state until a whole refold, never as a complete one (review find, 2026-09-11)
 _SAID = set()
 
@@ -782,7 +786,34 @@ def _say_once(line):
         pass
 
 
-_CKPT_FOLD_CAP = 64 * 1024        # bytes of encoded state a fold may put in a checkpoint. A state that grows with its file (the postal
+def _machine_memory_bytes(meminfo_text=None):
+    """MemTotal from /proc/meminfo (or the text given) in bytes; 0 when unreadable (macOS, a container without procfs).
+    The ceilings below are fractions of it (the user's direction, 2026-09-11: romp uses the machine's memory; every cache
+    is one shared pool sized to the machine, never a small literal that sits below the working set and thrashes)."""
+    try:
+        text = meminfo_text if meminfo_text is not None else open("/proc/meminfo", encoding="utf-8").read()
+        for line in text.splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    return 0
+
+
+def _env_or(name, default, scale=1):
+    """An integer knob from the environment (scaled), else the derived default."""
+    try:
+        v = os.environ.get(name)
+        return int(float(v) * scale) if v else default
+    except (TypeError, ValueError):
+        return default
+
+
+# 8 MiB, was 64 KB (2026-09-11, the day the checkpoints shipped): 31 leaves' bgAll states sat over 64 KB and every boot
+# cold-refolded them whole, 1.74 GB read in the first pusher cycle (65 s of tick jobs); a document of a few MB reads in
+# milliseconds. ROMP_CKPT_FOLD_CAP_KB sets it outright.
+_CKPT_FOLD_CAP = _env_or("ROMP_CKPT_FOLD_CAP_KB", 8 * 1024 * 1024, 1024)
+#                                   bytes of encoded state a fold may put in a checkpoint. A state that grows with its file (the postal
 #                                   log fold's map of every sent row, the state intervals' list of every transition, the every-task
 #                                   background view on a long transcript) would make the document a second copy of the file: reading
 #                                   it at boot costs what the checkpoint exists to save (measured 2026-09-11: 11 MB of documents in a
@@ -805,6 +836,28 @@ def _next_gen():
         _GEN[0] += 1
         return _GEN[0]
 _FOLD_NAME_OF = {}                # id(cursor dict) -> checkpoint name, for callers that name their cache once (name_fold_cache)
+
+
+def drop_cold_cursors(path):
+    """Drop the cursors of the folds over `path` that began cold for want of a state (reason "cold", never "over"), so each
+    is refolded whole at its next run and complete again (T359). Returns the names. For a leaf the kernel reruns its folds
+    at the settle before the write; for another file the write leaves them out and the next boot reads the file whole once."""
+    key = str(path)
+    with _CKPT_LOCK:
+        names = [n for k, n in _COLD_FOLDS if k == key and _COLD_REASONS.get((k, n), "cold") == "cold"]
+    for n in names:
+        cache = _FOLD_REG.get(n)
+        if cache is not None:
+            cache.pop(key, None)
+    return names
+
+
+def cold_fold_reasons(path):
+    """{fold name: reason} for the folds over `path` that began cold in this process ("over": its state is over the cap, by
+    design; "cold": its document carried a cursor without a state, which one whole refold heals). The settle's primer asks."""
+    key = str(path)
+    with _CKPT_LOCK:
+        return {n: _COLD_REASONS.get((k, n), "cold") for k, n in _COLD_FOLDS if k == key}
 
 
 def entry_whole_resident(path):
@@ -1029,13 +1082,22 @@ def _restored_cursor(key, name, ent):
             except Exception:
                 pass
             return None
-        if count != pend["count"] or count < base or count > base + len(ent[4]):
-            return None
-        if "state" not in f:                              # an oversize fold's cursor: the fold starts cold at the cut
-            with _CKPT_LOCK:
-                _CKPT_STATS["coldFolds"][name] = _CKPT_STATS["coldFolds"].get(name, 0) + 1
-            _say_once("checkpoint: fold %s of %s restarts cold over the tail (its state was over the %d KB cap)"
-                      % (name, key, _CKPT_FOLD_CAP // 1024))
+        if count < base or count > base + len(ent[4]):
+            return None                                   # a fold's count may differ from the document's cut (T359: the cut is the
+        if "state" not in f:                              #  lowest written cursor): inside the entry's held records it is an append
+            reason = "over" if f.get("over") else "cold"  #  from there; outside them it is nothing to resume from
+            with _CKPT_LOCK:                              # a cursor without a state: the fold starts cold at the cut, for the reason
+                _CKPT_STATS["coldFolds"][name] = _CKPT_STATS["coldFolds"].get(name, 0) + 1   #  the document names (T359: the line
+                _COLD_REASONS[(key, name)] = reason       #  blamed the cap whatever the reason)
+                if reason == "over":
+                    _COLD_OVER_KB[(key, name)] = int(f["over"])   # carried through this process's cold writes: over stays over
+            if reason == "over":
+                _say_once("checkpoint: fold %s of %s restarts cold over the tail: its state was %d KB, over the %d KB cap"
+                          % (name, key, int(f["over"]), _CKPT_FOLD_CAP // 1024))
+            else:
+                _say_once("checkpoint: fold %s of %s restarts cold over the tail: its document carries its cursor without a state "
+                          "(a tail-only state, or an older kernel's cursor-only entry); one whole refold heals it, at the session's "
+                          "next settle for a leaf's folds, at the file's next checkpoint write otherwise" % (name, key))
             return (count, ent[6], _COLD)
         state = _ckpt_decode(f["state"])
         with _CKPT_LOCK:
@@ -1061,29 +1123,60 @@ def checkpoint_write(path, force=False):
     folds = {}
     for name, cache in list(_FOLD_REG.items()):
         cur = cache.get(key)
-        if cur is None or cur[0] != count or cur[1] != gen:
-            continue
-        with _CKPT_LOCK:
-            cold = (key, name) in _COLD_FOLDS
+        if cur is None or cur[1] != gen or not base <= cur[0] <= count:
+            continue                                      # no cursor at this entry, or one outside its held records
+        fcount = cur[0]                                   # the fold's OWN count (T359): a fold stepped by builds, not by the settle,
+        with _CKPT_LOCK:                                  #  lags the entry and was left out silently before, to read the leaf whole
+            cold = (key, name) in _COLD_FOLDS             #  at the next boot; the restore steps the held tail from its count
         if cold:                                          # a state that began cold at a cut covers the tail only: it must not
             with _CKPT_LOCK:                              #  be written as a complete one (the next process would restore it
                 _CKPT_STATS["coldWrites"][name] = _CKPT_STATS["coldWrites"].get(name, 0) + 1   #  as whole and say nothing)
-            folds[name] = {"count": count}
+                over_kb = _COLD_OVER_KB.get((key, name)) if _COLD_REASONS.get((key, name)) == "over" else None
+            if over_kb is not None:                       # cold BECAUSE over the cap: the reason and its KB carry through, so the
+                folds[name] = {"count": fcount, "over": over_kb}   #  next boot neither promises a heal nor refolds it whole
+            else:
+                folds[name] = {"count": fcount, "cold": 1}   # a true tail-only state: the next process says why, and heals it
             continue
         try:
             enc = _ckpt_encode(cur[2])
-            if len(json.dumps(enc, separators=(",", ":"))) > _CKPT_FOLD_CAP:
+            n_enc = len(json.dumps(enc, separators=(",", ":")))
+            if n_enc > _CKPT_FOLD_CAP:
                 with _CKPT_LOCK:                          # a state the size of its file: the document must not become the file
                     _CKPT_STATS["oversizeFolds"][name] = _CKPT_STATS["oversizeFolds"].get(name, 0) + 1
-                folds[name] = {"count": count}            # the cursor without its state: the next process starts this fold
-                continue                                  #  cold over the tail instead of reading the file whole (counted)
-            folds[name] = {"count": count, "state": enc}
+                folds[name] = {"count": fcount, "over": -(-n_enc // 1024)}   # the cursor without its state, with the reason (its KB):
+                continue                                  #  the next process starts this fold cold over the tail (counted)
+            folds[name] = {"count": fcount, "state": enc}
         except TypeError:
             with _CKPT_LOCK:
                 _CKPT_STATS["skippedFolds"] += 1
     if not folds and not force:
         return False
-    last = records[-1] if records else None
+    cut = min([f["count"] for f in folds.values()] or [count])   # the document's cut: the LOWEST written cursor (T359), so the
+    moved = None                                          #  next process's tail read holds every record a lagging fold has
+    if cut < count and len(ent) >= 8 and ent[7]:          #  yet to step (its append), bounded by the records this entry holds
+        off_cut = int(ent[7][(cut - base) * 2])           # the cut record's byte offset; the 64 bytes before it are the guard.
+        try:                                              # The entry holds records, not bytes, so the guard is read from the file, in
+            with open(key, "rb") as fh:                   #  the same open that first verifies the entry's OWN witness guard (its bytes
+                fh.seek(max(0, offset - len(tail)))       #  before its offset, captured with its records): an append since the read
+                if fh.read(len(tail)) != tail:            #  leaves that prefix intact and the cut move proceeds, carrying the lagging
+                    raise OSError("the file was rewritten under the entry")   #  fold; a rewrite of any size or time fails it and writes
+                fh.seek(max(0, off_cut - 64)); guard_cut = fh.read(min(64, off_cut))   #  the witness form, which the restore then refuses
+            if off_cut and not guard_cut.endswith(b"\n"):   #  (review: a stat gate refused appends and passed a time-preserving copy)
+                raise OSError("no record boundary at the cut")
+        except OSError:
+            guard_cut = None
+        if guard_cut is not None:
+            moved = (off_cut, guard_cut, records[cut - base - 1] if cut > base else None, cut)
+    left_out = False
+    if moved is not None:
+        offset, tail, last, count = moved
+    else:
+        if cut < count:                                   # no cut move: the folds at the witness only; the lagging ones are left
+            folds = {n: f for n, f in folds.items() if f["count"] == count}   #  out, and the path stays DIRTY below so the next
+            left_out = True                               #  write (a settle, the exit drain) tries them again (review, low 3)
+            if not folds and not force:
+                return False
+        last = records[-1] if records else None
     with _CKPT_LOCK:
         seq = _CKPT_SEQ.get(key, 0) + 1
     doc = {"v": _CKPT_V, "path": os.path.realpath(key), "size": int(size), "mtime": float(mtime), "offset": int(offset),
@@ -1099,7 +1192,10 @@ def checkpoint_write(path, force=False):
     with _CKPT_LOCK:
         _CKPT_SEQ[key] = seq
         _CKPT_STATS["writes"] += 1
-        _FOLD_DIRTY.discard(key)
+        if left_out:
+            _FOLD_DIRTY.add(key)                          # a lagging fold has no cursor in this document yet
+        else:
+            _FOLD_DIRTY.discard(key)
     return True
 
 
@@ -1468,6 +1564,7 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
         if ckpt is not None:
             with _CKPT_LOCK:
                 _COLD_FOLDS.discard((key, ckpt))          # every record stepped: the state is complete again
+                _COLD_REASONS.pop((key, ckpt), None); _COLD_OVER_KB.pop((key, ckpt), None)
     for r in recs[start:]:
         if isinstance(r, dict):
             state = step(state, r)
@@ -3523,8 +3620,10 @@ def segments(turn):
     from one input to the next (or to the turn end). Each carries a stable `id` for the
     summarizer layer. Pure function over a turn."""
     atoms = turn["atoms"]
-    if turn.get("pre") and turn.get("segs") is not None:   # a restored pre-cut turn (T323 stage 4c): the spans as written
-        return [{"id": s[0], "trigger": s[1], "t": s[2], "end": s[3], "atoms": atoms[s[4]:s[4] + s[5]]} for s in turn["segs"]]
+    if turn.get("pre") and turn.get("segs") is not None:   # a restored pre-cut turn (T323 stage 4c): the spans as written; the
+        return [dict({"id": s[0], "trigger": s[1], "t": s[2], "end": s[3], "atoms": atoms[s[4]:s[4] + s[5]]},   # atoms a lazy view
+                     **({"w": bool(s[6]), "mids": list(s[7]), "hp": bool(s[8])} if len(s) >= 9 else {}))   # (T358: the stored verdicts)
+                for s in turn["segs"]]
     rompuuid = atoms[0]["session_id"] if atoms else ""
     starts = [i for i, a in enumerate(atoms) if _is_segment_input(a)]
     if not starts:
@@ -3588,6 +3687,8 @@ def split_segment(seg, t):
         return None
     rompuuid = atoms[0].get("session_id", "")
     head = dict(seg, atoms=head_a, end=tail_a[0]["t"])
+    for k_ in ("w", "mids", "hp"):
+        head.pop(k_, None)                            # the whole segment's stored verdicts (T358) do not describe a part
     tail = {"t": tail_a[0]["t"], "end": seg["end"], "trigger": None, "atoms": tail_a, "seam": True,
             "id": _segment_id(rompuuid, tail_a[0]["t"], tail_a, None)}
     return head, tail
@@ -4048,13 +4149,22 @@ def _asm_fold(entry, delta, leaf_recs, leaf_key, leaf_stem, rompuuid, postal_ind
 # ids and atom uuids. Bodies come back on demand (hydrate). Anything that does not verify is a counted fallback to a
 # whole parse; a compaction landing after the document demotes the tail fold to a whole parse exactly as before, and
 # the next settle writes a new document with the new cut.
-_ASM_CKPT_V = 4                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
+_ASM_CKPT_V = 5                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
 #                                       4: a `turns` section over the pre-cut rows (T323 stage 4c: the lazy index)
-_MAT_CAP = 20000                      # materialized pre-cut atoms resident across every session (the lazy index's LRU)
+#                                       5: lazy markers carry pc (assistant prose chars) and mid (postal message ids); a turn row
+#                                          carries pcs and hT, a segment row w, mids and hp (T358: the per-cycle walkers read scalars).
+#                                          The stored w and hp are atom_has_work's and seg_prompt_atom's verdicts at write time: a
+#                                          change to either rule, or to what pc, mid, pcs or hT mean, is a bump of this constant
+#                                          (tests/test_asm_index.py pins the rules' source beside it).
+# Materialized pre-cut atoms resident across every session (the lazy index's LRU): MemTotal / 32 KiB, never under 500,000
+# (3.9 million on a 118 GiB machine); ROMP_ASM_INDEX_CAP sets it outright. At 20,000 (2026-09-11, the day the index
+# shipped) 50 sessions' 4,080 restored turns materialized 1.2 million atoms and evicted 1.19 million of them in 150 s,
+# every chat build cold at 5.6 s: a ceiling under the working set is a thrash, not a saving.
+_MAT_CAP = _env_or("ROMP_ASM_INDEX_CAP", max(500_000, _machine_memory_bytes() // (32 * 1024)))
 _MAT_LRU = collections.OrderedDict()  # (id(LazyAtoms), row) → (LazyAtoms, row): eviction drops the memo, never a field in place
 _MAT_LOCK = threading.Lock()
 _ASM_INDEX_STATS = {"materialized": 0, "materializedBy": {}, "resident": 0, "evictions": 0, "restoredTurns": 0, "rowDecodes": 0}
-_PRE_TURN_KEYS = ("pre", "uuids", "lastT", "maxT", "lastModel", "tools", "segs")   # a pre-turn's fields beyond a plain turn's
+_PRE_TURN_KEYS = ("pre", "uuids", "lastT", "maxT", "lastModel", "tools", "segs", "pcs", "hT")   # a pre-turn's fields beyond a plain turn's
 
 
 class LazyIndexError(RuntimeError):
@@ -4191,9 +4301,14 @@ class LazyAtoms(list):
         return list(self._rows)
 
     # ── the list surface ──
+    def _unbuilt(self):
+        return any(a is _UNMAT for a in list.__iter__(self))
     def __getitem__(self, i):
         if isinstance(i, slice):
-            return [self._at(j) for j in range(*i.indices(len(self)))]
+            start, stop, step = i.indices(len(self))
+            if step == 1:                                 # a contiguous slice (a segment's atoms) stays lazy: a view over this list
+                return _LazyView(self, start, max(start, stop))
+            return [self._at(j) for j in range(start, stop, step)]
         n = len(self)
         if i < 0:
             i += n
@@ -4206,7 +4321,7 @@ class LazyAtoms(list):
         # and ship it: refused here, loudly, as the design asks (plain_tree is the dump's road)
         f = sys._getframe(1)
         if f is not None and f.f_code.co_name in ("iterencode", "encode", "_iterencode", "_iterencode_list", "_iterencode_dict") \
-                and any(a is _UNMAT for a in list.__iter__(self)):
+                and self._unbuilt():
             raise TypeError("a pre-cut turn's atoms are not JSON-serializable before they are built: dump em.plain_tree(session)")
         for j in range(len(self)):
             yield self._at(j)
@@ -4276,6 +4391,40 @@ class LazyAtoms(list):
         raise TypeError("a pre-cut turn's atoms are read-only")
 
 
+class _LazyView(LazyAtoms):
+    """A contiguous slice of a LazyAtoms (a segment's atoms, T358) that builds nothing until read: a first read of a slot
+    goes to the parent's slot (a build there is the parent's build under the parent's LRU key), and the view KEEPS what it
+    read in its own slot for its lifetime, as the plain-list slice it replaces did, so a second reader of the same segment
+    (the anchors after the ids, the jump after the anchors) touches no lock: with two builders at once (the pusher's cycle
+    and a client's ready frame both building the same chat) every locked access convoyed on the index lock at about one
+    atom per scheduler switch, and a restored session's first frame took 20 s on a four-core runner (T358 CI, 2026-09-12).
+    A view is per build and short-lived, so what it holds is bounded by the build; an eviction in the parent is not seen by
+    a slot the view already read, so while a build (or a planner pass whose returned tasks hold its views) is alive
+    its read set pins atoms past the index cap by that one build's worth, as the plain-list slices did. json's encoder
+    is refused while the parent's slots are unbuilt; slicing a view is a
+    view of the parent."""
+    def __init__(self, parent, start, stop):
+        list.__init__(self, [_UNMAT] * (stop - start))
+        self._parent, self._off = parent, start
+        self._index, self._rows = parent._index, parent._rows[start:stop]
+    def _at(self, i):
+        a = list.__getitem__(self, i)
+        if a is not _UNMAT:
+            return a
+        a = self._parent._at(self._off + i)
+        list.__setitem__(self, i, a)
+        return a
+    def _unbuilt(self):
+        return any(list.__getitem__(self._parent, self._off + j) is _UNMAT for j in range(len(self)))
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            start, stop, step = i.indices(len(self))
+            if step == 1:
+                return _LazyView(self._parent, self._off + start, self._off + max(start, stop))
+            return [self._at(j) for j in range(start, stop, step)]
+        return LazyAtoms.__getitem__(self, i)
+
+
 class PreTurn(dict):
     """A restored pre-cut turn: a plain turn's fields (id, trigger, t, end, ended, atoms) with `atoms` a LazyAtoms, plus
     the turn-level scalars the kernel's walkers read instead of the atoms (_PRE_TURN_KEYS: uuids, lastT, maxT, lastModel,
@@ -4291,7 +4440,8 @@ def _pre_turns_of(doc, index):
         pt = PreTurn(id=td["id"], trigger=({"uuid": td["uuids"][at]} if at is not None else None), t=td["t"], end=td["end"],
                      ended=bool(td["ended"]), atoms=LazyAtoms(index, td["atoms"]),
                      pre=True, uuids=list(td["uuids"]), lastT=td.get("lastT"), maxT=td.get("maxT"), lastModel=td.get("lastModel"),
-                     tools=[tuple(x) for x in td.get("tools") or []], segs=[list(s) for s in td["segs"]])
+                     tools=[tuple(x) for x in td.get("tools") or []], segs=[list(s) for s in td["segs"]],
+                     pcs={u: n for u, n in td.get("pcs") or []}, hT=td.get("hT"))
         out.append(pt)
     return out
 
@@ -4340,7 +4490,9 @@ _ASM_CKPT_SAID = set()             # (path, reason) said once per process
 _LAZY_FILES = {}                   # rompuuid -> {fsid: path}: where hydrate finds a lazy atom's record
 _HYDRATED = {}                     # uuid -> the body fields read; dict order = LRU
 _HYDRATED_BYTES = [0]
-_HYDRATED_CAP = 64 * 1024 * 1024   # the hydrated-body memo's byte cap (a judge pass re-reading one large body every cycle
+_HYDRATED_CAP = _env_or("ROMP_HYDRATED_CAP_MB", max(1024 ** 3, _machine_memory_bytes() // 32), 1024 * 1024)
+#                                    the hydrated-body memo's byte cap: MemTotal / 32, never under 1 GiB (3.7 GiB on a 118 GiB
+#                                    machine; 64 MB hydrated 3.1 GB of bodies in 150 s on 2026-09-11) (a judge pass re-reading one large body every cycle
 #                                    shows in hydratedBytes; the memo keeps the common case at one read)
 _LAZY_KINDS = ("a", "u", "c", "o", "k", "b")   # atom kinds whose message is lazy; boundary and refusal atoms carry no message
 
@@ -4406,7 +4558,10 @@ def _atom_scalars(a):
 
 
 def _lazy_of(a, kind, rec_index):
-    """The identity scalars a lazy atom carries in place of its body (what the ids, the segmentation and the gates read)."""
+    """The identity scalars a lazy atom carries in place of its body (what the ids, the segmentation and the gates read).
+    An atom that is lazy already keeps its marker (its body is on disk; the marker was made from it)."""
+    if a.get("lazy") is not None:
+        return {k: v for k, v in a["lazy"].items() if k not in ("i", "at")}
     text = _text_of(_content(a.get("message"))) if a.get("message") is not None else ""
     lz = {"k": kind, "h": hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:8], "nt": bool(text)}
     if _machine_written(a):                     # defaults left out: not machine-written, not an interrupt, no stop reason,
@@ -4430,6 +4585,13 @@ def _lazy_of(a, kind, rec_index):
         lz["tr"] = tr
     if kind == "c":
         lz["disp"] = text                       # the invocation's display text is short: inline, no read to rebuild it
+    if a.get("type") == "assistant" and not a.get("isApiError"):
+        pc = _prose_chars(a)
+        if pc:
+            lz["pc"] = pc                       # assistant prose chars: the substantive reads and the citation gate (T358)
+    mids = postal_mids(_content(msg) if msg is not None else None)
+    if mids:
+        lz["mid"] = mids                        # postal message ids: the timeline connector and the caption join (T358)
     return lz
 
 
@@ -4662,7 +4824,8 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None):
             turns_doc = []
             cut_ts = min((ad.ts_of.get(u, 0) for u in entry["kept"] if ad.seq_of.get(u, 0) >= cut_seq), default=None)
             for turn in tree.get("turns") or []:
-                seqs = [ad.seq_of[a["uuid"]] for a in turn["atoms"] if a.get("uuid") in ad.seq_of]
+                t_uuids = turn["uuids"] if turn.get("pre") else [a.get("uuid") for a in turn["atoms"]]   # a restored turn: no atom built
+                seqs = [ad.seq_of[u_] for u_ in t_uuids if u_ in ad.seq_of]
                 if seqs:
                     if max(seqs) >= cut_seq:
                         break                            # the first turn holding a post-cut record ends the pre-cut run
@@ -4670,8 +4833,8 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None):
                     break                                # a turn of synthesized atoms alone (an idle span opening the tree): pre-cut
                 #                                          by its time, else the tail's
                 idxs = []
-                for a in turn["atoms"]:
-                    u_ = a.get("uuid")
+                for ai_, u_ in enumerate(t_uuids):
+                    a = turn["atoms"][ai_] if not u_ or u_ not in row_of_atom else None   # built only for a uuid-less or unknown atom
                     k_ = row_of_atom.get(u_) if u_ else row_of_scalars.pop(json.dumps(_atom_scalars(a), sort_keys=True, default=str), None)
                     #  (two uuid-less attachments in one turn with the same enqueue stamp collide on the scalar key: the second
                     #   finds no row, the walk mints a synthesized one, and the coverage check refuses the section cleanly)
@@ -4685,22 +4848,42 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None):
                         pre_atoms.append(row_)
                     idxs.append(k_)
                 seg_rows, start = [], 0
+                pre_segs = {s_[0]: s_ for s_ in (turn.get("segs") or [])} if turn.get("pre") else {}
                 for sg in segments(turn):
-                    seg_rows.append([sg["id"], sg.get("trigger"), sg["t"], sg["end"], start, len(sg["atoms"])])
+                    ps_ = pre_segs.get(sg["id"])
+                    if ps_ is not None and len(ps_) >= 9:            # a restored turn: its stored verdicts carry over, no atom built
+                        w_, mids_, hp_ = ps_[6], ps_[7], ps_[8]
+                    else:                                             # w is atom_has_work's verdict at write time (see _ASM_CKPT_V)
+                        w_ = 1 if any(atom_has_work(a) for a in sg["atoms"]) else 0
+                        mids_ = [m_ for a in sg["atoms"] for m_ in atom_mids(a)]
+                        pa_ = seg_prompt_atom(sg)                     # hp: whether a MESSAGE caption is wanted (the planner's rule)
+                        hp_ = 1 if pa_ is not None and pa_.get("author") == "human" else 0
+                    seg_rows.append([sg["id"], sg.get("trigger"), sg["t"], sg["end"], start, len(sg["atoms"]), w_, mids_, hp_])
                     start += len(sg["atoms"])
+                if turn.get("pre") and turn.get("pcs") is not None:
+                    pcs_, hT_ = [[u_, n_] for u_, n_ in turn["pcs"].items()], turn.get("hT")
+                    ts_ = [turn.get("lastT")] if turn.get("lastT") else []
+                    ts_max, models, tools_ = turn.get("maxT"), ([turn["lastModel"]] if turn.get("lastModel") else []), [list(x) for x in turn.get("tools") or []]
+                    trig_at = t_uuids.index(turn["trigger"]["uuid"]) if turn.get("trigger") and turn["trigger"].get("uuid") in t_uuids else None
+                else:
+                    pcs_ = [[u_, n_] for u_, n_ in ((a.get("uuid"), atom_prose_chars(a)) for a in turn["atoms"]) if u_ and n_ > 0]
+                    hT_ = max((a.get("t", 0) for a in turn["atoms"] if a.get("type") == "user" and a.get("author") == "human"
+                               and not is_interrupt_record(a)), default=None)
+                    ts_ = [a.get("t") for a in turn["atoms"] if a.get("t")]
+                    ts_max = max(ts_) if ts_ else None
+                    models = [atom_model(a) for a in turn["atoms"] if a.get("type") == "assistant"]
+                    models = [m_ for m_ in models if m_]
+                    tools_ = [[i_, n_] for a in turn["atoms"] if a.get("type") == "assistant" for i_, n_ in atom_tool_uses(a)]
+                    trig_at = next((i_ for i_, a in enumerate(turn["atoms"]) if turn["trigger"] is not None and a is turn["trigger"]), None)
+                    if trig_at is None and turn["trigger"] is not None:
+                        trig_at = next((i_ for i_, a in enumerate(turn["atoms"]) if a.get("uuid") == turn["trigger"].get("uuid")), None)
                 if start != len(turn["atoms"]):
                     return skip("segs")                  # the segments are contiguous slices of the turn, in order
-                ts_ = [a.get("t") for a in turn["atoms"] if a.get("t")]
-                models = [atom_model(a) for a in turn["atoms"] if a.get("type") == "assistant"]
-                models = [m_ for m_ in models if m_]
-                trig_at = next((i_ for i_, a in enumerate(turn["atoms"]) if turn["trigger"] is not None and a is turn["trigger"]), None)
-                if trig_at is None and turn["trigger"] is not None:
-                    trig_at = next((i_ for i_, a in enumerate(turn["atoms"]) if a.get("uuid") == turn["trigger"].get("uuid")), None)
                 turns_doc.append({"id": turn["id"], "t": turn["t"], "end": turn["end"], "ended": bool(turn["ended"]), "atoms": idxs,
-                                  "segs": seg_rows, "uuids": [a.get("uuid") for a in turn["atoms"]], "triggerAt": trig_at,
-                                  "lastT": ts_[-1] if ts_ else None, "maxT": max(ts_) if ts_ else None,
-                                  "lastModel": models[-1] if models else None,
-                                  "tools": [[i_, n_] for a in turn["atoms"] if a.get("type") == "assistant" for i_, n_ in atom_tool_uses(a)]})
+                                  "segs": seg_rows, "uuids": list(t_uuids), "triggerAt": trig_at,
+                                  "lastT": ts_[-1] if ts_ else None, "maxT": ts_max,
+                                  "lastModel": models[-1] if models else None, "tools": tools_,
+                                  "pcs": pcs_, "hT": hT_})
             # the section must COVER the pre-cut rows: every row in exactly one turn (a permutation of the row indexes; the
             # turns sort by time, so a row's index need not be contiguous with its neighbours'), else the tree the store
             # holds is not this entry's whole (a bare rollback armed before the last compaction cuts it short) and the
@@ -4779,6 +4962,127 @@ def atom_tool_results(atom):
     if lz is not None:
         return list(lz.get("tr") or [])
     return [b.get("tool_use_id") for b in _content(atom.get("message")) if isinstance(b, dict) and b.get("type") == "tool_result"]
+
+
+def postal_mids(content, ids=None):
+    """POSTAL_RE's matches over a message's content, in document order, appended to `ids`: a bare string, the text blocks,
+    and a tool_result block's content (a string, or a list of blocks whose strings are searched one by one: only the strings
+    json.dumps would write can carry a marker, and a match cannot cross the encoder's separators, so encoding each string
+    alone yields the ids the encoded whole would, without encoding an image block). The one search the timeline's
+    connector, the message-caption join and the lazy marker share (T358; before it the kernel's _encoded_mids)."""
+    if ids is None:
+        ids = []
+    if isinstance(content, str):
+        if "romp-msg-id" in content:
+            ids += POSTAL_RE.findall(content)
+    elif isinstance(content, dict):
+        if content.get("type") == "text":
+            t = content.get("text")
+            if isinstance(t, str):                    # a null text field is skipped, not a TypeError
+                postal_mids(t, ids)
+        elif content.get("type") == "tool_result":
+            c = content.get("content")                # str | list[dict] | None from the SDK, as passed through
+            if isinstance(c, str):
+                postal_mids(c, ids)
+            elif c is not None:
+                _encoded_mids(c, ids)               # any other block (thinking, tool_use, image) carries no marker: skipped
+    elif isinstance(content, (list, tuple)):
+        for b in content:
+            if isinstance(b, dict):                   # a bare string or a nested list inside a content list is no block: skipped,
+                postal_mids(b, ids)                   #  as the kernel's body road read it
+    return ids
+
+
+def _encoded_mids(content, ids=None):
+    """The strings-only search over an encoded value: dict keys and string values, every other value encodes to digits,
+    true/false/null or brackets and cannot hold a marker."""
+    if ids is None:
+        ids = []
+    if isinstance(content, str):
+        if "romp-msg-id" in content:
+            ids += POSTAL_RE.findall(json.dumps(content))
+    elif isinstance(content, dict):
+        for k, v in content.items():
+            if isinstance(k, str) and "romp-msg-id" in k:
+                ids += POSTAL_RE.findall(json.dumps(k))
+            _encoded_mids(v, ids)
+    elif isinstance(content, (list, tuple)):
+        for v in content:
+            _encoded_mids(v, ids)
+    return ids
+
+
+def atom_has_text(atom):
+    """Whether an atom's text (the text blocks joined, stripped) is non-empty: the lazy marker's nt, else the body."""
+    return _has_text(atom)
+
+
+def atom_mids(atom):
+    """The postal message ids an atom's message carries: the lazy marker's `mid`, else the body's (no hydration)."""
+    lz = atom.get("lazy")
+    if lz is not None:
+        return list(lz.get("mid") or [])
+    msg = atom.get("message")
+    return postal_mids((msg or {}).get("content") if isinstance(msg, dict) else None)
+
+
+def _prose_chars(atom):
+    """Chars of the text blocks of an atom's body (each block's length, unstripped): pc's definition."""
+    blocks = (atom.get("message") or {}).get("content", [])
+    if not isinstance(blocks, list):
+        return 0
+    return sum(len(b.get("text", "")) for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+
+
+def atom_prose_chars(atom):
+    """Chars of ASSISTANT prose on one atom: 0 for a non-assistant, API-error or prose-less atom. The lazy marker's `pc`
+    for a lazy atom (no hydration), the body's text blocks for a resident one. The one measure behind every
+    "substantive" read (the summary deep-link floor, the feed's citation gate, both against the judge's CITE_MIN_CHARS)."""
+    if atom.get("type") != "assistant" or atom.get("isApiError"):
+        return 0
+    lz = atom.get("lazy")
+    if lz is not None:
+        return int(lz.get("pc") or 0)
+    return _prose_chars(atom)
+
+
+def atom_has_work(atom):
+    """Whether an atom is real ASSISTANT output: its own text or a tool_use, on an assistant record that is not an
+    API error (the captioner has nothing to gloss without one; an error record carries the error's text and is not
+    work). Read from the lazy scalars (nt, tu) for a lazy atom. A segment row's `w` in the assembly document is this
+    verdict at write time over the segment's atoms: changing this rule is a document version bump (_ASM_CKPT_V).
+    An assistant message whose content is a bare string counts as text here (the judges' body road read no text in that
+    shape): the lazy marker's nt cannot tell a bare string from a text block, and the two roads must agree; no CLI writes
+    an assistant record in that shape (tests/test_asm_index.py pins the reading)."""
+    if atom.get("type") != "assistant" or atom.get("isApiError"):
+        return False
+    return _has_text(atom) or bool(atom_tool_uses(atom))
+
+
+_SETTLE_TEXT_H8 = hashlib.sha1(b"No response requested.").hexdigest()[:8]
+
+
+def atom_is_settle(atom):
+    """Whether an assistant atom's text is the CLI's settle reply ("No response requested.") or a synthetic model's: the
+    lazy marker's text hash and model stamp answer for a lazy atom, the body for a resident one."""
+    lz = atom.get("lazy")
+    if lz is not None:
+        return lz.get("mdl") == "<synthetic>" or (bool(lz.get("nt")) and lz.get("h") == _SETTLE_TEXT_H8)
+    msg = atom.get("message") or {}
+    return _text_of(_content(msg)) == "No response requested." or msg.get("model") == "<synthetic>"
+
+
+def seg_prompt_atom(seg):
+    """The atom a segment's MESSAGE caption glosses: its trigger, else its first atom (the caption planner's rule). One
+    build at most for a restored segment; the document stores whether it is human-authored (`hp`)."""
+    atoms = seg.get("atoms") or []
+    return next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+
+
+def turn_scalar(turn, key):
+    """A restored pre-cut turn's stored scalar (`pcs`, `hT`, ...), None for a plain turn: the walkers ask this before
+    touching a turn's atoms."""
+    return turn.get(key) if turn.get("pre") else None
 
 
 def atom_model(atom):
