@@ -135,7 +135,10 @@ class TheBriefClickEndToEnd(unittest.TestCase):
             return real(a)
         km.jd._atom_text = boom
         try:
-            card = self._card(g)
+            try:
+                card = self._card(g)
+            except Exception as ex:
+                self.fail("build_feed raised on one unreadable body, so no session got a feed this cycle: %r" % (ex,))
         finally:
             km.jd._atom_text = real
         self.assertEqual(card["summaryAnchorUuid"], "t9", "no quote could be located, so the tier falls to the substantive text atom, never a raise")

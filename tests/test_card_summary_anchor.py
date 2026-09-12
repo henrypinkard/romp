@@ -89,11 +89,15 @@ class TheTextAtom(unittest.TestCase):
             raise km.em.LazyBodyRead("no record at the offset")
         km.jd._atom_text = boom
         km._SUMMARY_ANCHOR_MEMO.clear()
-        before = km._SUMMARY_ANCHOR_STATS["fault"]
+        before = km._SUMMARY_ANCHOR_STATS.get("fault", 0)
         try:
-            out = km._summary_text_anchor((turn, seg), BRIEF)
+            try:
+                out = km._summary_text_anchor((turn, seg), BRIEF)
+            except Exception as e:
+                self.fail("the tier raised on an unreadable body instead of skipping it: %r" % (e,))
         finally:
             km.jd._atom_text = real
+        self.assertIn("fault", km._SUMMARY_ANCHOR_STATS, "the fault counter exists beside hit, miss and evict")
         self.assertEqual(km._SUMMARY_ANCHOR_STATS["fault"], before + 2, "every unreadable candidate is counted (two text atoms)")
         self.assertEqual(out, ("t5", None), "…and the tier goes on without a body: the substantive fallback, never a raise")
 
