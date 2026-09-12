@@ -2416,9 +2416,11 @@ function showFilePreview(a: HTMLElement): void {
     if (hit !== null) p.dataset.sliceHit = hit ? "1" : "0";
   };
   if (!kind) {                                   // the kernel allowed no preview: text and the way to the file, no request
-    // the card says exactly which condition refused (the kernel's why on the link, T364); a link with no verdict at all
-    // (an event built before the kernel judged previews, or a kernel that ships none) says that, not a guess
-    renderFilePreview(p, textOnlyContent(path, anchor, "shown as text: " + (a.dataset.previewWhy || "no preview verdict from the kernel for this link")), sid);
+    // the card says exactly which condition refused (the kernel's why on the link, T364); a bare file:// link is opened,
+    // never judged (the kernel's path links exclude it by design), and says so; a path link with no verdict at all (an
+    // event built before the kernel judged previews, or a kernel that ships none) says that, not a guess
+    const why = /^file:/i.test(open) ? "file links are opened, not previewed" : (a.dataset.previewWhy || "no preview verdict from the kernel for this link");
+    renderFilePreview(p, textOnlyContent(path, anchor, "shown as text: " + why), sid);
     stamp(null);
     return;
   }

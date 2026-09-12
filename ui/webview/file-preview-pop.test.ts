@@ -48,14 +48,14 @@ test("the kernel's verdict rides the link as data-preview; a link without it get
   assert.match(RENDER, /pathPins\?: Record<string, string>; pathPreview\?: Record<string, string>; pathPreviewWhy\?: Record<string, string> \}/, "the event carries pathPreview and its whys beside pathLinks and pathPins");
   const show = RENDER.slice(RENDER.indexOf("function showFilePreview("), RENDER.indexOf("function linkifyFileUris("));
   assert.match(show, /const kind = a\.dataset\.preview \|\| null;/);
-  assert.match(show, /if \(!kind\) \{[\s\S]*?renderFilePreview\(p, textOnlyContent\(path, anchor, "shown as text: " \+ \(a\.dataset\.previewWhy \|\| "no preview verdict from the kernel for this link"\)\), sid\);\s*\n\s*stamp\(null\);\s*\n\s*return;\s*\n\s*\}/, "no fetch for a link the kernel did not allow");
+  assert.match(show, /if \(!kind\) \{[\s\S]*?const why = \/\^file:\/i\.test\(open\) \? "file links are opened, not previewed" : \(a\.dataset\.previewWhy \|\| "no preview verdict from the kernel for this link"\);\s*\n\s*renderFilePreview\(p, textOnlyContent\(path, anchor, "shown as text: " \+ why\), sid\);\s*\n\s*stamp\(null\);\s*\n\s*return;\s*\n\s*\}/, "no fetch for a link the kernel did not allow; a bare file link says it is opened, not previewed, and a path link says the kernel's why");
   assert.match(show, /if \(kind === "image" \|\| kind === "pdf"\) \{ renderFilePreview\(p, contentFor\(path, anchor, kind, sid, null\), sid\); stamp\(null\); return; \}/, "media needs no slice: the bytes route");
   assert.match(show, /p\.replaceChildren\(rompLoaderInner\("reading…", \{ wordmark: false \}\)\);/, "the loader first");
   assert.match(show, /fetch\(sliceUrl\(path, sid, anchor\), \{ credentials: "same-origin" \}\)/);
   assert.match(show, /if \(seq !== filePreviewSeq\) return;/, "a stale answer never fills a card that moved on");
   // the kernel's half: the preview map shipped beside pathLinks on both message paths, warming markdown
   assert.equal((KERNEL.match(/ev\["pathPreview"\] = pv/g) || []).length, 2, "both the assistant and the user message build ship it");
-  assert.match(KERNEL, /def _path_previews\(links, sid\):/);
+  assert.match(KERNEL, /def _path_preview_verdicts\(links, sid\):/);
   assert.match(RENDER, /p\.dataset\.renderMs = \(performance\.now\(\) - t0\)\.toFixed\(1\)/, "the card stamps dwell end to rendered content (the acceptance is latency)");
   assert.match(RENDER, /p\.dataset\.sliceHit = hit \? "1" : "0"/, "…and whether the slice was cached");
   assert.match(KERNEL, /hit=hit\)/, "the slice answer says whether it came from the cache");

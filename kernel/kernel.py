@@ -33377,13 +33377,16 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                         _fold_why = "task-output"
                         break
             if _fold_why is None:
-                # an event sealed with path links but NO preview verdict (built by a kernel before the previews, or
-                # restored from a document that predates them, T364): one refold gives it the key, and the clause is
-                # quiet from then on (every build attaches pathPreview beside a non-empty pathLinks). A restored entry
-                # may lack the field itself; then the events are scanned once here
+                # a belt for a fold DOCUMENT written by an older kernel (T364): its events may carry path links with no
+                # preview verdict, and its entries may lack this field. In a process running this code the clause never
+                # fires (the one writer attaches pathPreview beside every non-empty pathLinks and records pv_missing as
+                # the empty list); what gives the user's existing messages their verdicts is the attach-site change plus
+                # the restart a deploy implies (the fold and the built-chat memo come up cold). An entry without the
+                # field is scanned once and the result recorded, empty included, so the scan does not repeat per build
                 _pvm = _fe.get("pv_missing")
                 if _pvm is None:
                     _pvm = [_i for _i, _e in enumerate(_fe["events"]) if _e.get("pathLinks") and "pathPreview" not in _e]
+                    _fe["pv_missing"] = _pvm
                 if _pvm:
                     _fold_why = "path-preview"
             if _fold_why is None and _fe["pl_pending"]:
@@ -44641,11 +44644,6 @@ def _path_preview_verdicts(links, sid):
     return kinds, whys
 
 
-def _path_previews(links, sid):
-    """{token: kind} alone (the callers that need the refusals read _path_preview_verdicts)."""
-    return _path_preview_verdicts(links, sid)[0]
-
-
 def _human_bytes(n):
     """Byte count → a short human size, for the 413 that has to explain itself."""
     for unit, step in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
@@ -45266,13 +45264,14 @@ def _repo_index_key(cwd):
         return None
 
 
-_REPO_INDEX_STOOD_DOWN = set()   # the cwds whose stand-down was said once (T364: a silent None left a bare filename unlinked with no trace)
+_REPO_INDEX_STOOD_DOWN = set()   # (cwd, why) pairs said once (T364: a silent None left a bare filename unlinked with no trace)
 
 
 def _repo_index_stood_down(cwd, why):
-    """One stderr line per cwd when the repo index cannot be had (git absent or failing, a listing past the ceiling), so
-    a bare filename that stays plain text is diagnosable from the kernel log (T364, the laptop report)."""
-    if cwd in _REPO_INDEX_STOOD_DOWN:
+    """One stderr line per cwd AND reason when the repo index cannot be had (git absent or failing, a listing past the
+    ceiling), so a bare filename that stays plain text is diagnosable from the kernel log (T364, the laptop report); a
+    changed reason for the same cwd is a new line (verifier low, round one)."""
+    if (cwd, why) in _REPO_INDEX_STOOD_DOWN:
         return
     # a .git pointer file that cannot be followed is already named, once per fault episode, by _git_file_fault (its
     # stderr line and bell row carry the path): the index standing down there is the same finding, not a second line
@@ -45281,7 +45280,7 @@ def _repo_index_stood_down(cwd, why):
             return
     if len(_REPO_INDEX_STOOD_DOWN) >= 256:
         _REPO_INDEX_STOOD_DOWN.clear()
-    _REPO_INDEX_STOOD_DOWN.add(cwd)
+    _REPO_INDEX_STOOD_DOWN.add((cwd, why))
     sys.stderr.write("path links: the repo index for %s stood down (%s); bare filenames in this session's messages stay plain text\n" % (_tilde(cwd), why))
 
 

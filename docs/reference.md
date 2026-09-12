@@ -1780,7 +1780,9 @@ bytes) ride this kernel's `/remote/<host>/file` relay with the bare session id,
 exactly as the inline images do; the remote kernel builds that session's
 messages and judges its own files, and the relay is available only while the
 host is attached (a host reached through a relay alone shows the text card
-until it attaches). The belt reads the file's first
+until it attaches).
+
+The belt reads the file's first
 64 KB at load (so at warm time): a hit there means the file is never cached and
 the link ships without a preview kind. It reads the served slice again on the
 route: a secret past the first 64 KB passes the load-time read, so that file's
