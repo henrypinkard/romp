@@ -1070,7 +1070,17 @@ charged to the same cycle budget. A leaf is looked at once per file state:
 written, or refused for a property of its cut, it is done; a blip is tried
 twice (a blip inside the fold half's hold gets its second try over the entry
 the paid drop popped, so that leaf waits for the next boot's read); a leaf with
-no whole entry to write from is re-examined each cycle and counted once. `ROMP_ASM_CONVERGE=0` turns that step off, and so do the pass's
+no whole entry to write from is re-examined each cycle and counted once. The step's candidates are the assembly cache's whole entries, the parses the
+boot actually did, whatever the session's age (the discover window's rows,
+48 hours by default, would leave every older idle leaf out) and whether or not
+the session still has a registry row: a leaf the boot parsed is one the next
+boot parses, so its document is wanted, and the boot's sweep removes the
+documents of vanished files. The document is written under the display
+parse's flag, the one the next boot reads with, and with the turns section
+from the parse under that same flag or none; a leaf parsed only under the
+judges' flag is skipped and counted (`flagMismatch`), since the reader would
+delete a document under the wrong flag. A leaf with no compaction boundary has
+no cut and no document: it is read whole at every boot by design. `ROMP_ASM_CONVERGE=0` turns that step off, and so do the pass's
 own switch and a zero byte budget, as for the drop write. The owed table
 is bounded: over it the oldest owed drop is paid by its pop alone, and an owed
 file since deleted has its entry popped when the cycle pays. A leaf unchanged for longer than the reader keeps a quiescent
