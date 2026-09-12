@@ -4806,7 +4806,10 @@ def asm_index_stats():
                 "restoredTurns": _ASM_INDEX_STATS["restoredTurns"], "rowDecodes": _ASM_INDEX_STATS["rowDecodes"]}
 _ASM_CKPT_CAP = 16 * 1024 * 1024   # a document past this is not written (counted): that session parses whole as today
 _ASM_CKPT_STATS = {"written": 0, "restored": 0, "fallbacks": {}, "skipped": {}, "hydratedBytes": 0, "hydratedAtoms": 0,
-                   "hydratedBy": {}}     # bytes per calling function: a whole-tree hydration anywhere shows here
+                   "hydratedBy": {},     # bytes per calling function: a whole-tree hydration anywhere shows here
+                   "converge": {"writes": 0, "bytes": 0, "deferred": 0, "candidates": 0, "skipped": {}}}   # the pass's writes for
+#                                          idle leaves from the boot's own parse (T376): looked at, written, deferred for the budget,
+#                                          skipped per the writer's reason
 _ASM_CKPT_LOCK = threading.Lock()
 _ASM_CKPT_SAID = set()             # (path, reason) said once per process
 _LAZY_FILES = {}                   # rompuuid -> {fsid: path}: where hydrate finds a lazy atom's record
@@ -4855,7 +4858,31 @@ def asm_checkpoint_stats():
     with _ASM_CKPT_LOCK:
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
         out["hydratedBy"] = dict(out["hydratedBy"])
+        cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
     return out
+
+
+def asm_converge_stat(name, n=1):
+    """Count the converge pass's assembly work under asmCheckpoint.converge (T376)."""
+    with _ASM_CKPT_LOCK:
+        cv = _ASM_CKPT_STATS["converge"]
+        cv[name] = cv.get(name, 0) + n
+
+
+def asm_converge_skip(reason):
+    with _ASM_CKPT_LOCK:
+        sk = _ASM_CKPT_STATS["converge"]["skipped"]
+        sk[reason] = sk.get(reason, 0) + 1
+
+
+def asm_entry_whole(leaf_path, rompuuid, sdk_human=False):
+    """Whether this process holds a WHOLE (unrestored) assembly entry for the session over `leaf_path`: the boot's own parse,
+    which the converge pass writes an idle leaf's document from (T376); a restored entry's document already stands, and no
+    entry means no write (never a parse of the pass's own)."""
+    key = (os.path.realpath(str(leaf_path)), str(rompuuid), bool(sdk_human))
+    with _ASM_LOCK:
+        entry = _ASM_CACHE.get(key)
+    return entry is not None and not entry.get("prefix") and not entry.get("preTurns")
 
 
 def _atom_kind(a):
@@ -5620,6 +5647,9 @@ def _hydrate_one(a, rec):
     a.pop("lazy", None)
 
 
+_HYDRATE_TEXT_READERS = ("_unit_text", "_prompt_text", "_atom_text")   # the judges' shared text readers: attributed with their caller
+
+
 def hydrate(atoms, rompuuid=None, by=None):
     """Fill the bodies of the lazy atoms among `atoms` (a list, a turn's atoms, a whole session's turns) from their
     records on disk, one open per file and one seek-read per atom, through a byte-capped memo; returns how many
@@ -5634,6 +5664,8 @@ def hydrate(atoms, rompuuid=None, by=None):
     if by is None:
         try:
             by = sys._getframe(1).f_code.co_name
+            if by in _HYDRATE_TEXT_READERS:               # a text reader every walker shares says nothing about WHO walked: its
+                by = "%s<-%s" % (by, sys._getframe(2).f_code.co_name)   #  own caller is recorded with it (T377: naming the boot's reader)
         except Exception:
             by = "?"
     filled, by_file = 0, {}

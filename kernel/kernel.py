@@ -9826,6 +9826,8 @@ CKPT_PERIOD_S = float(os.environ.get("ROMP_CKPT_PERIOD_S", "30"))   # a session 
 CKPT_CONVERGE_MS = em._CKPT_CONVERGE_MS_DEFAULT   # the converge pass's wall budget per pusher cycle (T360); 0 turns the pass off and the
 #                                                    quiescence drop's write with it (T362); the event model reads the knob so both reach
 #                                                    the drop before the first cycle begins
+ASM_CONVERGE = os.environ.get("ROMP_ASM_CONVERGE", "1") != "0"   # the pass writes idle leaves' ASSEMBLY documents from the boot's own
+#                                                                    parse (T376); 0 turns that off (the pass's own switch covers it too)
 CKPT_CONVERGE_BYTES = em._CKPT_CYCLE_CAP_DEFAULT   # ...and its bytes (documents written plus leaves read for a heal), the cycle budget the
 #                                                     quiescence drop's writes share (T362); 0 turns those writes off too (the drop then pops as before)
 
@@ -9934,16 +9936,20 @@ def _converge_checkpoints(now):
     so an idle session's document is written once and then left alone. A quiescent leaf (T361) is refused unless the boot's
     own whole read is still resident, in which case the prime's launch fold writes its document at the quiescence drop from
     that read (`viaDrop`), no read of the pass's own. Returns the documents written."""
-    if CKPT_CONVERGE_MS <= 0 or not em.checkpoint_has_work():
+    if CKPT_CONVERGE_MS <= 0:
         _CKPT_JUST_WRITTEN.clear()
-        return 0                                           # off (ROMP_CKPT_CONVERGE_MS=0), or nothing dirty and nothing cold: a quiet
-    just_written = set(_CKPT_JUST_WRITTEN); _CKPT_JUST_WRITTEN.clear()   #  cycle costs the pass no lock and no stat (T361)
+        return 0                                           # off (ROMP_CKPT_CONVERGE_MS=0): neither the fold documents nor the assembly ones
+    t0 = time.monotonic()
+    if not em.checkpoint_has_work():
+        _CKPT_JUST_WRITTEN.clear()                         # nothing dirty and nothing cold: the fold work costs no lock and no stat
+        return _converge_assembly(now, t0)                 #  (T361); the assembly step has its own done table (T376)
+    just_written = set(_CKPT_JUST_WRITTEN); _CKPT_JUST_WRITTEN.clear()
     cands = [p for p in em.checkpoint_converge_candidates() if p not in just_written and not _converge_skipped(p)]
     if not cands:
-        return 0
+        return _converge_assembly(now, t0)
     em.converge_stat("passes")
     leaves = {str(s.get("path")) for s in _sessions(now) if s.get("path")}
-    t0 = time.monotonic(); n = 0
+    n = 0
     for i, p in enumerate(cands):
         if i and (time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0 or not em.checkpoint_cycle_room(0)):
             em.converge_stat("deferred", len(cands) - i)   # gated on candidates PROCESSED, not documents written: a first
@@ -9990,6 +9996,82 @@ def _converge_checkpoints(now):
             em.converge_stat("writes"); em.converge_stat("bytes", size); em.checkpoint_cycle_charge(size)
         else:
             em.converge_stat("failed"); _converge_skip(p)  # nothing to write, or the write failed: not again until the file changes
+    return n + _converge_assembly(now, t0)
+
+
+_ASM_CONVERGE_DONE = {}             # leaf -> the file's (mtime_ns, size) once its assembly document stands, was written here, or the
+#                                     writer refused it for a property of its cut (T376): looked at once per file state, never per cycle
+_ASM_CONVERGE_BLIP = {}             # leaf -> the file state under which the writer's one blip retry was spent
+_ASM_CONVERGE_NOENTRY = {}          # leaf -> the file state under which "no entry" was counted (once, not per cycle)
+_ASM_STRUCTURAL = set(em._ASM_SKIP_STRUCTURAL) | {"noBoundary", "written", "restored"}   # the writer's reasons that hold until the cut moves
+
+
+def _converge_assembly(now, t0):
+    """The converge pass's assembly step (T376): an idle session never settles, so its leaf never had an assembly document
+    and the parse read it whole at every boot (31 of 60 leaves on the devbox, about 2.5 GB, the boot's remaining cost).
+    For every session leaf that is quiescent, has no assembly document on disk, and whose WHOLE assembly entry the boot's own
+    parse built is in memory, the document is written from that entry through the settle's writer (`asm_checkpoint_write`,
+    with the parse store's tree as the settle hands it): no read of records, a stat per file and the cut's guard. Charged to
+    the cycle's byte budget (an estimate from the leaf's size, trued up), deferred over it; bounded by the pass's wall. A
+    leaf is looked at once per file state: written, or refused by the writer for a property of its cut (no boundary, an
+    unsplittable cut, an oversize document), it enters the done table; a blip (a stat, the offsets) is retried once; no entry
+    in the assembly cache is a counted skip, never a parse of the pass's own. Live leaves are the settle's. Returns the
+    documents written."""
+    if not ASM_CONVERGE:
+        return 0
+    for table in (_ASM_CONVERGE_DONE, _ASM_CONVERGE_BLIP, _ASM_CONVERGE_NOENTRY):
+        if len(table) > 4096:                              # bounded like the pass's skip table (a leaf per session ever seen)
+            table.clear()
+    n = 0
+    for s in _sessions(now):
+        leaf, sid = s.get("path"), s.get("sid")
+        if not leaf or not sid:
+            continue
+        key = str(leaf)
+        st = _stat_key_ns(key)
+        if st is None or _ASM_CONVERGE_DONE.get(key) == st:
+            continue
+        if time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0:
+            break                                          # the cycle's wall: the rest wait for the next one
+        cp = em._asm_ckpt_file(key)
+        if cp is None:
+            return n
+        if cp.exists():
+            _ASM_CONVERGE_DONE[key] = st                   # the settle's document, or an earlier cycle's, stands
+            continue
+        if not em.file_quiescent(key):
+            continue                                       # a live leaf: its settle writes the document
+        human = _display_sdk_human(sid)
+        if not em.asm_entry_whole(key, sid, human):
+            if _ASM_CONVERGE_NOENTRY.get(key) != st:       # the parse never ran here, or the entry left the cache: nothing to write
+                _ASM_CONVERGE_NOENTRY[key] = st; em.asm_converge_skip("noEntry")   #  from, and never a parse of our own
+            continue
+        em.asm_converge_stat("candidates")
+        est = max(4096, st[1] // 64)
+        if not em.checkpoint_cycle_take(est):
+            em.asm_converge_stat("deferred")
+            break
+        before = em.asm_checkpoint_stats()["skipped"]
+        try:
+            wrote = em.asm_checkpoint_write(key, sid, human, tree=_stored_tree(key, sid))
+        except Exception:
+            sys.stderr.write("assembly converge: %s\n" % traceback.format_exc()); wrote = False
+        if wrote:
+            try:
+                size = cp.stat().st_size
+            except OSError:
+                size = 0
+            em.asm_converge_stat("writes"); em.asm_converge_stat("bytes", size); em.checkpoint_cycle_charge(size - est)
+            _ASM_CONVERGE_DONE[key] = st; n += 1
+            continue
+        em.checkpoint_cycle_charge(-est)                   # nothing written: the take goes back
+        after = em.asm_checkpoint_stats()["skipped"]
+        reason = next((r for r in after if after[r] > before.get(r, 0)), "failed")
+        em.asm_converge_skip(reason)
+        if reason in _ASM_STRUCTURAL or _ASM_CONVERGE_BLIP.get(key) == st:
+            _ASM_CONVERGE_DONE[key] = st                   # a property of the cut, or the blip's one retry spent: done for this file state
+        else:
+            _ASM_CONVERGE_BLIP[key] = st
     return n
 
 
