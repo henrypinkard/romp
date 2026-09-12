@@ -11,6 +11,7 @@ zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no d
 
 Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
+import collections
 import copy
 import math
 import contextlib, json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid, tempfile, stat, gzip, collections, functools, fcntl, inspect, secrets, importlib.util
@@ -566,6 +567,7 @@ class _PerfStats:
                           ("intrMarks", _intr_marks_memo_report), ("statesOverlay", _states_overlay_report),
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
+                          ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
                           # the chat build's fixed-cost memos (2026-09-09): the live merge's transcript-side
                           # sets, the fold's sealed postal cards, the ledger's goal-tree walk, the task fold
                           ("chatMergeSets", _merge_sets_report), ("chatPostal", _chat_postal_report),
@@ -39844,8 +39846,55 @@ def _seg_last_text(atoms):
     return (last_sub or last_any), last_sub is not None
 
 
-_SUMMARY_ANCHOR_MEMO = {}       # (fsid, nid, seg key, line hash, turn end) -> (uuid, quote): one text read per brief per segment
-_SUMMARY_ANCHOR_MEMO_MAX = 4096
+def _summary_anchor_memo_bound():
+    """The memo's byte bound: ROMP_SUMMARY_ANCHOR_MEMO_BYTES when it names a positive integer, else a
+    two-hundred-fifty-sixth of the machine's memory (the _spend_tree_memo_bound idiom; 32 MB on an 8 GB box, ample
+    for entries of a few hundred bytes, one per brief per segment). Read once at import (SUMMARY_ANCHOR_MEMO_BYTES);
+    GET /perf reports it beside the memo's bytes and counters (memos.summaryAnchor). The user's caches rule
+    (2026-09-11): a byte bound as a fraction of memory with an override, never a count literal."""
+    raw = os.environ.get("ROMP_SUMMARY_ANCHOR_MEMO_BYTES", "")
+    try:
+        if raw and int(raw) > 0:
+            return int(raw)
+    except ValueError:
+        pass
+    return _mem_total_bytes() // 256
+
+
+SUMMARY_ANCHOR_MEMO_BYTES = _summary_anchor_memo_bound()
+_SUMMARY_ANCHOR_MEMO = collections.OrderedDict()   # key -> ((uuid, quote), size): the order is age, a hit moves to the end
+_SUMMARY_ANCHOR_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": SUMMARY_ANCHOR_MEMO_BYTES}
+#                          the key: (fsid, nid, seg key, the line's hash, the turn's end): one text read per brief per segment
+
+
+def _summary_anchor_memo_get(key):
+    hit = _SUMMARY_ANCHOR_MEMO.get(key)
+    if hit is None:
+        _SUMMARY_ANCHOR_STATS["miss"] += 1
+        return None
+    _SUMMARY_ANCHOR_MEMO.move_to_end(key)          # a hit is the newest again: an eviction takes a colder entry first
+    _SUMMARY_ANCHOR_STATS["hit"] += 1
+    return hit[0]
+
+
+def _summary_anchor_memo_put(key, out):
+    size = sum(2 * len(str(x)) for x in key) + sum(2 * len(str(x)) for x in out if x) + 64
+    old = _SUMMARY_ANCHOR_MEMO.pop(key, None)
+    if old is not None:
+        _SUMMARY_ANCHOR_STATS["bytes"] -= old[1]
+    _SUMMARY_ANCHOR_MEMO[key] = (out, size)
+    _SUMMARY_ANCHOR_STATS["bytes"] += size
+    while len(_SUMMARY_ANCHOR_MEMO) > 1 and _SUMMARY_ANCHOR_STATS["bytes"] > SUMMARY_ANCHOR_MEMO_BYTES:
+        _k, (_o, _s) = _SUMMARY_ANCHOR_MEMO.popitem(last=False)   # oldest first; sheds only the deficit, never the whole
+        _SUMMARY_ANCHOR_STATS["bytes"] -= _s
+        _SUMMARY_ANCHOR_STATS["evict"] += 1
+    _SUMMARY_ANCHOR_STATS["entries"] = len(_SUMMARY_ANCHOR_MEMO)
+
+
+def _summary_anchor_memo_report():
+    """The memo's counters with its occupancy and bound: GET /perf memos.summaryAnchor (entries, bytes, bound, hit,
+    miss, evict)."""
+    return dict(_SUMMARY_ANCHOR_STATS, entries=len(_SUMMARY_ANCHOR_MEMO), bound=SUMMARY_ANCHOR_MEMO_BYTES)
 
 
 def _text_atoms(atoms):
@@ -39874,14 +39923,14 @@ def _summary_text_anchor(turn_seg, line, memo_key=None):
     long turn's first assistant atom was a shell call, and four landings filed pointer-exact on a collapsed tool
     group while the quoted questions were the turn's last text atom, thirteen minutes later). `quote` is the located
     span, sent as the click's anchorQuote so the chat highlights it. Bodies are read only for the candidate text
-    atoms of one turn, once per brief per segment (the memo), so a build costs nothing on a repeat."""
+    atoms of one turn, once per brief per segment (the byte-bounded memo), so a build costs nothing on a repeat."""
     if not turn_seg:
         return None, None
     turn, seg_atoms = turn_seg
     key = None
     if memo_key is not None:
         key = tuple(memo_key) + (hash(str(line or "")), (turn or {}).get("end") or (turn or {}).get("t"))
-        hit = _SUMMARY_ANCHOR_MEMO.get(key)
+        hit = _summary_anchor_memo_get(key)
         if hit is not None:
             return hit
     seg_texts = _text_atoms(seg_atoms)
@@ -39903,9 +39952,7 @@ def _summary_text_anchor(turn_seg, line, memo_key=None):
         last = (seg_texts or turn_texts or [None])[-1]
         out = ((last or {}).get("uuid"), None)
     if key is not None:
-        if len(_SUMMARY_ANCHOR_MEMO) >= _SUMMARY_ANCHOR_MEMO_MAX:
-            _SUMMARY_ANCHOR_MEMO.clear()
-        _SUMMARY_ANCHOR_MEMO[key] = out
+        _summary_anchor_memo_put(key, out)
     return out
 
 

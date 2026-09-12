@@ -109,5 +109,60 @@ class TheWiring(unittest.TestCase):
         self.assertIn("summaryAnchorUuid?: string | null;                            // the brief/summary line's own landing", ts)
 
 
+class TheMemoIsBoundedByBytes(unittest.TestCase):
+    """The summary-anchor memo follows the user's caches rule (2026-09-11): a byte bound as a fraction of machine memory
+    with an environment override, oldest-first eviction that sheds only the deficit, counters under /perf; never a
+    count literal with a wholesale clear (the manager's fold on T388)."""
+    def setUp(self):
+        self._bound = km.SUMMARY_ANCHOR_MEMO_BYTES
+        km._SUMMARY_ANCHOR_MEMO.clear()
+        for k in ("hit", "miss", "evict", "bytes"):
+            km._SUMMARY_ANCHOR_STATS[k] = 0
+
+    def tearDown(self):
+        km.SUMMARY_ANCHOR_MEMO_BYTES = self._bound
+        km._SUMMARY_ANCHOR_MEMO.clear()
+
+    def test_the_bound_is_a_fraction_of_memory_with_an_override_and_no_count_literal(self):
+        from unittest import mock
+        self.assertEqual(km._summary_anchor_memo_bound(), km._mem_total_bytes() // 256)
+        with mock.patch.dict(os.environ, {"ROMP_SUMMARY_ANCHOR_MEMO_BYTES": "8192"}):
+            self.assertEqual(km._summary_anchor_memo_bound(), 8192)
+        with mock.patch.dict(os.environ, {"ROMP_SUMMARY_ANCHOR_MEMO_BYTES": "lots"}):
+            self.assertEqual(km._summary_anchor_memo_bound(), km._mem_total_bytes() // 256, "an unreadable override falls back to the fraction")
+        self.assertEqual(km.SUMMARY_ANCHOR_MEMO_BYTES, km._summary_anchor_memo_bound(), "the module constant IS the fraction, no literal")
+        self.assertFalse(hasattr(km, "_SUMMARY_ANCHOR_MEMO_MAX"), "no count cap")
+        src = open(os.path.join(ROOT, "kernel", "kernel.py"), encoding="utf-8").read()
+        self.assertNotIn("_SUMMARY_ANCHOR_MEMO.clear()", src, "no wholesale clear on the cap")
+        self.assertIn('("summaryAnchor", _summary_anchor_memo_report)', src, "reported under /perf beside the other memos")
+
+    def test_a_hit_survives_an_eviction_of_a_colder_entry_and_the_counters_say_so(self):
+        seg = [tool("a1", T0), text("t5", T0 + 10, QUESTIONS)]
+        turn = {"t": T0, "end": T0 + 30, "atoms": seg}
+        sid = "11111111-2222-3333-4444-555555555555"
+        km.SUMMARY_ANCHOR_MEMO_BYTES = 1      # any second entry is over the bound: the put sheds the coldest, keeps the newest
+        km._summary_text_anchor((turn, seg), BRIEF, memo_key=(sid, "g1", "k1"))      # A: a miss, stored
+        km._summary_text_anchor((turn, seg), BRIEF, memo_key=(sid, "g2", "k2"))      # B: a miss, stored; A is the colder
+        self.assertEqual(km._SUMMARY_ANCHOR_STATS["evict"], 1, "over the bound: one eviction, the oldest")
+        self.assertEqual(len(km._SUMMARY_ANCHOR_MEMO), 1)
+        self.assertIn((sid, "g2", "k2", hash(BRIEF), T0 + 30), km._SUMMARY_ANCHOR_MEMO, "the newest survives, the coldest went")
+        km.SUMMARY_ANCHOR_MEMO_BYTES = 10 ** 6
+        km._summary_text_anchor((turn, seg), BRIEF, memo_key=(sid, "g3", "k3"))      # C stored beside B
+        before = km._SUMMARY_ANCHOR_STATS["hit"]
+        km._summary_text_anchor((turn, seg), BRIEF, memo_key=(sid, "g2", "k2"))      # a HIT on B: B is now the newest
+        self.assertEqual(km._SUMMARY_ANCHOR_STATS["hit"], before + 1)
+        km.SUMMARY_ANCHOR_MEMO_BYTES = 1
+        km._summary_text_anchor((turn, seg), BRIEF, memo_key=(sid, "g4", "k4"))      # D: sheds the coldest, C, never the hit B
+        keys = list(km._SUMMARY_ANCHOR_MEMO)
+        self.assertNotIn((sid, "g3", "k3", hash(BRIEF), T0 + 30), keys, "the colder entry went")
+        self.assertIn((sid, "g4", "k4", hash(BRIEF), T0 + 30), keys)
+        rep = km._summary_anchor_memo_report()
+        for k in ("entries", "bytes", "bound", "hit", "miss", "evict"):
+            self.assertIn(k, rep)
+        self.assertEqual(rep["entries"], len(km._SUMMARY_ANCHOR_MEMO))
+        self.assertEqual(rep["bound"], km.SUMMARY_ANCHOR_MEMO_BYTES)
+        self.assertGreater(rep["bytes"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
