@@ -95,7 +95,11 @@ test("the paused strip names a navigation's detach, with the opened message's cl
   assert.ok(strip.indexOf("livePausedTxt.textContent = livePausedText(") > strip.indexOf("document.body.appendChild(livePausedEl);"), "…after the one-time build, so a later detach changes the words");
   const win = RENDER.slice(RENDER.indexOf("function chatWindow(msg: any) {"), RENDER.indexOf("function chatMore(msg: any) {"));
   assert.ok(win.includes("s.detachNav = detached && ask?.named ? { t: ask.t } : null;"), "a landed window records whether a card, lane or deep link detached, and its time");
-  assert.ok(RENDER.includes("pendingWindowNav.set(sid, { nav, named: nav && (pendingAnchorT != null || !!kind), t: nav ? (pendingAnchorT ?? null) : null });"), "the ask carries the navigation's time to the reply, and whether its frame carried a kind or a time (a reload restore has neither: the plain sentence)");
+  assert.ok(RENDER.includes("pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null });"), "the ask carries the navigation's time to the reply, and whether it was a click (any anchor landing without a keep offset; the reload restore of the reader's own place keeps the plain sentence)");
+  // the three direct landings (a notch, a reply chip, a comment tick) arm neither kind nor time: still a click, named as opened
+  assert.match(RENDER, /markjump: \(elx\) => \{\s*\n\s*const uuid = elx\.dataset\.uuid;\s*\n\s*if \(!uuid \|\| !activeId\) return;\s*\n\s*flashedAnchor = null;\s*\n\s*scrollToAnchor\(uuid\);/, "the notch lands directly");
+  assert.match(RENDER, /replyjump: \(elx\) => \{[\s\S]*?flashedAnchor = null;[^\n]*\n\s*if \(scrollToAnchor\(uuid\)\) \{/, "the reply chip lands directly");
+  assert.match(RENDER, /cmtjump: \(elx\) => \{[\s\S]*?flashedAnchor = null;\s*\n\s*scrollToAnchor\(uuid\);/, "the comment tick lands directly");
 });
 
 test("an older-history ask needs an upward or unchanged move; a downward gesture never asks (T366)", () => {

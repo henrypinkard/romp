@@ -10924,7 +10924,7 @@ function writeScroll(content: HTMLElement, top: number, writer: string, stick = 
   const before = content.scrollTop;
   content.scrollTop = top;
   const after = content.scrollTop;
-  lastScrollWriteAfter = after;
+  if (after !== before) lastScrollWriteAfter = after;   // a write that moved the view owes exactly one scroll event, its echo; one that did not move owes none, and must not eat a later gesture landing near its target (verifier low, round two)
   lastKnownSh = content.scrollHeight;
   if (after !== before) scrollDiagRow("scrollwrite", scrollWriteRow(activeId || "", writer, before, after, stick, content.scrollHeight, content.clientHeight));
 }
@@ -13057,8 +13057,8 @@ function updateReplyChips(): void {
     const cls = classifyScroll(c.scrollTop, lastScrollWriteAfter);
     const gv = activeId ? views.get(activeId) : null;
     if (gv) gv.gestureScroll = cls === "gesture";   // read once by the edge check this event runs next (T366): a write's echo is no gesture
-    if (cls === "write-echo") lastScrollWriteAfter = null;
-    else scrollDiagRow("scrollgesture", { sid: activeId || "", top: c.scrollTop, gesture: true, sh: c.scrollHeight, ch: c.clientHeight });
+    lastScrollWriteAfter = null;   // one-shot: the first event after a write consumes its marker, echo or not (a gesture that lands within a pixel of an older write's target is a gesture)
+    if (cls !== "write-echo") scrollDiagRow("scrollgesture", { sid: activeId || "", top: c.scrollTop, gesture: true, sh: c.scrollHeight, ch: c.clientHeight });
     lastKnownSh = c.scrollHeight;   // sh/ch: a clamp reads top == sh - ch after sh dropped (T262e)
   }, { passive: true });
 }
@@ -17070,15 +17070,17 @@ function olderOnServer(s: Session): boolean {
 // sid -> the window was asked by a NAVIGATION (a card, a notch, a deep link, a seek, a reload's restore of the reader's
 // saved place: every anchor landing but one), not by the keep-offset RE-LAND of the reader's own row across a rebuild
 // (relandAsk), the one ask that exists only to keep their row on screen and must never move them off the live run (T366:
-// a window landing mid-flick detached a reader; a navigation's window may, a re-land's never); `named` says the ask came
-// from a frame that carried a kind or the message's time (a card or lane click, a deep link), which the strip names
+// a window landing mid-flick detached a reader; a navigation's window may, a re-land's never); `named` says the ask was a
+// CLICK of the reader's (a card, a lane, a deep link, a notch, a reply chip, a comment tick: any anchor landing with no keep
+// offset), which the strip names as the message they opened, with its time when the frame carried one; the reload restore
+// of their own saved place arms a keep offset and keeps the plain sentence (verifier low, round two)
 const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null }>();
 function requestAround(sid: string, uuid: string): boolean {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || loadingOlder.has(sid)) return false;
   const nav = !relandAsk;
   const kind = pendingAnchorKind ?? pendingAnchorIntent ?? null;
-  pendingWindowNav.set(sid, { nav, named: nav && (pendingAnchorT != null || !!kind), t: nav ? (pendingAnchorT ?? null) : null });
+  pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null });
   // every window ask leaves a diagnostic row (T366: the rows of the report had the reply's landing but nothing said
   // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked;
   // under the same per-minute budget as the other scroll rows (verifier low 5)
