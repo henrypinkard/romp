@@ -21,6 +21,8 @@ type El = {
   setAttribute: (k: string, v: string) => void; getAttribute: (k: string) => string | null; addEventListener: () => void; querySelector: () => null;
 };
 function mkEl(tag: string): El {
+  const style: Record<string, string> & { setProperty?: (k: string, v: string) => void } = {};
+  style.setProperty = (k, v) => { style[k] = v; };
   const e: El = {
     tag, className: "", id: "", children: [], parent: null, textContent: "", innerHTML: "", title: "", attrs: {}, dataset: {}, type: "", href: "", download: "", src: "", alt: "",
     classList: {
@@ -36,6 +38,8 @@ function mkEl(tag: string): El {
     setAttribute: (k, v) => { e.attrs[k] = v; }, getAttribute: (k) => (k in e.attrs ? e.attrs[k] : null),
     addEventListener: () => {}, querySelector: () => null,
   };
+  (e as El & { style: typeof style }).style = style;
+  (e as El & { getBoundingClientRect: () => unknown }).getBoundingClientRect = () => ({ left: 0, right: 30, top: 0, bottom: 22, width: 30, height: 22 });   // the floor measurement reads the group's controls
   return e;
 }
 function classes(e: El): string[] { return e.className.split(/\s+/).filter(Boolean); }
@@ -52,7 +56,8 @@ function wins(a: [number, number, number], b: [number, number, number]): boolean
 }
 
 type Nav = Array<{ path: string; sid?: string | null; pin?: string }>;
-function lift(kind: "img" | "pdf", nav: Nav = [], clipboard = false): { body: El; open: (p: string, sid?: string | null, pin?: string) => void; keys: Array<(ev: { key: string; stopPropagation: () => void; preventDefault: () => void }) => void> } {
+type Win = { setTimeout: (fn: () => void, ms: number) => number; clearTimeout: (h: number) => void };
+function lift(kind: "img" | "pdf", nav: Nav = [], clipboard: boolean | { write: () => Promise<void> } = false, win?: Win): { body: El; open: (p: string, sid?: string | null, pin?: string) => void; keys: Array<(ev: { key: string; stopPropagation: () => void; preventDefault: () => void }) => void> } {
   const a = PREVIEW.indexOf("export function openLightbox(path: string, sid?: string | null, pin?: string): void {");
   const b = PREVIEW.indexOf("\n}\n", a);
   assert.ok(a > 0 && b > a, "openLightbox: anchors not found; re-anchor");
@@ -60,16 +65,17 @@ function lift(kind: "img" | "pdf", nav: Nav = [], clipboard = false): { body: El
   const body = mkEl("body");
   const keys: Array<(ev: { key: string; stopPropagation: () => void; preventDefault: () => void }) => void> = [];
   const document = { createElement: mkEl, getElementById: () => null, body, addEventListener: (_t: string, fn: (ev: unknown) => void) => { keys.push(fn as never); }, removeEventListener: () => {} };
-  const H = { kind, nav, clipboard };
+  const H = { kind, nav, clipboard: !!clipboard, clip: typeof clipboard === "object" ? clipboard : null, window: win || null };
   const prelude = `
     const previewKind = (p) => H.kind;
     const fileUrl = (p, sid) => "/file?path=" + encodeURIComponent(p) + "&sid=" + (sid || "");
     const wirePinchZoom = (stage, img) => ({ retarget: () => {} });
     const lightboxNav = H.nav.length ? (() => H.nav) : null;
     const ICON_DOWNLOAD = '<svg data-icon="download"/>', ICON_COPY = '<svg data-icon="copy"/>', ICON_CHECK = '<svg data-icon="check"/>', ICON_CROSS = '<svg data-icon="cross"/>';
-    const navigator = H.clipboard ? { clipboard: { write: () => Promise.resolve() } } : {};
+    const navigator = H.clipboard ? { clipboard: H.clip || { write: () => Promise.resolve() } } : {};
+    const fetch = () => Promise.resolve({ blob: () => Promise.resolve({ type: "image/png" }) });
     const ClipboardItem = H.clipboard ? function ClipboardItem() {} : undefined;
-    const window = { setTimeout: () => 1, clearTimeout: () => {} };
+    const window = H.window || { setTimeout: () => 1, clearTimeout: () => {} };
   `;
   const open = (new Function("H", "document", prelude + code + "\nreturn openLightbox;") as (h: unknown, d: unknown) => (p: string, sid?: string | null, pin?: string) => void)(H, document);
   return { body, open, keys };
@@ -182,4 +188,33 @@ test("styles: the lightbox's own chip rules are gone, the shared bar rules stand
   assert.equal((CSS.match(/^\.fileview-bar \{/gm) || []).length, 1);
   assert.match(CSS, /^\.fileview-btn\.fileview-icon \{/m);
   assert.match(CSS, /^a\.fileview-btn \{ text-decoration: none; display: inline-flex; align-items: center; \}/m, "the download anchor wears the button treatment");
+});
+
+test("a second copy press inside the pulse clears the first press's restore timer (the review's low): the dim is never wiped while the write is in flight", async () => {
+  const timers: Array<{ id: number; ms: number; fn: () => void }> = []; const cleared: number[] = []; let nextId = 1;
+  const win: Win = { setTimeout: (fn, ms) => { const id = nextId++; timers.push({ id, ms, fn }); return id; }, clearTimeout: (h) => { cleared.push(h); } };
+  let resolveWrite: (() => void) | null = null;
+  const clip = { write: () => new Promise<void>((res) => { resolveWrite = res; }) };
+  const { body, open } = lift("img", [], clip, win);
+  open("plots/run1.png", "s1");
+  const cp = column(body).children[0].children[1].children[0].children[1] as El & { onclick?: (ev: unknown) => void };
+  assert.ok(classes(cp).includes("romp-lightbox-copy"));
+  const ev = { stopPropagation: () => {} };
+  cp.onclick!(ev);
+  assert.ok(classes(cp).includes("fileview-busy"), "the first press dims in its own tick");
+  resolveWrite!(); await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.deepEqual(timers.map((t) => t.ms), [1400], "the first write landed: the ack pulse's restore timer is armed");
+  assert.ok(classes(cp).includes("ok") && !classes(cp).includes("fileview-busy"));
+  cp.onclick!(ev);   // a second press inside the pulse
+  assert.deepEqual(cleared, [1], "the second press clears the first press's restore timer before its write starts");
+  assert.ok(classes(cp).includes("fileview-busy") && !classes(cp).includes("ok"), "…and dims again");
+  timers[0].fn();   // had the first timer fired anyway, it must not have (cleared); firing it here models the bug: the dim would be wiped
+  resolveWrite!(); await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.deepEqual(timers.map((t) => t.ms), [1400, 1400], "the second write armed its own restore");
+});
+
+test("styles (the review's lows): the column keeps a floor of the controls' width, and the directory absorbs the title's deficit ahead of the basename", () => {
+  assert.match(CSS, /^\.romp-lightbox-inner \{ [^}]*min-width: var\(--lb-acts-w, 0px\);/m, "the floor: the download-and-copy group's width, set by the lightbox when it mounts");
+  assert.match(PREVIEW, /const ctl = Array\.from\(group\.children\) as HTMLElement\[\];\s*\n\s*inner\.style\.setProperty\("--lb-acts-w", Math\.ceil\(ctl\.reduce\(\(a, c\) => a \+ c\.getBoundingClientRect\(\)\.width, 0\) \+ 4 \* Math\.max\(0, ctl\.length - 1\) \+ 8\) \+ "px"\);/, "read off the group's own controls (intrinsic widths), once per open, after the mount");
+  assert.match(CSS, /^#romp-lightbox \.romp-lightbox-bar \.fileview-dir \{ flex-shrink: 1000; \}/m, "the directory gives up its room first; the basename shrinks only when it does not fit alone");
 });

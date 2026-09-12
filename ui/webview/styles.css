@@ -3421,7 +3421,7 @@ body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: 
    browser's native viewer. Above every overlay layer. Backdrop click / Esc / ✕ closes. */
 #romp-lightbox { position: fixed; inset: 0; z-index: 1300; background: rgba(0, 0, 0, 0.72);
   display: flex; align-items: center; justify-content: center; }
-.romp-lightbox-inner { display: flex; flex-direction: column; gap: 8px; max-width: 92vw; max-height: 90vh; }
+.romp-lightbox-inner { display: flex; flex-direction: column; gap: 8px; max-width: 92vw; max-height: 90vh; min-width: var(--lb-acts-w, 0px); }   /* the floor: the bar's download-and-copy group, measured by openLightbox (review, round two) */
 .romp-lightbox-img { max-width: 92vw; max-height: 82vh; object-fit: contain; border-radius: 8px; align-self: center;
   box-shadow: var(--shadow-modal);
   transform-origin: 0 0; will-change: transform; }   /* pinch-zoom renders translate+scale from this corner (T162; pinch.ts) */
@@ -3445,6 +3445,9 @@ body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: 
 #romp-lightbox .romp-lightbox-bar { padding: 0 2px 6px; contain: inline-size; }
 #romp-lightbox .romp-lightbox-bar .fileview-name { min-width: 0; overflow: hidden; }
 #romp-lightbox .romp-lightbox-bar .fileview-base { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* the viewer's rule kept as far as the column allows (review, round two): the directory gives up its room first, by a shrink weight
+   a thousand times the basename's, so the basename reads whole down to the width where it alone does not fit */
+#romp-lightbox .romp-lightbox-bar .fileview-dir { flex-shrink: 1000; }
 /* the backdrop is 72% black in BOTH themes, so inside the lightbox the bar's tokens are the dark theme's whatever the
    page wears: the light theme's near-black prose, hairline and clay accent would sit on a dark field otherwise */
 #romp-lightbox { --fg: #e8e8e8; --dim: #b8b8b8; --accent: #9cd2ff; --accent-fg: #0c1a2e; --accent-wash: rgba(156, 210, 255, 0.12);

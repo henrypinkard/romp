@@ -399,6 +399,7 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
     say(COPY_SVG, "Copy image", "", null);
     btn.onclick = (ev) => {
       ev.stopPropagation();                                // copying must not also dismiss
+      say(COPY_SVG, "Copy image", "", null);               // a press inside the last pulse: its check and its restore timer go, so the restore never wipes this press's dim (review, round two)
       btn.classList.add("fileview-busy");                  // the same-tick acknowledgement
       const src = curImg!().src;
       const png = (async () => {
@@ -439,6 +440,13 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
   wrap.onclick = (ev) => { if (ev.target === wrap) dismiss(); };   // backdrop closes; content clicks don't
   document.addEventListener("keydown", onKey, true);
   document.body.appendChild(wrap);
+  // the column's FLOOR (review, round two): a picture narrower than the download-and-copy group (about 68px) let the group run
+  // out of the column to the left, since the bar contributes no intrinsic width (contain: inline-size: the picture sets the
+  // column, never the path text). The floor is the GROUP's own width, read off its controls (their widths are intrinsic:
+  // flex 0 0 auto buttons in a constrained box still measure themselves), set once per open as the variable the sheet reads
+  // (.romp-lightbox-inner min-width). The close may wrap beneath the group under a tiny picture; the picture centres under them.
+  const ctl = Array.from(group.children) as HTMLElement[];
+  inner.style.setProperty("--lb-acts-w", Math.ceil(ctl.reduce((a, c) => a + c.getBoundingClientRect().width, 0) + 4 * Math.max(0, ctl.length - 1) + 8) + "px");
 }
 
 // FULL-SIZE inline render for a mentioned image in the CHAT (the user 2026-07-20, who wanted not even a
