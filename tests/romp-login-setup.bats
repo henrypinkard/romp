@@ -7,6 +7,8 @@
 # fails loudly. The script talks to the terminal (/dev/tty), which bats has none of, so every run gets a
 # pseudo-terminal from script(1); its output arrives with carriage returns, which the substring checks tolerate.
 #
+# Negative checks are counts, never a bare `! cmd` before another command, which bats cannot see fail (tests/test_bats_bare_negation.py).
+#
 # Nothing here may contain a credential-shaped literal: gitleaks scans this repo, and a token written out longhand
 # would flag the very test that proves the filter. The synthetic token is assembled at run time.
 
@@ -77,7 +79,7 @@ run_setup() { run env SHELL=/bin/bash script -qec "$(printf '%q ' "$SCRIPT" "$@"
 
 assert_no_token_in_output() { [[ "$output" != *"$TOK"* ]] || { echo "the token reached the output"; return 1; }; }
 assert_no_token_in_args() {
-    ! grep -q -- "$TOK" "$LOG" || { echo "the token rode a command's arguments: $(sed "s/$TOK/<token>/g" "$LOG")"; return 1; }
+    [ "$(grep -c -- "$TOK" "$LOG")" -eq 0 ] || { echo "the token rode a command's arguments: $(sed "s/$TOK/<token>/g" "$LOG")"; return 1; }
 }
 assert_nothing_left() { [ -z "$(ls -A "$TMPDIR")" ] || { echo "temporary files were left: $(ls -A "$TMPDIR")"; return 1; }; }
 line_of() { grep -n -- "$1" "$LOG" | head -1 | cut -d: -f1; }
@@ -111,8 +113,8 @@ line_of() { grep -n -- "$1" "$LOG" | head -1 | cut -d: -f1; }
     run_setup Private Second
     [ "$status" -eq 1 ]
     [[ "$output" == *"no token was printed"* ]]
-    ! grep -q '^op item create' "$LOG"
-    ! grep -q '^romp' "$LOG"
+    [ "$(grep -c '^op item create' "$LOG")" -eq 0 ]
+    [ "$(grep -c '^romp' "$LOG")" -eq 0 ]
     assert_nothing_left
 }
 
@@ -120,7 +122,7 @@ line_of() { grep -n -- "$1" "$LOG" | head -1 | cut -d: -f1; }
     export OP_CREATE_FAILS=1
     run_setup Private Second
     [ "$status" -ne 0 ]
-    ! grep -q '^romp' "$LOG"
+    [ "$(grep -c '^romp' "$LOG")" -eq 0 ]
     assert_no_token_in_output
     assert_nothing_left
 }
@@ -165,5 +167,5 @@ line_of() { grep -n -- "$1" "$LOG" | head -1 | cut -d: -f1; }
     [[ "$output" == *"usage:"* ]]
     run_setup Private
     [ "$status" -ne 0 ]
-    ! grep -q '^claude' "$LOG"
+    [ "$(grep -c '^claude' "$LOG")" -eq 0 ]
 }
