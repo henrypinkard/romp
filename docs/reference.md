@@ -1158,7 +1158,11 @@ store already places is yielded with its key and scalars and no text or quote
 (no pre-cut body read), the rest read their text after the placement check;
 the lookup is an index built once per planner call with the episode floor
 taken once per pass, and a consumer that plans a unit yielded as placed reads
-its text then.
+its text then. The planner's own callers take every unit that way (T396): the
+emptiness gate that drops a textless segment is decided from the markers'
+scalars and the user bodies alone, and a work unit's text and quote are read
+by the plan pass after its own filters, so a unit that never reaches the model
+is never read (42.8 MB of assistant bodies per boot before).
 
 What the CLI itself does when its parent goes quiet was measured on Claude Code
 2.1.257 (2026-09-10, the restart-surviving sessions program's stage 3 probe, run

@@ -2659,6 +2659,20 @@ def _prompt_text(atoms):
     return ""
 
 
+def _unit_nonempty(atoms):
+    """Whether `_unit_text(atoms)` would be non-empty, decided from the atoms' scalars and the USER bodies alone (T396):
+    _unit_text frames three sources, a user atom (any author) whose text survives the romp-marker strip, an assistant atom
+    (not an API error) with text, and an assistant tool call. The assistant side is answered by the markers' scalars (nt,
+    the tool calls); the user side reads the user atoms' bodies, small, because a text made only of romp markers strips to
+    nothing (the one case a scalar cannot see). The planner's emptiness gate asks this in place of reading the unit text,
+    which hydrated every assistant body of every unplaced segment at every pass (42.8 MB on one boot)."""
+    for a in atoms:
+        if a.get("type") == "assistant" and not a.get("isApiError") and (em._has_text(a) or em.atom_tool_uses(a)):
+            return True
+    return any(_FOLLOWUP_MARKER_RE.sub("", _atom_text(a)).strip()
+               for a in atoms if a.get("type") == "user" and a.get("author") is not None and em._has_text(a))
+
+
 def _has_asst_work(atoms):
     """True if a unit has any real ASSISTANT output — its own text or a tool_use. The captioner has nothing
     to gloss without it (it refuses or returns empty), so a work-less unit (a bare user message, an
@@ -9126,7 +9140,7 @@ def unit_text_for(seg, phase):
     return _seam_text(seg)
 
 
-def plan_units(session, store=None, floor=_UNSET_FLOOR):
+def plan_units(session, store=None, floor=_UNSET_FLOOR, lazy_text=False):
     """Ordered (seg_id, phase, t, text, human, followup, trigger) planner units for the TWO-RUN model (the
     user 2026-06-21, via link_audit), oldest-first. `trigger` (the user 2026-07-01, via bugs) is the
     segment's trigger atom uuid (seg["trigger"], None for an autonomous/continuation segment with no
@@ -9191,7 +9205,13 @@ def plan_units(session, store=None, floor=_UNSET_FLOOR):
                 if not _memo:                             #  placed yet: a hydration over a restored tree (T377)
                     _memo.append(_seam_text(seg))
                 return _memo[0]
-            if not any(_placed_phase(seg, ph) for ph in ("work", "prompt", "delegation", "live")) and not _wt():
+            _nonempty = []
+
+            def _ne(seg=seg, _nonempty=_nonempty):        # whether the unit text is non-empty: lazy_text decides it from the
+                if not _nonempty:                         #  scalars and the user bodies (_unit_nonempty, T396), never reading
+                    _nonempty.append(_unit_nonempty(seg["atoms"]) if lazy_text else bool(_wt()))   # the assistant bodies
+                return _nonempty[0]
+            if not any(_placed_phase(seg, ph) for ph in ("work", "prompt", "delegation", "live")) and not _ne():
                 continue                                  # an unplaced empty segment drops, as before; a placed segment yields its
             #                                               unit without the emptiness check (no text is read for it), an inert unit
             #                                               at worst, which every consumer skips as placed (review, low 1)
@@ -9207,7 +9227,11 @@ def plan_units(session, store=None, floor=_UNSET_FLOOR):
             def _put(phase, text_fn, human_, followup_, seg=seg, trig=trig):
                 if _placed_phase(seg, phase):             # placed already: the key, time and scalars; no text and no quote read
                     out.append((seg["id"], phase, seg["t"], None, human_, followup_, trig, None)); return
-                t = text_fn()
+                if lazy_text and phase != "prompt":       # T396: the unit's text and quote are read by the consumer, after its own
+                    if _ne():                             #  filters (unit_text_for, _mint_quote: _plan_session's placed-yield road),
+                        out.append((seg["id"], phase, seg["t"], None, human_, followup_, trig, None))   # so a unit that never
+                    return                                #  reaches the model is never read; the emptiness gate is the scalar one.
+                t = text_fn()                             # a prompt unit's text is its one user atom: read here, as before
                 if t:
                     out.append((seg["id"], phase, seg["t"], t, human_, followup_, trig, _quote()))
             if not is_open_final and not _has_asst_work(seg["atoms"]):
@@ -11185,11 +11209,11 @@ def _plan_session(fsid, path, now):
     #                                                   an identical-text twin (crash-heal restart resumes) must
     #                                                   not be swallowed as a "drift" of an already-placed one
     if store.get("placementsV") != PLACEMENTS_V:      # P2: seal/adopt on identity-version change (199118f)
-        ready = [_unit_key(u[0], u[1]) for u in plan_units(session, store, floor=floor)]
+        ready = [_unit_key(u[0], u[1]) for u in plan_units(session, store, floor=floor, lazy_text=True)]
         if _migrate_placements(store, ready, live):
             save_goals(fsid, store)
     units, retired, seen = [], False, set()
-    for u in plan_units(session, store, floor=floor):
+    for u in plan_units(session, store, floor=floor, lazy_text=True):
         seg_id, phase = u[0], u[1]
         key = _unit_key(seg_id, phase)
         if key in seen:                               # plan_units yields one unit per TURN, so a same-second
@@ -11889,7 +11913,7 @@ def fast_forward_placements(fsid, path=None, now=None):
     store = load_goals(fsid)
     placements = store["placements"]
     n = 0
-    for u in plan_units(session, store):
+    for u in plan_units(session, store, lazy_text=True):   # keys alone: no unit text read (T396)
         seg_id, phase = u[0], u[1]
         keys = {_unit_key(seg_id, phase)}
         if phase == "prompt":
