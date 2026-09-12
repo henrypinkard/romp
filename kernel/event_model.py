@@ -676,7 +676,12 @@ def _record_cache_default_budget_bytes(meminfo_text=None):
 _JSONL_CACHE_BUDGET_BYTES = (int(float(os.environ["ROMP_RECORD_CACHE_BUDGET_MB"]) * 1024 * 1024)
                              if os.environ.get("ROMP_RECORD_CACHE_BUDGET_MB") else _record_cache_default_budget_bytes())
 _JSONL_CACHE_BYTES = [0]          # the sum of every held entry's weight, kept in step with _JSONL_CACHE under its lock
-_RECORD_CACHE_STATS = {"inserts": 0, "evictions": 0, "evictedBytes": 0, "budgetEvictions": 0, "dropped": 0, "droppedBytes": 0}
+_RECORD_CACHE_STATS = {"inserts": 0, "evictions": 0, "evictedBytes": 0, "budgetEvictions": 0, "dropped": 0, "droppedBytes": 0,
+                       "wholeReads": {}}   # "kind<-caller" -> {"count", "bytes"}: every read that pulled a file WHOLE (from zero, or a
+#                                          tail entry upgraded to the whole file), named by the reader's kind and the first frame
+#                                          outside this module (T384: the way hydratedBy named the planner; the 0.8 GB of whole
+#                                          reads of restored leaves the per-path bytes could not attribute). A restore's tail read
+#                                          and an append are not whole reads and are not counted here.
 _DROP_AFTER_QUIESCENT_S = float(os.environ.get("ROMP_RECORD_CACHE_DROP_QUIESCENT_S", "120"))   # a file this long unchanged
 #                                   is one whose writer has finished (a subagent that returned): its records are not kept
 
@@ -720,8 +725,11 @@ def record_cache_stats() -> dict:
     """The record cache for /perf: entries, held bytes, the budget, and the counters (inserts, evictions by count and by
     budget, evicted bytes, drop-after-fold drops)."""
     with _JSONL_CACHE_LOCK:
-        return {"entries": len(_JSONL_CACHE), "bytes": _JSONL_CACHE_BYTES[0], "budgetBytes": _JSONL_CACHE_BUDGET_BYTES,
-                "countCap": _JSONL_CACHE_MAX, **_RECORD_CACHE_STATS}
+        out = {"entries": len(_JSONL_CACHE), "bytes": _JSONL_CACHE_BYTES[0], "budgetBytes": _JSONL_CACHE_BUDGET_BYTES,
+               "countCap": _JSONL_CACHE_MAX, **_RECORD_CACHE_STATS}
+        table = _RECORD_CACHE_STATS.get("wholeReads")
+        out["wholeReads"] = {k: dict(v) for k, v in table.items()} if isinstance(table, dict) else {}
+        return out
 
 
 _JSONL_TAIL_GUARD = 64            # bytes of pre-offset content re-verified before an incremental read
@@ -1614,6 +1622,25 @@ def _read_jsonl_incremental(path, on_fail=None):
 
 _TAIL_OK = threading.local()      # .flag: the calling fold accepts a tail entry (set by fold_records around its read)
 _READER_TRACE = bool(os.environ.get("ROMP_READER_TRACE"))   # one stderr line per read that pulled bytes (a diagnosis aid)
+_WHOLE_READ_KINDS = ("zero", "rewrite", "guard", "shrunk", "upgrade")   # the reader's kinds that pull a file whole (T384's counter)
+_WHOLE_READ_PASSTHROUGH = set()   # the CODE objects of the parse family every walker shares (this module's parse_session, the judges'
+#                                   parsed_session, parse_cached and _parse_store, the kernel's _parse, each registered where it is
+#                                   defined): the whole-read row names the first caller beyond them, the real walker. Matched by code
+#                                   object, never by name (round two, low 3: a local helper named like one of them was skipped)
+
+
+def _synthetic_scope(fr):
+    """A comprehension's, generator expression's or lambda's own frame (a code name in angle brackets other than the module's):
+    the attribution walks keep going to the enclosing function. Before Python 3.12 a list, set or dict comprehension runs in
+    its own frame (PEP 709 inlines them from 3.12 on); a generator expression and a lambda keep theirs on every version."""
+    n = fr.f_code.co_name
+    return n.startswith("<") and n != "<module>"
+
+
+def register_whole_read_passthrough(*fns):
+    """Register functions the whole-read attribution walks past (the parse family a walker reaches the reader through)."""
+    for fn in fns:
+        _WHOLE_READ_PASSTHROUGH.add(fn.__code__)
 _LAST_ENTRY = threading.local()   # .ent: the entry the last _read_jsonl_incremental on this thread served
 
 
@@ -1738,6 +1765,21 @@ def _read_jsonl_entry_unlocked(path, on_fail=None, tail_ok=False, tail_from=None
             fh.seek(tail_from)
             tail = fh.read(offset - tail_from)
             _count_read(path, len(tail))                  # the guard capture is a read too (/perf's count is what was pulled)
+            if kind in _WHOLE_READ_KINDS:                 # a whole read: counted by kind and caller on /perf (T384), always on; the
+                try:                                      #  frame walk runs only here, on the rare whole read, never on a tail or an
+                    fr = sys._getframe(1)                 #  append
+                    while fr is not None and (fr.f_code.co_filename == __file__ or fr.f_code in _WHOLE_READ_PASSTHROUGH
+                                              or _synthetic_scope(fr)):   #  past this module, the parse family and any comprehension's
+                        fr = fr.f_back                    #  or generator expression's own frame, to the walker (review, low 1)
+                    who = fr.f_code.co_name if fr is not None else "?"
+                except Exception:
+                    who = "?"
+                with _JSONL_CACHE_LOCK:
+                    table = _RECORD_CACHE_STATS.get("wholeReads")
+                    if not isinstance(table, dict):       # a harness that zeroes every counter zeroes this one too: a table again
+                        table = _RECORD_CACHE_STATS["wholeReads"] = {}
+                    wr = table.setdefault("%s<-%s" % (kind, who), {"count": 0, "bytes": 0})
+                    wr["count"] += 1; wr["bytes"] += len(data)
             if _READER_TRACE:
                 fr, inner = sys._getframe(1), []          # the caller outside this module, and the path through it
                 while fr is not None and fr.f_code.co_filename == __file__:
@@ -5715,7 +5757,8 @@ def _hydrate_one(a, rec):
     a.pop("lazy", None)
 
 
-_HYDRATE_TEXT_READERS = ("_unit_text", "_prompt_text", "_atom_text")   # the judges' shared text readers: attributed with their caller
+_HYDRATE_TEXT_READERS = ("_unit_text", "_prompt_text", "_atom_text", "_atom_user_texts")   # the shared text readers (the judges'
+#                                   three and the kernel's user-texts reader): attributed with their caller
 
 
 def hydrate(atoms, rompuuid=None, by=None):
@@ -5731,12 +5774,15 @@ def hydrate(atoms, rompuuid=None, by=None):
         return 0
     if by is None:
         try:
-            f = sys._getframe(1); by = f.f_code.co_name
+            f = sys._getframe(1)
+            while f is not None and _synthetic_scope(f):  # a comprehension's or generator expression's own frame is no caller
+                f = f.f_back
+            by = f.f_code.co_name if f is not None else "?"
             if by in _HYDRATE_TEXT_READERS:               # a text reader every walker shares says nothing about WHO walked: the
                 g = f.f_back                              #  first caller outside the shared readers is recorded with it (T377:
-                while g is not None and g.f_code.co_name in _HYDRATE_TEXT_READERS:   #  naming the boot's reader; a reader reached
-                    g = g.f_back                          #  through another reader still names the walker)
-                by = "%s<-%s" % (by, g.f_code.co_name if g is not None else "?")
+                while g is not None and (g.f_code.co_name in _HYDRATE_TEXT_READERS or _synthetic_scope(g)):   #  naming the boot's
+                    g = g.f_back                          #  reader; a reader reached through another reader, or through a
+                by = "%s<-%s" % (by, g.f_code.co_name if g is not None else "?")   #  comprehension's frame, still names the walker)
         except Exception:
             by = "?"
     filled, by_file = 0, {}
@@ -5965,6 +6011,9 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
         out["cutTurn"] = cut_turn                   # a restored tree only (T323 stage 4b): where its lazy atoms ended
     return out
 
+
+
+register_whole_read_passthrough(parse_session)   # the parse's own entry (T384)
 
 def task_store_dir(fsid):
     """Claude Code's task store for one transcript stem: <CLAUDE_CONFIG_DIR or ~/.claude>/tasks/<fsid>,

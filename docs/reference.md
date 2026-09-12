@@ -1545,6 +1545,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `stacks`: every thread's last six frames, keyed by the thread's ident and
   name, when the kernel runs with `ROMP_PERF_STACKS` set (a debugging aid for a
   served test on a runner nobody can log into); `null` otherwise.
+- `recordCache`: the reader's record cache (the JSONL records held in memory):
+  `entries`, `bytes`, `budgetBytes`, `countCap`, `inserts`, `evictions`,
+  `evictedBytes`, `budgetEvictions`, `dropped` and `droppedBytes` (the
+  quiescence drop), and `wholeReads`: every read that pulled a file whole,
+  keyed `kind<-caller` (the reader's kind, one of `zero`, `rewrite`, `guard`,
+  `shrunk` and `upgrade`, and the first calling function outside the event
+  model and the parse family), with `count` and `bytes`; a tail read, an
+  append and a restore's tail read are not whole reads and are not counted.
 - `asmCheckpoint`: the assembly documents since boot: `written`, `restored`,
   `fallbacks` per reason (`version`, `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
