@@ -16,7 +16,8 @@ the pill outside the body (its parent the anchor). Where the page has no hook (a
 shows the pill the way the old code did, a .tx-loading-pill appended to the body, and says so (shownBy), so a run
 against the old build fails on the geometry and the hook pin alike: LOADING_PILL_DIST=<dir> serves another tree's UI
 bundle (the red run's before); LOADING_PILL_SHOTS=<prefix> writes <prefix>-dark.png and <prefix>-light.png of the
-wrapped layout with the pill showing. Skips LOUDLY without the extension deps or a Playwright browser. SYNTHETIC
+wrapped layout with the pill showing; the light theme is measured on every run. Skips LOUDLY without the extension
+deps or a Playwright browser, and never otherwise (CI turns a skip in a served module into a failure). SYNTHETIC
 fixtures only."""
 import json
 import os
@@ -107,13 +108,12 @@ await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill")
 await page.waitForTimeout(50);
 by = await show(); await page.waitForTimeout(100);
 cases.push(await measure("wrapped", by));
-if (cfg.shots) {
-  await page.screenshot({ path: cfg.shots + "-dark.png" });
-  await page.evaluate(() => document.body.classList.add("theme-light")); await page.waitForTimeout(150);
-  cases.push(await measure("wrapped, light theme", by));
-  await page.screenshot({ path: cfg.shots + "-light.png" });
-  await page.evaluate(() => document.body.classList.remove("theme-light"));
-}
+// the light theme, measured always (the surface must read on cream); the screenshots only when asked
+if (cfg.shots) await page.screenshot({ path: cfg.shots + "-dark.png" });
+await page.evaluate(() => document.body.classList.add("theme-light")); await page.waitForTimeout(150);
+cases.push(await measure("wrapped, light theme", by));
+if (cfg.shots) await page.screenshot({ path: cfg.shots + "-light.png" });
+await page.evaluate(() => document.body.classList.remove("theme-light"));
 // hidden again: the pill stays in place, invisible, no second node
 await page.evaluate(() => { if (typeof window.__rompLoadingPill === "function") window.__rompLoadingPill(false); });
 const after = await page.evaluate(() => ({ pills: document.querySelectorAll(".tx-loading-pill").length, anchors: document.querySelectorAll(".tx-loading-anchor").length,
@@ -276,8 +276,7 @@ class ServedLoadingPillAnchor(unittest.TestCase):
         self.assertEqual((r["after"]["pills"], r["after"]["anchors"], r["after"]["shown"]), (1, 1, False), json.dumps(r["after"]))
 
     def test_the_light_theme_pill_reads_on_cream(self):
-        if not os.environ.get("LOADING_PILL_SHOTS"):
-            self.skipTest("the light-theme measurement rides the screenshot run (LOADING_PILL_SHOTS)")
+        # never a conditional skip here: CI's served-tests stance (ROMP_SERVED_TESTS_REQUIRE) turns one into a failure
         c = self._case("wrapped, light theme")
         self._assert_anchored(c)
         self.assertNotEqual(c["bg"], "rgba(20, 24, 33, 0.92)", "the surface is tokened, not the dark literal: " + json.dumps(c))
