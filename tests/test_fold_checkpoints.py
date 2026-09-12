@@ -90,7 +90,8 @@ class Base(unittest.TestCase):
         (jd.STATE / "states").mkdir(parents=True, exist_ok=True)
         (jd.STATE / "timeline").mkdir(parents=True, exist_ok=True)
         self.fresh_process()
-        em._CKPT_STATS.update(restored=0, writes=0, swept=0, skippedFolds=0, fallbacks={}, restoredFolds={}, droppedRestores=0, oversizeFolds={}, refolds={},
+        em._CKPT_STATS["refolds"].clear()                              # reset, never injected: the /perf key pin must see the real counter
+        em._CKPT_STATS.update(restored=0, writes=0, swept=0, skippedFolds=0, fallbacks={}, restoredFolds={}, droppedRestores=0, oversizeFolds={},
                               coldFolds={}, coldWrites={})
         if "converge" in em._CKPT_STATS:                          # reset, never injected: the /perf key pin tests the production default
             em._CKPT_STATS["converge"] = {k: 0 for k in em._CKPT_STATS["converge"]}
@@ -1272,9 +1273,9 @@ class KernelFolds(Base):
         km._pending_ledger = lambda p: (calls.append("ledger"), real_l(p))[1]
         km._undelivered_wake_tail = lambda p: (calls.append("wake"), real_w(p))[1]
         self.addCleanup(setattr, km, "_pending_ledger", real_l); self.addCleanup(setattr, km, "_undelivered_wake_tail", real_w)
-        for k in range(3):                                           # three settles: one prime of each, nothing after
-            km._prime_leaf_folds(self.leaf); em.checkpoint_write(self.leaf)
-        self.assertEqual(sorted(calls), ["ledger", "wake"], "primed once per read: %s" % calls)
+        for k in range(3):                                           # three settles: both advanced each time (a stat over the whole
+            km._prime_leaf_folds(self.leaf); em.checkpoint_write(self.leaf)   #  entry), no read, one document that carries them
+        self.assertEqual(sorted(calls), ["ledger"] * 3 + ["wake"] * 3, "advanced at every settle like the five: %s" % calls)
         d = self.doc(self.leaf)
         self.assertIn("state", d["folds"].get("queueLedger", {}), "%s" % sorted(d["folds"])); self.assertIn("state", d["folds"].get("wakeTail", {}))
         self.assertEqual(em.checkpoint_stats()["refolds"].get("queueLedger"), rf["queueLedger"], "the prime over records in hand is no refold read")

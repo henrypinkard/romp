@@ -9866,12 +9866,10 @@ def _prime_leaf_folds(leaf):
             pass
     if whole:                                 # T377 (reader two): the transcript's ledger and wake folds run at an echo settle and
         for fn, cache in _GENERIC_LEAF_FOLDS():   #  on a wake, so a live leaf whose document lacked them was refolded WHOLE at every
-            if em.fold_cursor_appendable(cache, leaf):   #  boot's first call (13 of 24 live documents on the devbox, about 0.7 GB per
-                continue                      #  boot). Over the whole entry in hand they are primed once per read (a cursor at this
-            try:                              #  entry is left to its own appends), so the write carries them and the next boot
-                fn(leaf); primed = True       #  restores them; over a tail entry they are left to their callers, as before
-            except Exception:
-                pass
+            try:                              #  boot's first call (13 of 24 live documents on the devbox, about 0.7 GB per boot).
+                fn(leaf); primed = True       #  Over the whole entry in hand they are advanced at every settle like the five (a
+            except Exception:                 #  current cursor is a stat; a lagging one steps records in hand, so the write
+                pass                          #  carries it inside the lag bound); over a tail entry they are left to their callers
     return primed
 
 

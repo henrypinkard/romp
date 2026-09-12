@@ -1873,8 +1873,9 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
                 _COLD_FOLDS.discard((key, ckpt))          # every record stepped: the state is complete again
                 _COLD_REASONS.pop((key, ckpt), None); _COLD_OVER_KB.pop((key, ckpt), None)
                 if got > 0:                               # a refold that read (the whole file, over a tail entry or from zero): named
-                    rf = _CKPT_STATS["refolds"].setdefault(ckpt, {"count": 0, "bytes": 0})   #  and weighed per fold on /perf (T377)
-                    rf["count"] += 1; rf["bytes"] += got
+                    rf = _CKPT_STATS["refolds"].setdefault(ckpt, {"count": 0, "bytes": 0})   #  and weighed per fold on /perf (T377).
+                    rf["count"] += 1; rf["bytes"] += got   #  Diagnostic: the delta is over the path's process-wide counter, so another
+        #                                                    thread's read of the same file inside this call lands in it
     for r in recs[start:]:
         if isinstance(r, dict):
             state = step(state, r)
