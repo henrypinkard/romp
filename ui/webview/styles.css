@@ -90,23 +90,15 @@ body.scheme-solarized-dark {
   --err: #c0392b;   /* unified with the awaiting/blocked red (the user 2026-06-24): one "needs you" red. API-error (--st-blocked-bg #e5484d) stays distinct. */
   --warn: #d7a23a;  /* the heads-up amber — "attention, not an error". Was referenced with fallbacks but never
                        defined (a phantom token) until 2026-08-26; mirrored in feed.css (own :root). */
-  /* the postal card's three KIND colours (T320, the user 2026-09-10): one SEQUENTIAL ramp in the accent's hue, not
-     three unrelated hues, ranked by how much the kind asks of the reader: coordination lowest (an FYI), delegation
-     next (work handed over), question highest (an answer owed). More asking = more intense against the page. The
-     three are sampled EVENLY, at positions 0, 1/2 and 1 of one straight line in OKLCH (T337, the user 2026-09-10, who
-     found the first three too alike: T320's steps sat at L .66, .76 and .85 with the top two at one saturation, so
-     they read as two tints of one blue). The line's two ends are two floors. The deep end is the deepest blue that
-     still reads at 4.5:1 on the PROVISIONAL card, the darkest ground a kind word sits on (a sent card not yet landed
-     wears the pending bubble's dress, an 8.5% wash of --you over the page; the boxed card and the bare page sit above
-     it): L .65, C .10. The far end stops short of the prose ink, so a lone Question still reads as a colour and not
-     as body text: the accent's own height, L .85, C .078, the sRGB gamut's edge for the hue; hue pinned
-     at the accent's 244 throughout. The trade-off is span against distance from the ink: a brighter far end widens
-     the ramp but converges on --fg (L .845), and this end keeps the word 0.079 from it in OKLab, all of it chroma.
-     Contrast: 5.2:1, 7.6:1 and 10.6:1 on the page, 4.8:1, 7.0:1 and 9.8:1 on a boxed card, 4.8:1, 7.0:1 and 9.8:1 on the provisional
-     wash. The light theme runs its own line the other way, deepening toward the dark end of its clay accent (below).
-     postal-kind-ramp.test.ts holds the positions and the distance from the ink, theme-parity.test.ts the contrast on
-     all three grounds. */
-  --postal-coordinate: #5696c8;  --postal-delegate: #7cb5e3;  --postal-question: #a2d4fe;
+  /* the three mail KINDS (Delegation / Coordination / Question) as coloured TEXT on the card head (T302; T371, the user
+     2026-09-12, who found coordinate and delegate alike: T337's three steps on ONE accent-hue line read as three tints
+     of one blue): three HUES now, sampled from the default progress colormap (aurora, bin/romp_colormap.py), so the two
+     the user confused sit farthest apart on the ramp. The mapping, in this one place (the light block below re-inks the
+     same three hues): coordinate = the ramp's first stop (green), question = its fourth stop (teal-blue), delegate = its
+     last stop (purple). The dark tokens ARE the stops; each reads above 5:1 on the page, the boxed card, the
+     provisional wash and the peer-tinted ground (theme-parity.test.ts holds the contrast on all four), and
+     postal-kind-ramp.test.ts holds the stops, the hue distances and the distance from the prose ink. */
+  --postal-coordinate: #54b204;  --postal-delegate: #9088f0;  --postal-question: #42a9b0;
   --postal-wash-l: 0.263;  --postal-wash-c: 0.03;   /* the incoming card's tint: the peer's hue at the box ground's own
                                                        OKLab lightness (the page under the 3% box), a gentle chroma (T337b).
                                                        The lightness here is the shipped theme's FALLBACK: the chat measures
@@ -251,11 +243,10 @@ body.theme-light {
   --hl-cmt: #67614f; --hl-title: #8C4A00; --hl-meta: #6E6455; --hl-attr: #7A5A20;   /* --hl-cmt from #6E675C (4.39:1 on a code block) to 4.86:1 */
   --box-bg: rgba(0, 0, 0, 0.03);
   --box-border: rgba(0, 0, 0, 0.12);
-  /* the kind ramp (T320, T337): the accent's clay hue (OKLCH 38) deepening with rank, sampled evenly along the line
-     from L .50, C .11 (the same first step as T320, the lightest clay that reads at 4.5:1 on the provisional wash) to
-     L .30, C .098 (the hue's gamut edge there; a deep rust that stays red, short of the prose ink --fg at L .236: 0.118 from it in OKLab); 5.3:1, 8.1:1 and 11.8:1
-     on the cream page, 4.9:1, 7.6:1 and 11.1:1 on a boxed card, 4.8:1, 7.3:1 and 10.7:1 on the provisional wash */
-  --postal-coordinate: #974a32;  --postal-delegate: #752f18;  --postal-question: #551400;
+  /* the three kind hues of the aurora stops (the :root comment holds the mapping), each deepened on its own hue to read
+     at 4.6:1 or better on the cream page, the boxed card, the provisional wash and the peer-tinted ground at every hue
+     (T371: the hues hold within a degree of the stops, OKLCH L about .49, chroma at the gamut's edge for the two vivid ones) */
+  --postal-coordinate: #386f18;  --postal-delegate: #5f57ab;  --postal-question: #0d6d73;
   --postal-wash-l: 0.919;  --postal-wash-c: 0.045;  /* the cream under the 3% box; a stronger chroma: the cream's own hue
                                                        (71) sits near a warm peer's, and at .03 that tint read at less than half
                                                        a cool one's distance from the ground (T337c, the review of 2026-09-11) */
@@ -2590,9 +2581,9 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
    T320 (the user, later that day): the word wears the prose weight, not bold, and its three colours are one
    sequential ramp ranked by how much the kind asks of the reader (the tokens' comment has the ranking). */
 .postal-kind { font-weight: 400; }
-.postal-kind-delegate { color: var(--postal-delegate, #7cb5e3); }
-.postal-kind-coordinate { color: var(--postal-coordinate, #5696c8); }
-.postal-kind-question { color: var(--postal-question, #a2d4fe); }
+.postal-kind-delegate { color: var(--postal-delegate, #9088f0); }
+.postal-kind-coordinate { color: var(--postal-coordinate, #54b204); }
+.postal-kind-question { color: var(--postal-question, #42a9b0); }
 /* BOTH ENDS of a postal card in the head, each in its session's identity colour (the peer's chip as before, and this
    session's own chip after it); a narrow head collapses this session's chip to its coloured dot, so both colours
    still show where the words would not fit */

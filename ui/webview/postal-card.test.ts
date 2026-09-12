@@ -17,30 +17,27 @@ function fn(name: string): string {
 }
 const CARD = fn("renderPostalService");
 
-test("the kind is coloured text in the meta slot, never a chip, at prose weight, on one ranked ramp", () => {
+test("the kind is coloured text in the meta slot, never a chip, at prose weight, in three colormap hues", () => {
   assert.match(RENDER, /import \{ kindLabel, deliveryOf, deliveryTitle[^}]*\} from "\.\/postal-state";/);
   assert.match(CARD, /const kind = kindLabel\(intent \? intent\.cls : null\);/);
   assert.match(CARD, /meta = el\("span", "postal-kind postal-kind-" \+ intent\.cls\); meta\.textContent = kind;/);
   assert.doesNotMatch(CARD, /postal-service-intent|notice-chip/, "no chip");
   // T320 (the user 2026-09-10): the word is NOT bold (the prose weight), and the three colours are TOKENS on ONE
-  // sequential ramp in the accent's hue, ranked coordination < delegation < question by how much each asks of the
-  // reader, each with a light-theme re-ink (the parity test holds every one at 4.5:1 on its page)
+  // three hues from the aurora colormap (T371: coordinate green, question teal-blue, delegate purple, the two the user
+  // confused farthest apart), each with a light-theme re-ink (the parity test holds every one at 4.5:1 on its grounds)
   assert.match(CSS, /\.postal-kind \{ font-weight: 400; \}/, "prose weight, not bold");
   assert.doesNotMatch(CSS, /\.postal-kind \{ font-weight: (600|700|bold)/);
-  // (T337: the three are re-sampled evenly along the line; postal-kind-ramp.test.ts holds the positions, these the values)
-  assert.match(CSS, /\.postal-kind-delegate \{ color: var\(--postal-delegate, #7cb5e3\); \}/);
-  assert.match(CSS, /\.postal-kind-coordinate \{ color: var\(--postal-coordinate, #5696c8\); \}/);
-  assert.match(CSS, /\.postal-kind-question \{ color: var\(--postal-question, #a2d4fe\); \}/);
-  assert.match(CSS, /\n  --postal-coordinate: #5696c8;\s+--postal-delegate: #7cb5e3;\s+--postal-question: #a2d4fe;/, "the dark ramp, low to high");
+  // (T371: three hues from the aurora colormap, the two the user confused farthest apart; postal-kind-ramp.test.ts
+  // holds the stops, the hue distances and the light re-ink, these the values)
+  assert.match(CSS, /\.postal-kind-delegate \{ color: var\(--postal-delegate, #9088f0\); \}/);
+  assert.match(CSS, /\.postal-kind-coordinate \{ color: var\(--postal-coordinate, #54b204\); \}/);
+  assert.match(CSS, /\.postal-kind-question \{ color: var\(--postal-question, #42a9b0\); \}/);
+  assert.match(CSS, /\n  --postal-coordinate: #54b204;\s+--postal-delegate: #9088f0;\s+--postal-question: #42a9b0;/, "the dark tokens: the ramp's first, last and fourth stops");
   const light = CSS.slice(CSS.indexOf("body.theme-light {"), CSS.indexOf("\n}\n", CSS.indexOf("body.theme-light {")));
-  assert.match(light, /--postal-coordinate: #974a32;\s+--postal-delegate: #752f18;\s+--postal-question: #551400;/, "the light ramp, low to high, deepening");
-  // the ramp IS a ramp: in each theme the three steps are monotone in luminance in rank order (brighter with rank on
-  // the dark page, darker with rank on the light one), so the eye reads one scale, not three tags
-  const lumOf = (hex: string) => { const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
-  const dark = ["#5696c8", "#7cb5e3", "#a2d4fe"].map(lumOf), lightRamp = ["#974a32", "#752f18", "#551400"].map(lumOf);
-  assert.ok(dark[0] < dark[1] && dark[1] < dark[2], "dark: coordination < delegation < question in luminance");
-  assert.ok(lightRamp[0] > lightRamp[1] && lightRamp[1] > lightRamp[2], "light: coordination > delegation > question in luminance");
-  assert.match(CSS, /coordination lowest \(an FYI\), delegation\s+next \(work handed over\), question highest \(an answer owed\)/, "the ranking sits beside the tokens");
+  assert.match(light, /--postal-coordinate: #386f18;\s+--postal-delegate: #5f57ab;\s+--postal-question: #0d6d73;/, "the light tokens: the same hues, deepened");
+  // three hues, not one ramp: the eye tells the kinds apart by hue, so no luminance order is pinned any more (T337's
+  // monotone ladder is retired with the line); the mapping sentence sits beside the tokens
+  assert.match(CSS, /coordinate = the ramp's first stop \(green\), question = its fourth stop \(teal-blue\), delegate = its\s+last stop \(purple\)/, "the mapping sits beside the tokens");
   // under the narrow container query the head WRAPS: the gist takes its own full-width line, word-wise, and the kind
   // word keeps the first line whole and inside the card (T313; the 4ch floor that squeezed the gist into a letter
   // column beside the ends is gone)
