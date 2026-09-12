@@ -20,7 +20,7 @@ test("keepPlaceAcrossWindow: the direct restore first; on a miss, the deep-link 
   const body = m![1];
   assert.match(body, /if \(restoreScrollAnchor\(content, v, keep\)\) return true;/, "the cheap path when the turn is rendered");
   assert.match(body, /pendingAnchor = keep\.uuid; pendingAnchorKeepY = keep\.y;/, "armed with the kept offset, so the land writes keep-offset, not a flashed top-of-viewport jump");
-  assert.match(body, /const landed = scrollToAnchor\(keep\.uuid\);/, "the window-around-unit land");
+  assert.match(body, /relandAsk = true;\s*\n\s*let landed = false;\s*\n\s*try \{ landed = scrollToAnchor\(keep\.uuid\); \} finally \{ relandAsk = false; \}/, "the window-around-unit land, flagged as the re-land of the reader's own row while it runs (T366: the one window ask that is no navigation)");
   assert.match(body, /if \(!anchorPendingOlder\) \{ pendingAnchor = null; pendingAnchorKeepY = null; \}/, "disarmed unless an older-history fetch will re-land on arrival");
 });
 

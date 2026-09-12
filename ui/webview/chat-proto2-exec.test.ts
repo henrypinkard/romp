@@ -10,7 +10,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { mergeWindow, keyOf, fullFrameMerges, windowDetached, afterMore } from "./chat-window";
+import { mergeWindow, keyOf, fullFrameMerges, windowDetached, afterMore, livePausedText, windowLanding } from "./chat-window";
 
 const requireCjs = createRequire(__filename);
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
@@ -49,9 +49,10 @@ function liftPaused(sessions: Map<string, any>, activeId: string | null) {
     sessions, activeId, document, window: { innerHeight: 800 },
     liveSession: (id: string | null) => (id ? sessions.get(id) : undefined),
     el: (_tag: string, cls: string) => { const e = fakeEl(); e.className = cls; return e; },
-    livePausedEl: null,
+    livePausedEl: null, livePausedTxt: null,
+    livePausedText, clockOf: (t: number) => "clock-" + t,   // the real sentence rule; a stand-in clock (T366)
   };
-  const js = liftBetween("function updateLivePaused(): void {", "function reattachLive(sid: string): void {");
+  const js = liftBetween("function updateLivePaused(): void {", "function reattachLive(sid: string, force = false): void {");
   const api = liftWith(js, scope, ["updateLivePaused"]);
   return { api, scope, body };
 }
@@ -161,4 +162,43 @@ test("upsert merges a proto-2 full frame into the held run only when it answers 
   // the three pure rules the frames route through, once more beside the DOM paths
   assert.equal(windowDetached(true, false, true, "merge", "w", "w"), true);
   assert.deepEqual(afterMore(false, true, 4), { detached: false, headTotal: 4 });
+});
+
+// ── the window ask's mark (T366, verifier medium 1) ───────────────────────────────────────────────────────────────────
+// requestAround marks each ask with whether a NAVIGATION made it. The one ask that is no navigation is the keep-offset
+// re-land of the reader's own row across a rebuild (relandAsk, raised only around keepPlaceAcrossWindow's landing). The
+// page-reload restore of a reader's saved place arms the same keep offset, so a rule that read the keep offset refused
+// the restore's window too and a reader reloaded while reading older history lost their place: that ask must land.
+function liftAsk(relandAsk: boolean, keepY: number | null, anchorT: number | null, kind: string | null) {
+  const rows: any[] = [], posted: any[] = [];
+  const scope: Record<string, unknown> = {
+    sessions: new Map<string, any>([["A", { id: "A", proto: 2, detached: false, events: [] }]]),
+    loadingOlder: new Set<string>(), relandAsk, pendingAnchorKeepY: keepY, pendingAnchorT: anchorT, pendingAnchorKind: kind, pendingAnchorIntent: null,
+    document: { getElementById: () => null }, atBottom: () => false, landTrail: ["pointer-fetch-window"],
+    scrollDiagRow: (k: string, d: any) => rows.push({ k, d }), pendingOlderAnchor: new Map(), pendingOlderKeepY: new Map(),
+    showLoadingPill: () => undefined, vscodeApi: { postMessage: (m: any) => posted.push(m) },
+  };
+  const js = liftBetween("const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null }>();", "// The page after a DETACHED window's newest event");
+  const api = liftWith(js, scope, ["requestAround", "pendingWindowNav"]);
+  return { api, rows, posted };
+}
+
+test("the reload restore's window ask (a keep offset, no re-land) is a navigation and lands; the re-land's is refused; a card's carries its time (T366)", () => {
+  const restore = liftAsk(false, 12, null, null);
+  assert.equal(restore.api.requestAround("A", "u1"), true);
+  assert.deepEqual(restore.api.pendingWindowNav.get("A"), { nav: true, named: false, t: null }, "the reader's saved place is theirs to get back: a navigation, unnamed (the plain strip sentence)");
+  assert.equal(windowLanding(true, true, restore.api.pendingWindowNav.get("A").nav), "detach", "…so a detaching window lands (no forced re-attach)");
+  const reland = liftAsk(true, 12, null, null);
+  reland.api.requestAround("A", "u2");
+  assert.deepEqual(reland.api.pendingWindowNav.get("A"), { nav: false, named: false, t: null }, "the re-land of the reader's own row is the one ask that is no navigation");
+  assert.equal(windowLanding(true, true, reland.api.pendingWindowNav.get("A").nav), "reattach", "…so its detaching window is refused and the client re-attached");
+  const card = liftAsk(false, null, 1700000000, null);
+  card.api.requestAround("A", "u3");
+  assert.deepEqual(card.api.pendingWindowNav.get("A"), { nav: true, named: true, t: 1700000000 }, "a card's or lane's frame carried the message's time: named, and the strip says the clock");
+  const notch = liftAsk(false, null, null, "prompt");
+  notch.api.requestAround("A", "u4");
+  assert.deepEqual(notch.api.pendingWindowNav.get("A"), { nav: true, named: true, t: null }, "a kind without a time: named, and the strip says the message was opened without a clock");
+  assert.equal(restore.rows.length, 1); assert.equal(restore.rows[0].k, "windowask");
+  assert.deepEqual({ nav: restore.rows[0].d.nav, keep: restore.rows[0].d.keep, reland: restore.rows[0].d.reland, trail: restore.rows[0].d.trail }, { nav: true, keep: true, reland: false, trail: ["pointer-fetch-window"] }, "the ask's diagnostic row names the keep offset and the re-land flag apart, under the scroll rows' budget");
+  assert.deepEqual(restore.posted, [{ type: "loadAround", id: "A", uuid: "u1" }], "the ask itself goes out after the mark");
 });
