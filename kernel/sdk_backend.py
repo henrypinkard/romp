@@ -14193,11 +14193,14 @@ class SdkBackend:
         per-session pick gets (auth_unavailable_why). Marks the default explicit (`authExplicit`), so a later
         per-session pick no longer moves it; "auto" clears the flag and the seed (the helper rule again).
         Touches no session's own pick: a session that follows the default shows the new side in its status at
-        once and launches on it next time."""
+        once and launches on it next time. Every write here empties authLogin: an explicit default is the machine's own
+        side, never a stored login (T346)."""
         if value == "auto":
             # back to the helper rule (the key when an apiKeyHelper is configured, else the login): the flag
             # clears and the seed empties, so a per-session pick seeds the default again as it did before
-            write_sdk_default(self.state_dir, auth="", authExplicit=False)
+            # authLogin cleared too: a per-session stored-login pick seeds it while the default is automatic, and a stale
+            # id here would ride the next explicit Login default into every new session (the merge read, 2026-09-12)
+            write_sdk_default(self.state_dir, auth="", authExplicit=False, authLogin="")
             self._log("auth: the machine's default billing is automatic again (the helper rule)")
             return True
         if value not in ("login", "key"):
@@ -14207,7 +14210,10 @@ class SdkBackend:
             self.last_auth_refusal = why
             self._log("auth: the machine default cannot be %s on this box: %s" % (value, why), problem=True)
             return False
-        write_sdk_default(self.state_dir, auth=value, authExplicit=True)
+        # the machine's OWN side, always: authLogin is written empty, so a stored login a per-session pick seeded into the
+        # defaults never becomes the machine default by inheritance (the Default group offers no stored login, and the
+        # kernel refuses one by name; a seed carrying one would bill it silently, the 2026-08-12 wrong-account failure)
+        write_sdk_default(self.state_dir, auth=value, authExplicit=True, authLogin="")
         self._log("auth: the machine's default billing is now %s (new sessions, and sessions with no pick of their own)" % value)
         return True
 

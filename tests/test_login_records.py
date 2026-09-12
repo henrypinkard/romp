@@ -517,6 +517,34 @@ class StoredLoginPick(_Backend):
         self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("authLogin"), "")
         self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("authLogin"), "")
 
+    def test_an_explicit_machine_default_clears_a_stored_login_left_in_the_seed(self):
+        """The merge of T380 read (2026-09-12): set_auth_default wrote auth and authExplicit and left authLogin as a
+        per-session stored-login pick had seeded it (the not-explicit seed), so every new session billed the stored
+        login while the Default group marked the machine's own, and the stale id survived Automatic and came back
+        with the next explicit Login. An explicit default is always the machine's own side: login, key and auto each
+        clear the id."""
+        rec = _rec(self.be.state_dir, "Work")
+        sid = self.be.spawn("n", "/tmp")
+        self.assertTrue(self.be.set_auth(sid, "login:" + rec["id"]))
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("authLogin"), rec["id"], "the not-explicit seed")
+        self.assertTrue(self.be.set_auth_default("login"))
+        d = sb.read_sdk_defaults(self.be.state_dir)
+        self.assertEqual((d.get("auth"), d.get("authExplicit"), d.get("authLogin")), ("login", True, ""), "the machine's own login, no stored id")
+        reg = sb.read_reg(self.be.state_dir, self.be.spawn("m", "/tmp"))
+        self.assertEqual((reg.get("auth"), reg.get("authLogin") or ""), ("login", ""), "a new session bills the machine's own login")
+        # the id must not survive Automatic and come back with the next explicit Login
+        self.assertTrue(self.be.set_auth_default("auto"))
+        self.assertTrue(self.be.set_auth(sid, "login:" + rec["id"]))          # seeds again while automatic
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("authLogin"), rec["id"])
+        self.assertTrue(self.be.set_auth_default("auto"))
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("authLogin"), "", "auto clears the id too")
+        self.assertTrue(self.be.set_auth(sid, "login:" + rec["id"]))
+        self.assertTrue(self.be.set_auth_default("key"))
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("authLogin"), "", "key clears it")
+        self.assertTrue(self.be.set_auth_default("login"))
+        self.assertEqual(sb.read_reg(self.be.state_dir, self.be.spawn("o", "/tmp")).get("authLogin") or "", "")
+        self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("authLogin"), rec["id"], "the session's own pick is untouched")
+
     def test_the_picker_pick_and_a_fork_carry_the_stored_login(self):
         rec = _rec(self.be.state_dir, "Work")
         sid = self.be.spawn("n", "/tmp", auth="login:" + rec["id"])
