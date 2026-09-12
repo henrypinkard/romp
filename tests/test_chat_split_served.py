@@ -706,8 +706,11 @@ class ServedChatSplit(unittest.TestCase):
         s = self._r()["s1"]
         o = s["obs"]
         self.assertTrue(o["done"], "the observer saw B's transcript painted in column 2: %r" % o)
-        self.assertGreaterEqual(s["statusDelta"], BOARD - 1,
-                                "a status frame per other tab on column 2's own socket: the column was served as a skeleton client, not whole: %r" % s)
+        # a whole-board client receives NO status frames (every tab comes whole); a skeleton column receives one per other tab.
+        # The count of them by the bounded wait flaps under load (continuous integration read four of seven at the cap), so the
+        # pin is the regime, not the tally: at least one status frame on column 2's own socket; the tally rides the record
+        self.assertGreaterEqual(s["statusDelta"], 1,
+                                "status frames on column 2's own socket: the column was served as a skeleton client, not whole: %r" % s)
         # the diet's fingerprint on column 2's own socket: B's full, never the board (eight per push before 2026-09-11). Extra
         # fulls for B are not excluded: on a slow runner the page re-asks for its wanted session between the strip and the full
         # of the same burst, more than once under load (continuous integration read two, then four), and the kernel answers;
