@@ -3301,8 +3301,11 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     if (!repeat && node.summaryAnchorUuid) {
       sum.classList.add("ftree-summary-link");
       sum.title = "jump to where this was written";
-      const su = node.summaryAnchorUuid, sq = node.summaryAnchorQuote || undefined;
-      sum.onclick = (ev: Event) => { ev.stopPropagation(); focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: node.id, sid: it.sid, t: node.mt ?? node.t, anchor: "work", anchorUuid: su, quote: sq }); };
+      // the ROW's own session, never the card's (navSidOf, the same resolver goWork uses): a serving-folded worker
+      // row inside the sender's card resolved its landing in the worker's parse, and the worker's atom sent to
+      // the sender's chat could only honest-fail (the verifier's first round)
+      const su = node.summaryAnchorUuid, sq = node.summaryAnchorQuote || undefined, ss = navSidOf(it, node);
+      sum.onclick = (ev: Event) => { ev.stopPropagation(); focusEcho(ss); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: node.id || it.turnId, sid: ss, t: node.mt ?? node.t, anchor: "work", anchorUuid: su, quote: sq }); };
     } else if (!repeat && (node.anchorUuid || node.promptAnchorUuid)) {
       sum.classList.add("ftree-summary-link");
       sum.title = "jump to where this was written";

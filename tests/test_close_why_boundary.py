@@ -73,13 +73,41 @@ class TheCloserParse(unittest.TestCase):
 
 class TheBriefsMaterial(unittest.TestCase):
     def test_the_owed_why_says_where_a_cut_reason_ends(self):
-        nd = {"blockWhy": "Decide the retry policy for the exporter." + jd.WHY_CUT_MARK}
+        nd = {"blockWhy": "Decide the retry policy for the exporter." + jd.WHY_CUT_MARK, "blockWhyCut": True}
         owed = jd._owed_why(nd)
         self.assertTrue(owed.startswith("Decide the retry policy for the exporter." + jd.WHY_CUT_MARK))
         self.assertIn("the recorded reason ends here", owed)
 
     def test_a_whole_why_gets_no_note(self):
         self.assertEqual(jd._owed_why({"blockWhy": "Decide the retry policy."}), "Decide the retry policy.")
+
+    def test_a_complete_why_that_ends_with_an_ellipsis_is_not_told_as_cut(self):
+        # the cut is a stored fact, never a suffix test on prose (the verifier's first round)
+        self.assertFalse(jd.why_was_cut("Wait for the exporter to settle" + jd.WHY_CUT_MARK))
+        self.assertTrue(jd.why_was_cut(jd._cut_why("word " * 100, 100)))
+        self.assertEqual(jd._owed_why({"blockWhy": "Wait for it" + jd.WHY_CUT_MARK}), "Wait for it" + jd.WHY_CUT_MARK)
+
+    def test_the_cut_rides_the_verdict_row_into_the_nodes_flag(self):
+        sid = "11111111-2222-3333-4444-555555555555"
+        st = {"rompUuid": sid, "seq": 1, "nodes": {}, "placements": {}, "status": {}}
+        nd = {"id": sid + ":g1", "text": "Decide the client", "parentId": None, "nodeComplete": False, "blocked": False,
+              "cleared": False, "trail": [], "t": 1781300000, "mt": 1781300000, "log": []}
+        st["nodes"][nd["id"]] = nd
+        cut = jd._cut_why("Should the exporter keep the old client for this tenant too? " * 12, jd.WHY_MAX)
+        self.assertTrue(jd.record_verdict(st, nd, "closer", "block", 1781300100, why=cut))
+        self.assertTrue(nd["log"][-1].get("whyCut"), "the row carries the fact")
+        jd.rollup_status(st, False)
+        self.assertTrue(nd["blocked"])
+        self.assertTrue(nd.get("blockWhyCut"), "the fold materializes it")
+        self.assertIn("the recorded reason ends here", jd._owed_why(nd))
+        # a whole why after a lift: no row fact, no flag
+        st2 = {"rompUuid": sid, "seq": 1, "nodes": {}, "placements": {}, "status": {}}
+        nd2 = dict(nd, id=sid + ":g2", log=[]); st2["nodes"][nd2["id"]] = nd2
+        self.assertTrue(jd.record_verdict(st2, nd2, "closer", "block", 1781300100, why="Decide the client now."))
+        self.assertNotIn("whyCut", nd2["log"][-1])
+        jd.rollup_status(st2, False)
+        self.assertFalse(nd2.get("blockWhyCut"))
+        self.assertEqual(jd._owed_why(nd2), "Decide the client now.")
 
 
 if __name__ == "__main__":

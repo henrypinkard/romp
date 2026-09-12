@@ -36745,12 +36745,15 @@ def _feed_session_entry(s, ctx):
         _nline = _nline or nd.get("blockSummary") or nd.get("summary")
         _nsa_u, _nsa_q = None, None
         if _nline:
-            if nd.get("summaryAnchor") and nd.get("summaryAnchor") in cite_uuids:
+            _ntr = nd.get("trail") or []
+            if nd.get("summaryAnchor") and nd.get("summaryAnchor") in cite_uuids \
+                    and not _summary_outrun(nd, [_ntr], seg_best):   # the T153 rule, the card's own (one landing per brief)
                 _nsa_u, _nsa_q = nd["summaryAnchor"], nd.get("summaryQuote")
             else:
-                _ntr = nd.get("trail") or []
-                _nsa_u, _nsa_q = _summary_text_anchor(seg_turn.get(_seg_key(_ntr[-1])) if _ntr else None, _nline,
-                                                      memo_key=(fsid, nid, _seg_key(_ntr[-1]) if _ntr else None))
+                _nk = _seg_key(_ntr[-1]) if _ntr else None
+                _nsa_u, _nsa_q = _summary_text_anchor(seg_turn.get(_nk), _nline, memo_key=(fsid, nid, _nk))
+                if _nsa_u is None:                   # a text stub still beats the work anchor's tool group
+                    _nsa_u, _nsa_q = _summary_text_anchor(seg_turn.get(_nk), _nline, memo_key=(fsid, nid, _nk), stub_ok=True)
         # A HANDOFF tracking node ("↪ delegated to <peer>") finally ships as its designed kind: the
         # feed's delegations section (fask-delegations, built to the 2026-06-10 handoff spec) keys on
         # kind "handoff" and had sat dormant because flatten hardcoded "ask" — the sender's card
@@ -37297,30 +37300,25 @@ def _feed_session_entry(s, ctx):
             # substantive walk below, so the click follows the freshest evidence; the citation
             # resumes authority the moment a re-distill lands (the stamp catches up).
             # Display-only: no column implication.
-            _cov = max(int(nodes[nid].get("distilledMt") or 0),
-                       int(nodes[nid].get("briefedMt") or 0))
-            _outrun = bool(_cov) and (
-                (nodes[nid].get("followupAt") or 0) > _cov
-                or any((seg_best.get(_seg_key(_sid), (None, False, 0))[2] or 0) > _cov
-                       for _x in _subtree(nid) for _sid in (nodes[_x].get("trail") or [])))
-            if not _outrun:
+            if not _summary_outrun(nodes[nid], [nodes[_x].get("trail") for _x in _subtree(nid)], seg_best):
                 _sa_u = _cited
-        _sa_q = None                                 # the located span when the text-atom tier resolves (T388)
+        _sa_q, _sk = None, None                      # the located span when the text-atom tier resolves (T388)
         _line = nodes[nid].get("blockSummary") if col in ("blocked", "awaiting") else nodes[nid].get("summary")
         _line = _line or nodes[nid].get("blockSummary") or nodes[nid].get("summary")
-        if _sa_u is None and _line:
-            # NO VALIDATED CITATION, a brief or summary on the card (T388, the manager 2026-09-12): land on the
-            # assistant TEXT atom of the newest trail segment's turn that carries the line's opening sentence,
-            # else that turn's last text atom; never a tool_use or thinking atom. The walk below picks the latest
-            # PROSE segment, and the last resort the WORK anchor, which for a long turn was a shell call inside a
-            # collapsed tool group, thirteen minutes before the quoted questions in the same turn's last text atom.
-            _sk, _st = None, -1
+        if _line:
+            _st = -1                                 # the newest trail segment across the subtree, by its time
             for _x in _subtree(nid):
                 for _sid in (nodes[_x].get("trail") or []):
                     _k = _seg_key(_sid)
                     _t = seg_best.get(_k, (None, False, 0))[2] or 0
                     if _k in seg_turn and _t >= _st:
                         _sk, _st = _k, _t
+        if _sa_u is None and _line:
+            # NO VALIDATED CITATION, a brief or summary on the card (T388, the manager 2026-09-12): land on the
+            # assistant TEXT atom of the newest trail segment's turn that carries the line's opening sentence,
+            # else that turn's last text atom; never a tool_use or thinking atom. The walk below picks the latest
+            # PROSE segment, and the last resort the WORK anchor, which for a long turn was a shell call inside a
+            # collapsed tool group, thirteen minutes before the quoted questions in the same turn's last text atom.
             if _sk is not None:
                 _sa_u, _sa_q = _summary_text_anchor(seg_turn.get(_sk), _line, memo_key=(fsid, nid, _sk))
         if _sa_u is None:
@@ -37332,6 +37330,10 @@ def _feed_session_entry(s, ctx):
                         _best = (_sub, _t, _u)
             if _best:
                 _sa_u = _best[2]
+        if not _sa_u and _line and _sk is not None:
+            # the newest segment's last TEXT atom, whatever its length (T388): a connective stub is still a text
+            # row the reader can read from, where the work anchor below may be a collapsed tool group
+            _sa_u, _sa_q = _summary_text_anchor(seg_turn.get(_sk), _line, memo_key=(fsid, nid, _sk), stub_ok=True)
         if not _sa_u:
             # LAST RESORT (the user 2026-07-02: a completed card's summary was unclickable — the cited
             # atom fell outside every segment, and no trail segment offered prose either). Fall back to
@@ -39863,7 +39865,8 @@ def _summary_anchor_memo_bound():
 
 SUMMARY_ANCHOR_MEMO_BYTES = _summary_anchor_memo_bound()
 _SUMMARY_ANCHOR_MEMO = collections.OrderedDict()   # key -> ((uuid, quote), size): the order is age, a hit moves to the end
-_SUMMARY_ANCHOR_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": SUMMARY_ANCHOR_MEMO_BYTES}
+_SUMMARY_ANCHOR_STATS = {"hit": 0, "miss": 0, "evict": 0, "fault": 0, "entries": 0, "bytes": 0, "bound": SUMMARY_ANCHOR_MEMO_BYTES}
+#                          fault: a candidate atom whose body could not be read (a LazyBodyRead, a rotated file): skipped, counted
 #                          the key: (fsid, nid, seg key, the line's hash, the turn's end): one text read per brief per segment
 
 
@@ -39914,41 +39917,73 @@ def _opening_sentence(line):
     return sent[:200].strip()
 
 
-def _summary_text_anchor(turn_seg, line, memo_key=None):
+def _summary_outrun(nd, trails, seg_best):
+    """THE GROUNDING CAN BE OUTRUN (the user 2026-08-28, T153): a stored citation names what the summary was WRITTEN
+    FROM, but a reply that reopens the card adds stretches the summary has never seen. When the follow-up stamp or
+    any segment of `trails` postdates the summary's coverage stamp (distilledMt or briefedMt), the cited tier yields
+    to the fresher evidence; it resumes authority the moment a re-distill lands. One rule for the card's chain and
+    the modal row's brief line, so one brief never lands in two places by the surface clicked (the verifier's first
+    round on T388)."""
+    cov = max(int(nd.get("distilledMt") or 0), int(nd.get("briefedMt") or 0))
+    if not cov:
+        return False
+    if (nd.get("followupAt") or 0) > cov:
+        return True
+    return any((seg_best.get(_seg_key(_s), (None, False, 0))[2] or 0) > cov for _tr in trails for _s in (_tr or []))
+
+
+def _summary_text_anchor(turn_seg, line, memo_key=None, stub_ok=False):
     """(uuid, quote) — where a card's brief or summary click lands when the brief carries no validated citation
     (T388, the manager's finding 2026-09-12): the assistant TEXT atom of the newest trail segment that carries the
     line's opening sentence (the same locate the distiller's citation uses, jd._locate_quote), else the same search
     over the whole turn the segment sits in (a seam-split turn keeps its wrap-up in a later segment), else the last
-    text atom of the segment, else of the turn; never a tool_use or thinking atom, which the WORK anchor may be (a
-    long turn's first assistant atom was a shell call, and four landings filed pointer-exact on a collapsed tool
-    group while the quoted questions were the turn's last text atom, thirteen minutes later). `quote` is the located
-    span, sent as the click's anchorQuote so the chat highlights it. Bodies are read only for the candidate text
-    atoms of one turn, once per brief per segment (the byte-bounded memo), so a build costs nothing on a repeat."""
+    SUBSTANTIVE text atom (jd.CITE_MIN_CHARS, the latest-prose walk's own preference) of the segment, else of the
+    turn; never a tool_use or thinking atom, which the WORK anchor may be (a long turn's first assistant atom was a
+    shell call, and four landings filed pointer-exact on a collapsed tool group while the quoted questions were the
+    turn's last text atom, thirteen minutes later). With no located quote and no substantive atom the tier answers
+    (None, None) so the card's chain falls through to the walk; only a last-resort call (`stub_ok`) takes the last
+    text atom whatever its length, still ahead of a tool group (the verifier's first round: a paraphrased brief is
+    the common case, and the bare last-text pick handed a connective stub the landing over the analysis before it,
+    the very pick the walk exists to avoid). `quote` is the located span, sent as the click's anchorQuote so the
+    chat highlights it. Bodies are read only for the candidate text atoms of one turn, inside the same envelope the
+    build's other lazy reads use (a body that cannot be read is skipped and counted, never a raise that would abort
+    build_feed for every session), once per brief per segment (the byte-bounded memo)."""
     if not turn_seg:
         return None, None
     turn, seg_atoms = turn_seg
     key = None
     if memo_key is not None:
-        key = tuple(memo_key) + (hash(str(line or "")), (turn or {}).get("end") or (turn or {}).get("t"))
+        key = tuple(memo_key) + (hash(str(line or "")), (turn or {}).get("end") or (turn or {}).get("t"), bool(stub_ok))
         hit = _summary_anchor_memo_get(key)
         if hit is not None:
             return hit
     seg_texts = _text_atoms(seg_atoms)
-    turn_texts = _text_atoms((turn or {}).get("atoms"))
+    turn_texts = [a for a in _text_atoms((turn or {}).get("atoms")) if not any(a is s for s in seg_texts)]   # the rest of the turn
     opening = _opening_sentence(line)
     out = (None, None)
     if opening:
         for cands in (seg_texts, turn_texts):
             for a in reversed(cands):                  # newest first: the wrap-up, not an early restatement
-                if a.get("lazy") is not None:
-                    em.hydrate([a])                    # a body before the assembly cut: read on demand (T323 stage 4a)
-                off, span = jd._locate_quote(jd._atom_text(a), opening)
+                try:
+                    if a.get("lazy") is not None:
+                        em.hydrate([a])                # a body before the assembly cut: read on demand (T323 stage 4a)
+                    text = jd._atom_text(a)
+                except Exception:                      # the build's envelope: a body that cannot be read is skipped
+                    _SUMMARY_ANCHOR_STATS["fault"] += 1   # and counted (memos.summaryAnchor.fault); never a raise
+                    continue
+                off, span = jd._locate_quote(text, opening)
                 if off is not None:
                     out = (a["uuid"], str(span or "")[:300] or None)
                     break
             if out[0]:
                 break
-    if not out[0]:
+    if not out[0]:                                     # no located quote: the newest SUBSTANTIVE text atom, the walk's rule
+        for cands in (seg_texts, turn_texts):
+            sub_ = [a for a in cands if _atom_prose_chars(a) >= jd.CITE_MIN_CHARS]
+            if sub_:
+                out = (sub_[-1]["uuid"], None)
+                break
+    if not out[0] and stub_ok:                         # the last resort only: a stub still beats a tool group
         last = (seg_texts or turn_texts or [None])[-1]
         out = ((last or {}).get("uuid"), None)
     if key is not None:

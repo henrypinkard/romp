@@ -56,15 +56,46 @@ class TheTextAtom(unittest.TestCase):
         u, q = km._summary_text_anchor((turn, seg), BRIEF)
         self.assertEqual((u, q), ("t5", "Should the history budget follow the device or the setting?"))
 
-    def test_no_sentence_match_falls_to_the_segments_last_text_atom_with_no_quote(self):
+    def test_no_sentence_match_lands_on_the_newest_substantive_text_atom_never_a_stub(self):
+        # a paraphrased brief (the common case): the analysis before the stub, not the stub, the walk's own rule
+        analysis = "The exporter keeps both clients while the history budget follows the device, and the tests target the old one " * 2
+        seg = [tool("a1", T0), text("t5", T0 + 10, analysis), text("t6", T0 + 20, "Done for now.")]
+        turn = {"t": T0, "end": T0 + 30, "atoms": seg}
+        self.assertEqual(km._summary_text_anchor((turn, seg), "Decide the retry policy for the exporter."), ("t5", None))
+        # the stub newest with the analysis older, the same answer
+        seg2 = [tool("a1", T0), text("t5", T0 + 10, analysis), text("t6", T0 + 20, "Done for now.")]
+        turn2 = {"t": T0, "end": T0 + 30, "atoms": seg2}
+        self.assertEqual(km._summary_text_anchor((turn2, seg2), "The paraphrase names no sentence of the reply.")[0], "t5")
+
+    def test_only_stubs_answer_nothing_unless_the_call_is_the_last_resort(self):
         seg = [tool("a1", T0), text("t5", T0 + 10, "first note"), text("t6", T0 + 20, "second note")]
         turn = {"t": T0, "end": T0 + 30, "atoms": seg}
-        self.assertEqual(km._summary_text_anchor((turn, seg), "Decide the retry policy for the exporter."), ("t6", None))
+        self.assertEqual(km._summary_text_anchor((turn, seg), "Decide the retry policy for the exporter."), (None, None),
+                         "no quote and no substantive atom: the chain falls through to the walk")
+        self.assertEqual(km._summary_text_anchor((turn, seg), "Decide the retry policy for the exporter.", stub_ok=True), ("t6", None),
+                         "the last resort takes the last text atom, still ahead of a tool group")
 
-    def test_a_segment_without_text_falls_to_the_turns_last_text_atom(self):
+    def test_a_segment_without_text_falls_to_the_turns_newest_substantive_text_atom(self):
         seg = [tool("a1", T0), think("th", T0 + 1)]
-        turn = {"t": T0, "end": T0 + 60, "atoms": seg + [text("t7", T0 + 50, "wrap-up here")]}
+        wrap = "The wrap-up here is the reply the user reads, long enough to count as prose by the walk's own floor."
+        turn = {"t": T0, "end": T0 + 60, "atoms": seg + [text("t7", T0 + 50, wrap), text("t8", T0 + 55, "ok")]}
         self.assertEqual(km._summary_text_anchor((turn, seg), "Nothing that matches."), ("t7", None))
+
+    def test_a_body_that_cannot_be_read_is_skipped_and_counted_never_raised(self):
+        seg = [tool("a1", T0), text("t5", T0 + 10, QUESTIONS), text("t6", T0 + 20, "Done for now.")]
+        turn = {"t": T0, "end": T0 + 30, "atoms": seg}
+        real = km.jd._atom_text
+        def boom(a):                                   # the body read raises, as a LazyBodyRead or a rotated file would
+            raise km.em.LazyBodyRead("no record at the offset")
+        km.jd._atom_text = boom
+        km._SUMMARY_ANCHOR_MEMO.clear()
+        before = km._SUMMARY_ANCHOR_STATS["fault"]
+        try:
+            out = km._summary_text_anchor((turn, seg), BRIEF)
+        finally:
+            km.jd._atom_text = real
+        self.assertEqual(km._SUMMARY_ANCHOR_STATS["fault"], before + 2, "every unreadable candidate is counted (two text atoms)")
+        self.assertEqual(out, ("t5", None), "…and the tier goes on without a body: the substantive fallback, never a raise")
 
     def test_thinking_and_tool_calls_alone_resolve_to_nothing(self):
         seg = [tool("a1", T0), think("th", T0 + 1)]
@@ -73,10 +104,13 @@ class TheTextAtom(unittest.TestCase):
         self.assertEqual(km._summary_text_anchor(None, BRIEF), (None, None))
 
     def test_an_api_error_and_the_null_settle_are_never_the_landing(self):
-        err = dict(text("e1", T0 + 5, "API Error: overloaded"), isApiError=True)
-        seg = [tool("a1", T0), err, text("t2", T0 + 6, "the real reply")]
+        err = dict(text("e1", T0 + 5, "API Error: overloaded, please retry the request in a while and check the status page for the outage"), isApiError=True)
+        reply = "The real reply the user reads, long enough to pass the walk's prose floor, names the outcome of the work."
+        seg = [tool("a1", T0), err, text("t2", T0 + 6, reply)]
         turn = {"t": T0, "end": T0 + 10, "atoms": seg}
         self.assertEqual(km._summary_text_anchor((turn, seg), "Nothing matches."), ("t2", None))
+        self.assertEqual(km._summary_text_anchor((turn, [tool("a1", T0), err]), "Nothing matches.", stub_ok=True), ("t2", None),
+                         "the API error is never the landing, even as the last resort")
 
     def test_the_opening_sentence_drops_a_list_number_and_stops_at_the_first_sentence_end(self):
         self.assertEqual(km._opening_sentence("1. Decide the retry policy. Then the rest."), "Decide the retry policy.")
@@ -106,6 +140,10 @@ class TheWiring(unittest.TestCase):
         ts = open(os.path.join(ROOT, "ui", "webview", "feed.ts"), encoding="utf-8").read()
         self.assertIn("if (!repeat && node.summaryAnchorUuid) {", ts, "the modal's brief line prefers the brief's own landing")
         self.assertIn("anchorUuid: su, quote: sq", ts, "…and sends its span as the click's quote")
+        self.assertIn("ss = navSidOf(it, node);", ts, "the click names the ROW's session (a serving-folded worker row), never the card's")
+        self.assertIn("focusEcho(ss); vscodeApi?.postMessage({ type: \"showOnTimeline\", itemId: node.id || it.turnId, sid: ss,", ts)
+        self.assertIn("and not _summary_outrun(nd, [_ntr], seg_best):", src, "the modal row's cited tier applies the card's outrun rule")
+        self.assertIn("if not _summary_outrun(nodes[nid], [nodes[_x].get(\"trail\") for _x in _subtree(nid)], seg_best):", src)
         self.assertIn("summaryAnchorUuid?: string | null;                            // the brief/summary line's own landing", ts)
 
 
@@ -145,7 +183,7 @@ class TheMemoIsBoundedByBytes(unittest.TestCase):
         km._summary_text_anchor((turn, seg), BRIEF, memo_key=(sid, "g2", "k2"))      # B: a miss, stored; A is the colder
         self.assertEqual(km._SUMMARY_ANCHOR_STATS["evict"], 1, "over the bound: one eviction, the oldest")
         self.assertEqual(len(km._SUMMARY_ANCHOR_MEMO), 1)
-        self.assertIn((sid, "g2", "k2", hash(BRIEF), T0 + 30), km._SUMMARY_ANCHOR_MEMO, "the newest survives, the coldest went")
+        self.assertIn((sid, "g2", "k2", hash(BRIEF), T0 + 30, False), km._SUMMARY_ANCHOR_MEMO, "the newest survives, the coldest went")
         km.SUMMARY_ANCHOR_MEMO_BYTES = 10 ** 6
         km._summary_text_anchor((turn, seg), BRIEF, memo_key=(sid, "g3", "k3"))      # C stored beside B
         before = km._SUMMARY_ANCHOR_STATS["hit"]
@@ -154,10 +192,10 @@ class TheMemoIsBoundedByBytes(unittest.TestCase):
         km.SUMMARY_ANCHOR_MEMO_BYTES = 1
         km._summary_text_anchor((turn, seg), BRIEF, memo_key=(sid, "g4", "k4"))      # D: sheds the coldest, C, never the hit B
         keys = list(km._SUMMARY_ANCHOR_MEMO)
-        self.assertNotIn((sid, "g3", "k3", hash(BRIEF), T0 + 30), keys, "the colder entry went")
-        self.assertIn((sid, "g4", "k4", hash(BRIEF), T0 + 30), keys)
+        self.assertNotIn((sid, "g3", "k3", hash(BRIEF), T0 + 30, False), keys, "the colder entry went")
+        self.assertIn((sid, "g4", "k4", hash(BRIEF), T0 + 30, False), keys)
         rep = km._summary_anchor_memo_report()
-        for k in ("entries", "bytes", "bound", "hit", "miss", "evict"):
+        for k in ("entries", "bytes", "bound", "hit", "miss", "evict", "fault"):
             self.assertIn(k, rep)
         self.assertEqual(rep["entries"], len(km._SUMMARY_ANCHOR_MEMO))
         self.assertEqual(rep["bound"], km.SUMMARY_ANCHOR_MEMO_BYTES)
