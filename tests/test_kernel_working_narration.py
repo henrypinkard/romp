@@ -51,7 +51,7 @@ class OpenTurnProgress(unittest.TestCase):
 class PayloadPins(unittest.TestCase):
     def test_working_cards_carry_the_narration(self):
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('sess_progress = _open_turn_progress(ps["turns"]) if (ps and who_working) else None', src)
         self.assertIn('"working": (sess_progress if column == "working" else None)', src)
 
@@ -61,7 +61,7 @@ class PayloadPins(unittest.TestCase):
         # read: a cold cache or a machine reporting nothing) — and every working card carries it, so
         # the feed's spin floor can speak even when the narration payload cannot ride.
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('sess_state = "open" if who_working else ("quiet" if ps else "unknown")', src)
         self.assertIn('"sessState": (sess_state if column == "working" else None)', src)
 

@@ -67,7 +67,7 @@ class DoneComputationHonorsAuthority(unittest.TestCase):
     """Source-pins: both projections gate their done-derivation on the authoritative-open set (this repo
     tests build_feed/build_session by inspecting their source, since they read the fleet off disk)."""
     def test_build_feed_flatten_excludes_agent_open_from_done(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn("agent_open = _agent_open_set(nodes, children)", src)
         self.assertIn("and nid not in agent_open", src, "flatten's done must exclude the authoritative-open subtree")
 

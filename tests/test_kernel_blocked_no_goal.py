@@ -49,7 +49,7 @@ class BlockedNoGoal(unittest.TestCase):
         self.assertEqual(c["blocked"]["what"], "this session is stopped awaiting your approval")
 
     def test_build_feed_synthesizes_it_only_when_blocked_with_no_floorable_goal(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         # the synthesis is gated: no working card AND no top goal to floor under BLOCKED (perm_top None) ...
         self.assertIn("if not had_working and perm_top is None and ps:", src)
         # ... and only as the fallback when there's no provisional card and a live perm/picker state

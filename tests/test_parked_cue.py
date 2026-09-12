@@ -140,7 +140,7 @@ class RetireGrid(unittest.TestCase):
 
 class BuildFeedWiring(unittest.TestCase):
     def test_the_row_field_ships_gated_on_the_open_render_state(self):
-        src = getsource(km.build_feed)
+        src = getsource(km._feed_session_entry)
         self.assertIn("parked_rows = _parked_rows(nodes, children)", src)
         self.assertIn('"parked": ({"n": parked_rows[nid]} if (st == "open" and nid in parked_rows)'
                       " else None)", src)

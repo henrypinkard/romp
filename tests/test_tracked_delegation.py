@@ -230,7 +230,7 @@ class FeedPayloadPins(unittest.TestCase):
         # review 2026-08-24: a needs-you block always surfaces, and a closed/cleared primary
         # un-hides the copy — a pair divergence self-heals to a visible card, never work in secret
         self.assertIn('**({"satellite": True} if isinstance(o, dict) and o.get("tracked")\n'
-                      '                   and origin and origin.get("live") and column != "needs_input" else {}),', KSRC)
+                      '               and origin and origin.get("live") and column != "needs_input" else {}),', KSRC)   # T368: the body's indent
 
     def test_completed_and_cleared_handoffs_drop_off_the_primary(self):
         self.assertIn('and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")]', KSRC)

@@ -1525,7 +1525,26 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   goal-store publish moves that session's `store` component and no other
   tab's; the judge-pass generation busts the feed and timeline caches only.
   `romp perf` prints the split and the non-zero causes after the chat
-  average, and the moved count when it is non-zero.
+  average, and the moved count when it is non-zero. `feed` also carries
+  `memo`, the per-session card memo inside `build_feed`: each living
+  session's cards are derived once and served while every input of that
+  derivation stands (the transcript, states, names, captions, store, journal
+  and archive by identity; the live row, the wait graph, the stall and nudge
+  records, the watches and the background tasks by value; the interrupt and
+  settle-gap booleans the clock decides; the peers the cards read), so a
+  rebuild re-derives only the sessions whose inputs moved. `hit`, `miss` and
+  `derived` count per session per build, `evict` the entries shed (a departed
+  session, or the byte bound), `entries` and `bytes` are the resident set
+  against `bound` (a sixty-fourth of the machine's memory, or
+  `ROMP_FEED_MEMO_BYTES`), and `miss_by` maps each labelled component of the
+  per-session key (`transcript`, `parse`, `cut`, `states`, `names`,
+  `captions`, `store`, `anchors`, `reg`, `cleared`, `row`, `ask`, `live`,
+  `bg`, `wait`, `postal`, `stalls`, `nudge`, `jauth`, `jactive`, `hide`,
+  `watch`, `subagents`, `usage`, `auth`, `downtime`, `debug`,
+  `interrupting`, `closer`, `peers`, plus `cold` for a session with no
+  entry) to the re-derivations it caused; a miss with several moved
+  components counts under each. The age tint every card wears is stamped
+  per build outside the memo, so no clock is a component.
 - `sends`: `full`, `delta`, `deduped`, each a map from slot name (`chat`,
   `feed`, `bars`, `taborder`, ...) to `count` and `bytes`. A deduplicated frame
   was built and compared, then not sent.

@@ -326,6 +326,8 @@ class MemoAcrossTheCycle(_MemoHarness):
                          [(SID, "display"), (SID, "judge")], "one entry per family after a cycle")
         s0 = self._stats()
         km._interrupt_block_tick(NOW, self.live)
+        km._feed_memo.clear()      # T368: the feed's per-session card memo would serve the unchanged session without running
+        #                            the body; this test is about the MARKS memo the body consults, so make the body run
         km.build_feed(NOW, self.live)
         s1 = self._stats()
         self.assertEqual(s1["miss"], s0["miss"], "the second cycle recomputes nothing")

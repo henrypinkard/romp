@@ -112,7 +112,7 @@ class FeedCardRetryingChip(unittest.TestCase):
 
     def test_build_feed_computes_and_gates_the_retrying_chip(self):
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn("sess_retrying = _session_retrying(fsid, tm)", src,
                       "the signal comes from the live backend row — the same one the chat chip reads")
         self.assertIn('"retrying": (sess_retrying if column == "working" else None)', src,

@@ -601,14 +601,14 @@ class KernelWiringAndFloorPins(unittest.TestCase):
 
     def test_build_feed_floors_a_latched_session_yielding_to_the_live_floors(self):
         import inspect
-        src = inspect.getsource(self.km.build_feed)
+        src = inspect.getsource(self.km.build_feed) + inspect.getsource(self.km._feed_session_entry)   # T368: the loop body
         self.assertIn("_jauth_map = jd._auth_down_map()", src)
         self.assertIn("jerr and api_top is None and perm_top is None", src)
         self.assertIn('column = ("needs_input" if (api_block or nid == jauth_top or nid == perm_top', src)
 
     def test_the_floored_card_carries_the_judgeAuth_story(self):
         import inspect
-        src = inspect.getsource(self.km.build_feed)
+        src = inspect.getsource(self.km._feed_session_entry)   # T368: build_feed's per-session loop body
         self.assertIn('"state": "judgeAuth"', src)
         # the key-mode copy points at the one key path left (2026-09-08); the login copy is unchanged
         self.assertIn("the API key its judges bill is being refused. Fix the key behind Claude Code's apiKeyHelper "
