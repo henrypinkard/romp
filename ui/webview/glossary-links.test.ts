@@ -72,7 +72,7 @@ test("the term card fills the popover's contract from the index, no fetch; a ret
 test("the wiring: the frame per session, the matcher per index, links at the two chat grammars and the mail body, the card on the popover, the click to the viewer", () => {
   assert.match(RENDER, /else if \(m\.type === "glossary" && typeof m\.id === "string"\) \{[\s\S]{0,300}?glossaries\.set\(m\.id, m as GlossaryIndex\);\s*\n\s*relinkTerms\(m\.id\);/);
   assert.equal((RENDER.match(/\blinkTerms\((full|bubble|body)\)/g) || []).length, 6, "the nudge, continue and tagged-template bubbles' full text, the user bubble, the assistant body, the mail body (the review's low: the two bubbles never linked)");
-  assert.match(RENDER, /linkifyFileUris\(body, undefined, ev\.spacePaths, ev\.pathLinks, ev\.pathPins, ev\.pathPreview\);[^\n]*\n\s*linkTerms\(body\);/, "after the path links, so a path token is never split by a term");
+  assert.match(RENDER, /linkifyFileUris\(body, undefined, ev\.spacePaths, ev\.pathLinks, ev\.pathPins, ev\.pathPreview, ev\.pathPreviewWhy\);[^\n]*\n\s*linkTerms\(body\);/, "after the path links, so a path token is never split by a term");
   assert.match(RENDER, /s\.dataset\.path = m\.index\.path; s\.dataset\.frag = e\.slug;[\s\S]{0,200}?armFilePreview\(s\);/, "a term span is a path link's counterpart: the same hover road");
   assert.match(RENDER, /if \(a\.dataset\.term\) \{[\s\S]{0,600}?renderFilePreview\(p, termContent\(e, ix\), a\.dataset\.gsid \|\| activeId\);/, "the card from the index, no fetch");
   assert.match(RENDER, /closest\?\.\("span\.term-link"\)[\s\S]{0,300}?openPath\(s\.dataset\.path \|\| "", s\.dataset\.gsid \|\| activeId, e, s\.dataset\.frag \|\| null\);/, "a click opens the glossary at the heading");

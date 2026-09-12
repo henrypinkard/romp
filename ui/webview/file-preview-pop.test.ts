@@ -36,30 +36,31 @@ test("every path link is armed: a hover or a focus starts the dwell, leaving or 
 
 test("the kernel's verdict rides the link as data-preview; a link without it gets the text-only card and no request", () => {
   const lf = RENDER.slice(RENDER.indexOf("function linkifyFileUris("), RENDER.indexOf("function openPath(") > 0 ? RENDER.length : RENDER.length);
-  assert.match(lf, /pathLinks\?: Record<string, string>, pathPins\?: Record<string, string>, pathPreview\?: Record<string, string>\): void \{/, "the pass takes the map");
+  assert.match(lf, /pathLinks\?: Record<string, string>, pathPins\?: Record<string, string>, pathPreview\?: Record<string, string>,\s*\n\s*pathPreviewWhy\?: Record<string, string>\): void \{/, "the pass takes the map");
   assert.match(lf, /const k = previewKindOf\(tok, pathPreview\) \|\| previewKindOf\(open, pathPreview\);\s*\n\s*if \(k\) link\.dataset\.preview = k; else delete link\.dataset\.preview;/);
   assert.match(lf, /armPreview\(link, tok, tok\);/, "the kernel-verified spaced span");
   assert.match(lf, /bindPathLink\(link\);\s*\n\s*armPreview\(link, link\.textContent \|\| "", open\);/, "every hit of the token walk");
-  for (const call of ["linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);",
-                      "linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);",
-                      "linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);"]) {
+  for (const call of ["linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview, ev.pathPreviewWhy);",
+                      "linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview, ev.pathPreviewWhy);",
+                      "linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview, ev.pathPreviewWhy);"]) {
     assert.ok(RENDER.includes(call), "the map is threaded: " + call);
   }
-  assert.match(RENDER, /pathPins\?: Record<string, string>; pathPreview\?: Record<string, string> \}/, "the event carries pathPreview beside pathLinks and pathPins");
+  assert.match(RENDER, /pathPins\?: Record<string, string>; pathPreview\?: Record<string, string>; pathPreviewWhy\?: Record<string, string> \}/, "the event carries pathPreview and its whys beside pathLinks and pathPins");
   const show = RENDER.slice(RENDER.indexOf("function showFilePreview("), RENDER.indexOf("function linkifyFileUris("));
   assert.match(show, /const kind = a\.dataset\.preview \|\| null;/);
-  assert.match(show, /if \(!kind\) \{[^}]*renderFilePreview\(p, textOnlyContent\(path, anchor, "shown as text: outside the session's folder and your home, or not a kind the preview shows"\), sid\);\s*\n\s*stamp\(null\);\s*\n\s*return;\s*\n\s*\}/, "no fetch for a link the kernel did not allow");
+  assert.match(show, /if \(!kind\) \{[\s\S]*?const why = \/\^file:\/i\.test\(open\) \? "file links are opened, not previewed" : \(a\.dataset\.previewWhy \|\| "no preview verdict from the kernel for this link"\);\s*\n\s*renderFilePreview\(p, textOnlyContent\(path, anchor, "shown as text: " \+ why\), sid\);\s*\n\s*stamp\(null\);\s*\n\s*return;\s*\n\s*\}/, "no fetch for a link the kernel did not allow; a bare file link says it is opened, not previewed, and a path link says the kernel's why");
   assert.match(show, /if \(kind === "image" \|\| kind === "pdf"\) \{ renderFilePreview\(p, contentFor\(path, anchor, kind, sid, null\), sid\); stamp\(null\); return; \}/, "media needs no slice: the bytes route");
   assert.match(show, /p\.replaceChildren\(rompLoaderInner\("reading…", \{ wordmark: false \}\)\);/, "the loader first");
   assert.match(show, /fetch\(sliceUrl\(path, sid, anchor\), \{ credentials: "same-origin" \}\)/);
   assert.match(show, /if \(seq !== filePreviewSeq\) return;/, "a stale answer never fills a card that moved on");
   // the kernel's half: the preview map shipped beside pathLinks on both message paths, warming markdown
   assert.equal((KERNEL.match(/ev\["pathPreview"\] = pv/g) || []).length, 2, "both the assistant and the user message build ship it");
-  assert.match(KERNEL, /def _path_previews\(links, sid\):/);
+  assert.match(KERNEL, /def _path_preview_verdicts\(links, sid\):/);
   assert.match(RENDER, /p\.dataset\.renderMs = \(performance\.now\(\) - t0\)\.toFixed\(1\)/, "the card stamps dwell end to rendered content (the acceptance is latency)");
   assert.match(RENDER, /p\.dataset\.sliceHit = hit \? "1" : "0"/, "…and whether the slice was cached");
   assert.match(KERNEL, /hit=hit\)/, "the slice answer says whether it came from the cache");
-  assert.match(KERNEL, /if kind and \(kind != "markdown" or _slice_warm\(fp\)\):/, "the pusher's path warms the markdown it links, and a markdown the warm refuses (the content belt) ships without a kind");
+  assert.match(KERNEL, /if kind and kind == "markdown":\s*\n\s*why = _slice_warm_why\(fp\)\s*\n\s*if why:\s*\n\s*kind = None/, "the pusher's path warms the markdown it links, and a markdown the warm refuses (the content belt) ships without a kind and WITH the belt's why (T364)");
+  assert.match(KERNEL, /whys\[tok\] = why or "not previewed"/, "every link that does not preview carries a reason");
 });
 
 test("the card: the comment popover's size and surface, transient; closes on Escape, a scroll, a click elsewhere, a strip rebuild", () => {
@@ -103,4 +104,14 @@ test("open carries the section anchor to the viewer through both routes, and the
   assert.match(FILES, /openFileView\(path, sid, \{ frag \}\)/);
   assert.match(FILES, /typeof m\.frag === "string" \? m\.frag : null\);/);
   assert.match(KERNEL, /postMessage\(\{romp:'viewFile',path:m\.path,sid:m\.sid,identity:m\.identity\|\|null,frag:m\.frag\|\|null\},'\*'\)/, "the shell's relay forwards it");
+});
+
+test("the kernel's exact refusal rides the link as data-preview-why and the text card says it (T364)", () => {
+  // the four-way guess ("outside the session's folder and your home, or not a kind the preview shows") went: the card
+  // names the condition the kernel refused on, or says the kernel gave no verdict for this link at all
+  const lf = RENDER.slice(RENDER.indexOf("function linkifyFileUris("), RENDER.indexOf("\n}\n", RENDER.indexOf("function linkifyFileUris(")));
+  assert.match(lf, /pathPreview\?: Record<string, string>,\s*\n\s*pathPreviewWhy\?: Record<string, string>\): void \{/, "the why map is threaded beside the kinds");
+  assert.match(lf, /const w = !k && pathPreviewWhy \? \(pathPreviewWhy\[tok\] \|\| pathPreviewWhy\[open\] \|\| ""\) : "";\s*\n\s*if \(w\) link\.dataset\.previewWhy = w; else delete link\.dataset\.previewWhy;/);
+  assert.equal((RENDER.match(/ev\.pathLinks, ev\.pathPins, ev\.pathPreview, ev\.pathPreviewWhy\)/g) || []).length, 3, "the three linkify calls hand the why through");
+  assert.doesNotMatch(RENDER, /outside the session's folder and your home, or not a kind the preview shows/, "no guessed sentence is left");
 });

@@ -204,7 +204,7 @@ class Allowed(unittest.TestCase):
         self.assertEqual(km._slice_allowed(link4, SID), (None, "a link dressed as another kind"), "a code file behind a markdown name")
         out = self.w("outside/o.md"); link5 = os.path.join(self.cwd, "docs", "escape.md"); os.symlink(out, link5)
         self.assertEqual(km._slice_allowed(link5, SID), (None, "outside the session's folder and your home"), "a symlink out of the roots")
-        self.assertEqual(km._path_previews({"docs/report.md": "docs/report.md", "docs/alias.md": "docs/alias.md"}, SID), {"docs/alias.md": "markdown"},
+        self.assertEqual(km._path_preview_verdicts({"docs/report.md": "docs/report.md", "docs/alias.md": "docs/alias.md"}, SID)[0], {"docs/alias.md": "markdown"},
                          "the map omits the dressed link; only the honest one is warmed")
         self.assertEqual([k[0] for k in km._SLICE_CACHE], [os.path.realpath(plain)], "the cache holds the real path of the honest link, nothing of the secret")
 
@@ -303,14 +303,30 @@ class Allowed(unittest.TestCase):
         before = dict(km._PERF_STATS.snapshot()["fileSlice"])
         secretish = self.w("proj/docs/leak.md", "# L\n\n" + "api" + "_key" + " = " + "Z" * 24 + "\n")
         links["docs/leak.md"] = "docs/leak.md"
-        pv = km._path_previews(links, SID)
+        pv = km._path_preview_verdicts(links, SID)[0]
         self.assertEqual(pv, {"docs/g.md": "markdown", "src.py": "code", "p.png": "image"},
                          "the outside path and the zip are absent (text-only, no request), and so is the markdown whose text looks like a secret (the belt at warm time)")
         self.assertEqual([k[0] for k in km._SLICE_CACHE], [g], "the honest markdown was warmed; the secret-shaped one never entered the cache; code waits for a hover")
         after = km._PERF_STATS.snapshot()["fileSlice"]
         self.assertEqual(after["warm"], before["warm"] + 1)
-        km._path_previews(links, SID)
+        km._path_preview_verdicts(links, SID)
         self.assertEqual(km._PERF_STATS.snapshot()["fileSlice"]["warm"], before["warm"] + 1, "already warm: no second read")
+
+
+    def test_the_verdicts_carry_the_exact_refusal_for_every_link_that_does_not_preview(self):
+        # T364 (the laptop report): the text card said "outside the session's folder and your home, or not a kind the
+        # preview shows" whatever the reason was; the kernel now ships the exact condition beside the kinds, the
+        # markdown warm's content-belt refusal included (the likeliest reason a notes file the repo index resolved shows
+        # as text: a credential-shaped line inside it)
+        g = self.w("proj/docs/g.md", "# G\n"); o = self.w("outside/o.md")
+        leak = self.w("proj/docs/leak.md", "# L\n\n" + "api" + "_key" + " = " + "Z" * 24 + "\n")
+        links = {"docs/g.md": "docs/g.md", "../outside/o.md": o, "notes.zip": "notes.zip", "docs/leak.md": "docs/leak.md", "gone.md": "gone.md"}
+        kinds, whys = km._path_preview_verdicts(links, SID)
+        self.assertEqual(kinds, {"docs/g.md": "markdown"})
+        self.assertEqual(whys, {"../outside/o.md": "outside the session's folder and your home", "notes.zip": "not a file",
+                                "docs/leak.md": "looks like a secret", "gone.md": "not a file"}, "one why per link that does not preview, the kernel's own words")
+        self.assertEqual(km._slice_warm_why(g), ""); self.assertEqual(km._slice_warm_why(leak), "looks like a secret")
+        self.assertEqual(km._slice_warm_why(os.path.join(self.cwd, "docs", "nonesuch.md")), "not a file")
 
 
 class Perf(unittest.TestCase):

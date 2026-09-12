@@ -245,6 +245,30 @@ class Gates(_Fold):
         self.assertGreater(km._CHAT_FOLD_STATS.get(g, 0), n0, "the %s gate must demote here" % reason)
         return inc
 
+    def test_an_event_sealed_without_a_preview_verdict_refolds_once(self):
+        # T364: an event built before the kernel judged previews (or restored from a document that predates them)
+        # carries pathLinks and no pathPreview key, and the fold kept it sealed for good, so links in existing messages
+        # never gained a preview. One refold gives every such event the key; afterwards the clause is quiet
+        s = self.s
+        (s.cdir / "notes.md").write_text("# Notes\n")
+        u1 = s.uid(); s.append([uline(s.tick(), "see notes.md", u1, None)])
+        a1 = s.uid(); s.append([aline(s.tick(), "Read notes.md first.", a1, u1, stop="end_turn")])
+        u2 = s.uid(); s.append([uline(s.tick(), "ok", u2, a1)])
+        a2 = s.uid(); s.append([aline(s.tick(), "Done.", a2, u2)])
+        self.equiv("two turns, a link in the first")
+        sealed = [e for e in km._chat_fold_get(SID)["events"] if e.get("pathLinks")]
+        self.assertTrue(sealed, "the first turn's link is sealed")
+        self.assertTrue(all("pathPreview" in e for e in sealed), "every sealed event with links carries the verdict key: %r" % [sorted(e) for e in sealed])
+        self.assert_folding()
+        fe = km._chat_fold_get(SID)
+        for e in fe["events"]:
+            e.pop("pathPreview", None); e.pop("pathPreviewWhy", None)   # the old shape
+        fe.pop("pv_missing", None)                                       # a restored entry's shape: no field; the events are scanned once
+        inc = self._demotes("path-preview", "the old shape refolds once")
+        self.assertTrue(all("pathPreview" in e for e in inc["events"] if e.get("pathLinks")), "…and the rebuilt events carry the key")
+        self.assertEqual(km._chat_fold_get(SID).get("pv_missing"), [], "nothing left to refold for")
+        self.assert_folding()
+
     def test_a_tool_result_landing_in_a_later_turn_demotes(self):
         # turn 1 ENDS with a tool call still unanswered (a typed prompt only opens a new turn after an
         # ended one — an unfinished turn absorbs it); the prompt opens turn 2; THEN the result lands, in
