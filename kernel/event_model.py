@@ -767,7 +767,7 @@ _CKPT_STATS = {"restored": 0, "writes": 0, "swept": 0, "skippedFolds": 0, "fallb
                "oversizeFolds": {}, "coldFolds": {}, "coldWrites": {},
                "converge": {"passes": 0, "writes": 0, "bytes": 0, "heals": 0, "healBytes": 0, "primed": 0, "deferred": 0,
                             "failed": 0, "unhealed": 0, "docReadBytes": 0, "quiescent": 0, "skipped": 0,
-                            "dropWrites": 0, "dropDeferred": 0}}   # T360, T361, T362
+                            "dropWrites": 0, "dropDeferred": 0, "viaDrop": 0}}   # T360, T361, T362
 _CKPT_DOC_FOLDS = {}              # path -> {fold name: "state" | "over" | "cold" | "bare"}: the document on disk as last written or
 #                                   loaded in this process, so the converge pass can tell a document lacking a state without a read
 _COLD = object()                  # a restored cursor with no state (its fold was oversize): fold_records inits it and steps the tail
@@ -1193,6 +1193,15 @@ def _path_needs_write(key, ent, at_drop=False):
         if _cursor_recordable(cache.get(key), gen, base, total) and shapes.get(name) not in ("state", "over"):
             return True
     return False
+
+
+def checkpoint_path_needs_write(path):
+    """The one rule asked from outside for the reader's current entry of `path` (the converge pass, after priming a quiescent
+    leaf: did the launch fold's drop already write everything?): False with no entry."""
+    key = str(path)
+    with _JSONL_CACHE_LOCK:
+        ent = _JSONL_CACHE.get(key)
+    return ent is not None and _path_needs_write(key, ent)
 
 
 def checkpoint_cycle_begin(cap):

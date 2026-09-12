@@ -9931,7 +9931,9 @@ def _converge_checkpoints(now):
     whole read, its bytes counted), and over a whole-resident entry every leaf fold is primed (a step over records in hand,
     no read), so one write carries all five. For another file a tail-only cursor is dropped so the write leaves it out and
     its next run reads the small file whole once. A document already carrying every fold that ran is never a candidate,
-    so an idle session's document is written once and then left alone. Returns the documents written."""
+    so an idle session's document is written once and then left alone. A quiescent leaf (T361) is refused unless the boot's
+    own whole read is still resident, in which case the prime's launch fold writes its document at the quiescence drop from
+    that read (`viaDrop`), no read of the pass's own. Returns the documents written."""
     if CKPT_CONVERGE_MS <= 0 or not em.checkpoint_has_work():
         _CKPT_JUST_WRITTEN.clear()
         return 0                                           # off (ROMP_CKPT_CONVERGE_MS=0), or nothing dirty and nothing cold: a quiet
@@ -9946,10 +9948,16 @@ def _converge_checkpoints(now):
         if i and (time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0 or not em.checkpoint_cycle_room(0)):
             em.converge_stat("deferred", len(cands) - i)   # gated on candidates PROCESSED, not documents written: a first
             break                                          #  candidate that writes nothing must not lift the budget (review)
-        if p in leaves and em.file_quiescent(p):           # T361 (the live loop): a leaf unchanged past the reader's quiescence
+        quiescent = p in leaves and em.file_quiescent(p)
+        if quiescent and not em.entry_whole_resident(p):   # T361 (the live loop): a leaf unchanged past the reader's quiescence
             em.converge_stat("quiescent"); _converge_skip(p)   #  window loses its whole entry right after a fold steps it, so a heal
-            continue                                       #  or a prime here would read it whole every cycle and the write would
-        #                                                    find no entry; the boot's cold refold or the next settle converges it
+            continue                                       #  or a prime here would READ it whole every cycle and the write would
+        #                                                    find no entry. With the boot's own whole read still resident (T362
+        #                                                    follow-up) the heal and the prime step records in hand, no read, and
+        #                                                    the prime's last fold (the agent-launch state, the one that drops
+        #                                                    quiescent leaves) writes the document from that read at its drop and
+        #                                                    pops the entry: the idle leaf converges once, and with its entry gone
+        #                                                    it is refused here on any later cycle, never read again by the pass
         cold = [k for k, r in em.cold_fold_reasons(p).items() if r == "cold"]
         if p in leaves:
             before = _read_bytes_of(p)
@@ -9962,6 +9970,9 @@ def _converge_checkpoints(now):
                 em.converge_stat("primed")
         else:
             unhealed = em.drop_cold_cursors(p)
+        if quiescent and not em.checkpoint_path_needs_write(p):   # the launch fold's drop wrote the document from the boot's read
+            em.converge_stat("viaDrop")                    #  (converge.dropWrites, charged to this cycle's take; the entry popped, or
+            continue                                       #  kept after a restore at the witness): no write of the pass's own
         if unhealed:                                       # a fold the heal cannot rerun here (not one of the leaf's five): its
             em.converge_stat("unhealed", len(unhealed))    #  cursor and cold mark are dropped, the write leaves it out, its next
         try:                                               # the write reads the document on disk for its carry: that read is the
