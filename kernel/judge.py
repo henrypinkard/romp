@@ -6087,9 +6087,12 @@ def _per_file_rewound(fsid, files):
             if fp == leaf:                                # the leaf road: the document's pre-cut verdicts and the tail read now
                 out |= em.file_rewound(fp, rompuuid=fsid, sdk_human=_sdk_owned(fsid))
             else:                                         # a dead episode's frozen file: the walk once, its verdict set memoized in
-                out |= em.rewound_uuids(fp, drop=fp not in lineage)   # the file's fold document and restored at the next process
-            #     ^ (T391); a live session's anchor keeps its records resident, since the chain walk above reads it whole at
-            #       every pass and a drop here made that a whole read per pass (round one, medium)
+                out |= em.rewound_uuids(fp, drop=fp not in lineage and not _sdk_owned(fp.stem))   # the file's fold document,
+            #     ^ restored at the next process (T391); a live session's anchor keeps its records resident, since the chain walk
+            #       above reads it whole at every pass and a drop here made that a whole read per pass (round one, medium); so does
+            #       ANY registered session's own file (<sid>.jsonl with a reg): a fork's episode log names its parent's anchor,
+            #       and the fork's scan dropping it made the parent's chain walk read it whole once more per process, by pass
+            #       order (round two, low 2)
             #     ^ the one-file walk asks for the leaf's document quietly: a lineage document (a /clear's anchor, a
             #       resume fork) is not this walk's and stays the display's
         except Exception as e:

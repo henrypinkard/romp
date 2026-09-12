@@ -98,7 +98,7 @@ class RewoundMemo(Harness):
         km = kernel_module(); jd = km.jd
         src = inspect.getsource(jd._per_file_rewound)
         self.assertIn("em.file_rewound(fp, rompuuid=fsid", src, "the leaf: the document's pre-cut verdicts and the tail")
-        self.assertIn("em.rewound_uuids(fp, drop=fp not in lineage)", src, "a dead file: the memo, its entry dropped; a lineage file resident")
+        self.assertIn("em.rewound_uuids(fp, drop=fp not in lineage and not _sdk_owned(fp.stem))", src, "a dead file: the memo, its entry dropped; a lineage file or a registered session's own file resident")
         self.assertLess(src.index("if fp == leaf:"), src.index("em.rewound_uuids(fp, drop="), "the leaf road decided first")
 
     def test_an_over_cap_set_is_recorded_as_such_and_walked_again(self):
@@ -225,6 +225,64 @@ class RewoundMemo(Harness):
         self.assertEqual(got, first, "the walk's verdicts")
         st = em.rewound_memo_stats()
         self.assertEqual((st["walked"], st["fallback"]), (1, 1), "%s" % st)
+
+    def test_with_the_drop_write_off_the_walked_file_stays_resident(self):
+        """Round two, low 1: with the drop's document write off (a cycle cap of 0, a documented knob) the memo road dropped the
+        walked entry and read a dead file whole at EVERY pass where the old road read it once per process (1259 bytes each
+        pass against 1259/0/0). The entry stays resident when the memo cannot reach the disk."""
+        path = self.frozen("capoff"); key = str(path)
+        saved = dict(em._CKPT_CYCLE)
+        with em._CKPT_LOCK:
+            em._CKPT_CYCLE["cap"] = 0
+        def restore():
+            with em._CKPT_LOCK:
+                em._CKPT_CYCLE.update(saved)
+        self.addCleanup(restore)
+        self.fresh_process()
+        with em._CKPT_LOCK:
+            em._CKPT_CYCLE["cap"] = 0
+        self.assertFalse(em.checkpoint_drop_writes_on())
+        first = em.rewound_uuids(path)
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNotNone(em._JSONL_CACHE.get(key), "the entry stays resident: nothing could be written")
+        before = em.read_bytes_report().get(key, 0)
+        self.assertEqual(em.rewound_uuids(path), first)
+        self.assertEqual(em.read_bytes_report().get(key, 0) - before, 0, "the second pass reads nothing")
+        st = em.rewound_memo_stats(); self.assertEqual((st["walked"], st["served"]), (1, 1), "%s" % st)
+
+    def test_a_registered_sessions_own_file_is_not_dropped_by_another_sessions_scan(self):
+        """Round two, low 2: a fork's episode log names its parent's anchor; when the fork's scan walked first and dropped the
+        entry, the parent's chain walk read the anchor whole once more in that process, by pass order. A file that is a
+        registered session's own (<sid>.jsonl with a reg) is never dropped by another session's scan."""
+        jd = kernel_module().jd
+        parent = "7a391000-2222-4333-8444-000000000393"; fork = "7a391000-2222-4333-8444-000000000394"
+        td = Path(tempfile.mkdtemp()); (td / "state").mkdir()
+        saved = jd.STATE; jd._rebind_state(td / "state")
+        def restore():
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._rebind_state(saved); shutil.rmtree(td, ignore_errors=True)
+        self.addCleanup(restore)
+        records, _sent = G.SINGLE_FILE["rewind_off_path"]
+        anchor = td / (parent + ".jsonl")
+        anchor.write_text("\n".join(json.dumps(r) for r in records()) + "\n")
+        old = time.time() - 600; os.utime(anchor, (old, old))
+        leaf = td / (fork + ".jsonl")
+        leaf.write_text(json.dumps(G.uline(NOW, "the fork's own first line", "u_fork_0", None)) + "\n")
+        (jd.STATE / "sdk").mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "sdk" / (parent + ".json")).write_text(json.dumps({"spawnedAt": NOW}))   # the parent is a registered session
+        jd.EPIDIR.mkdir(parents=True, exist_ok=True)
+        (jd.EPIDIR / (fork + ".jsonl")).write_text(json.dumps({"head": "u_fork_0", "fsid": parent, "t": NOW}) + "\n")   # names the anchor
+        self.fresh_process()
+        out, fails = jd._per_file_rewound(fork, [str(leaf)])
+        self.assertEqual(fails, 0); self.assertTrue(out, "the anchor's rewound branch is in the fork's scan")
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNotNone(em._JSONL_CACHE.get(str(anchor)), "the parent's anchor stays resident under the fork's scan")
+        (jd.STATE / "sdk" / (parent + ".json")).unlink()                      # no reg: a dead episode's file, dropped as before
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.pop(str(anchor), None)
+        self.fresh_process()
+        jd._per_file_rewound(fork, [str(leaf)])
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNone(em._JSONL_CACHE.get(str(anchor)), "an unregistered file is dropped after its memo is written")
 
 
 if __name__ == "__main__":

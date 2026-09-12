@@ -4312,11 +4312,13 @@ def rewound_uuids(path, drop=True):
     _REWOUND_CACHE[key] = (count, gen, {"uuids": sorted(out)})   # the memo at the walk's own witness, dirty
     with _CKPT_LOCK:
         _FOLD_DIRTY.add(key)
-    if drop:                                              # the quiescence drop over this frozen file writes the document from the
+    if drop and checkpoint_drop_writes_on():              # the quiescence drop over this frozen file writes the document from the
         with _JSONL_CACHE_LOCK:                           #  walk's own read and lets the records go (T362's drop, its budget and its
             ent = _JSONL_CACHE.get(key)                   #  deferral); a file still changing keeps its entry and is written at its
-        if ent is not None and ent[6] == gen:             #  settle; only the very entry the walk read is dropped
-            _drop_quiescent_entry(key, ent, pop=True)
+        if ent is not None and ent[6] == gen:             #  settle; only the very entry the walk read is dropped. With the drop's
+            _drop_quiescent_entry(key, ent, pop=True)     #  document write OFF (a cycle cap of 0) the entry stays resident: the memo
+    #                                                        could not reach the disk, and a drop then made the file a whole read at
+    #                                                        every pass where the old road read it once per process (round two, low 1)
     return out
 
 
