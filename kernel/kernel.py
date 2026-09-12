@@ -15122,6 +15122,19 @@ def _agent_landed_after(events, msgs, seen):
     return any(m["who"] == "agent" and m["t"] > seen for m in msgs)
 
 
+def _echo_landing_atoms(turns, live):
+    """[(stamp, its texts)] for the user atoms an echo could have landed as: those at or after the oldest live echo's send
+    (a text lands at or after its send, so no older atom can hold an echo's landing). The stamp is a scalar every lazy atom
+    carries, so the atoms below the floor are never hydrated (T384: the comments frame read every user atom of a thread's
+    whole parse for this, a body read of every pre-cut user message on every frame with a live echo)."""
+    since = min((float(e.get("t") or 0) for e in live if e.get("_echo_text")), default=None)
+    if since is None:
+        return []
+    return [(float(a.get("t") or 0), set(_atom_user_texts(a)))
+            for tr in turns for a in (tr.get("atoms") or [])
+            if a.get("type") == "user" and float(a.get("t") or 0) >= since]
+
+
 def _comments_frame(sid, live_map=None):
     """The chat pane's {type:"comments"} frame for parent session `sid`, or None when it has never
     had a thread. Built per push for sessions WITH a store (few) — _send_client's dedup keeps an
@@ -15211,8 +15224,7 @@ def _comments_frame(sid, live_map=None):
                 # deliberate re-send repeat earlier texts, which read as "already in the transcript" and hid a
                 # send the CLI still held (round-5 review). A `dropped` echo (the backend adjudicated the send
                 # LOST — a reconnect with it in flight; the popover shows "never delivered") owes nothing.
-                user_atoms = [(float(a.get("t") or 0), set(_atom_user_texts(a)))       # (stamp, its texts), built once per frame
-                              for tr in turns for a in (tr.get("atoms") or []) if a.get("type") == "user"]
+                user_atoms = _echo_landing_atoms(turns, live)          # (stamp, its texts) from the oldest echo's send up, built once
                 def _landed(e):
                     keys = set(sb.echo_keys(e.get("_echo_text")))     # the plain key and, for a slash send, its words
                     since = float(e.get("t") or 0)                     # the send's own stamp: the record the CLI writes for
@@ -25664,8 +25676,15 @@ def _seg_of_tool_uses(ps, store, tool_ids):
             for a in seg["atoms"]:
                 if a.get("type") != "assistant":
                     continue
-                for tid, _name in em.atom_tool_uses(a):   # the ids from the body, or a lazy atom's marker scalars: no hydration
-                    if tid in want:                        #  (T384: every turn was hydrated whole, newest first, 155 MB a boot)
+                lz = a.get("lazy")
+                if lz is not None and "tu" not in lz:      # a marker older than the scalar: the body answers (a counted read), never
+                    em.hydrate([a])                        #  an empty answer for a call that exists (review, low 4)
+                    uses = [(b.get("id"), b.get("name")) for b in ((a.get("message") or {}).get("content") or [])
+                            if isinstance(b, dict) and b.get("type") == "tool_use"]
+                else:
+                    uses = em.atom_tool_uses(a)            # the ids from the body, or a lazy atom's marker scalars: no hydration
+                for tid, _name in uses:                    #  (T384: every turn was hydrated whole, newest first, 155 MB a boot)
+                    if tid in want:
                         found[tid] = seg["id"]
                         want.discard(tid)
     return found
@@ -32421,9 +32440,7 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     # The transcript-side sets come from the per-sid memo (_merge_tx_sets): a function of the parsed
     # session alone, which the parse cache hands back as the same object until the transcript changes,
     # and which every build of a cycle (chat, feed, timeline) used to derive again from every atom.
-    echo_floor = min((float(a.get("t") or 0) for a in live if a.get("_echo_text")), default=float("inf"))   # the oldest echo's send;
-    #                                                                                                 no echo: no text can land, none
-    #                                                                                                 is read (T384: None read them all)
+    echo_floor = min((float(a.get("t") or 0) for a in live if a.get("_echo_text")), default=None)   # the oldest echo's send:
     tx_uuids, tx_text_uuids, tx_texts, tx_text_t, human_floor = _merge_tx_sets(session, sid, echo_floor)   # no text lands before it
     # A TEXTLESS disk twin must not land a texty live atom (the user 2026-07-28): on some model+tool
     # combinations (observed: fable-5 replying before an AskUserQuestion) the CLI persists the reply

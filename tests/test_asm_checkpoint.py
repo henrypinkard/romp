@@ -736,12 +736,56 @@ class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
         self.assertEqual(set(found), whole_ids, "every id resolved to its segment")
         self.assertEqual(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "from the scalars, no body read: %s" % em.asm_checkpoint_stats()["hydratedBy"])
 
-    def test_the_echo_set_reads_no_user_text_when_no_echo_can_land(self):
-        path, tree = self._restored("echoset")
-        self.km._merge_sets_memo.clear()
-        self.km._merge_tx_sets(tree, SID + "-t384", float("inf"))    # no live echo: no text can land, none is read
+    def test_the_comments_frames_landing_walk_reads_no_user_text_below_the_oldest_echos_send(self):
+        """The comments frame read every user atom of a thread's whole parse to test whether a live echo had landed (78 MB on
+        the first T377 boot); a text lands at or after its send, so the atoms below the oldest echo's send are never read."""
+        path, tree = self._restored("echoland")
+        pre_users = [a for t in tree["turns"] for a in t["atoms"] if a.get("type") == "user" and a.get("lazy") is not None]
+        self.assertTrue(pre_users, "pre-cut user atoms in play")
+        newest = max(float(a.get("t") or 0) for t in tree["turns"] for a in t["atoms"] if a.get("t"))
+        live = [{"_echo_text": "a typed-ahead line", "t": newest + 5}]   # an echo sent after every recorded atom
+        rows = self.km._echo_landing_atoms(tree["turns"], live)
+        self.assertEqual(rows, [], "no atom at or after the send: nothing to compare, nothing read")
         self.assertEqual(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "%s" % em.asm_checkpoint_stats()["hydratedBy"])
+        self.assertEqual(self.km._echo_landing_atoms(tree["turns"], []), [], "no live echo: no walk")
+        live = [{"_echo_text": "an early line", "t": 0}]                 # an echo older than everything: every user atom is a candidate
+        rows = self.km._echo_landing_atoms(tree["turns"], live)
+        self.assertEqual(len(rows), sum(1 for t in tree["turns"] for a in t["atoms"] if a.get("type") == "user"))
+        self.assertGreaterEqual(em.asm_checkpoint_stats()["hydratedAtoms"], len(pre_users), "below the floor they are read, as before")
 
+    def test_a_marker_without_tool_use_scalars_answers_from_the_body_not_silently_empty(self):
+        """Review, low 4: a lazy assistant marker without `tu` made the tool-uses reader resolve nothing, silently; the body
+        answers instead (a counted hydration), never an empty map for a call that exists."""
+        path, tree = self._restored("notu")
+        whole_ids = {b.get("id") for t in self.cold(path)["turns"] for a in t["atoms"] if a.get("type") == "assistant"
+                     for b in ((a.get("message") or {}).get("content") or []) if isinstance(b, dict) and b.get("type") == "tool_use"}
+        self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+        popped = 0
+        for t in tree["turns"]:
+            for a in t["atoms"]:
+                if a.get("type") == "assistant" and a.get("lazy") is not None and "tu" in a["lazy"]:
+                    a["lazy"].pop("tu"); popped += 1
+        self.assertTrue(popped, "markers without the scalar in play")
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        found = self.km._seg_of_tool_uses(tree, {"placements": {}, "nodes": {}, "seq": 0}, list(whole_ids))
+        self.assertEqual(set(found), whole_ids, "resolved from the bodies")
+        self.assertGreater(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "read, and counted")
+
+    def test_a_whole_read_through_the_parse_family_names_the_walker(self):
+        """Review, low 1: every parse goes through parsed_session, so its whole read was one row for every walker; the counter
+        walks past the parse family to the first caller beyond it."""
+        jd = self.km.jd
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("walker", records(), sent=sent)
+        self.fresh(); jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReads"] = {}
+        def some_boot_walker():
+            return jd.parsed_session(SID, [path], NOW)
+        some_boot_walker()
+        keys = list(em.record_cache_stats()["wholeReads"])
+        self.assertTrue(any(k.endswith("<-some_boot_walker") for k in keys), "the walker, not the parse family: %s" % keys)
+        self.assertFalse(any(k.split("<-")[-1] in ("parsed_session", "parse_session", "parse_cached", "_parse_store") for k in keys), "%s" % keys)
 
 class KernelOverRestored(Harness):
     """The kernel's and the judges' body readers over a restored tree: every consumer the audit named hydrates what it

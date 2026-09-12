@@ -1623,6 +1623,8 @@ def _read_jsonl_incremental(path, on_fail=None):
 _TAIL_OK = threading.local()      # .flag: the calling fold accepts a tail entry (set by fold_records around its read)
 _READER_TRACE = bool(os.environ.get("ROMP_READER_TRACE"))   # one stderr line per read that pulled bytes (a diagnosis aid)
 _WHOLE_READ_KINDS = ("zero", "rewrite", "guard", "shrunk", "upgrade")   # the reader's kinds that pull a file whole (T384's counter)
+_WHOLE_READ_PASSTHROUGH = ("parse_session", "parsed_session", "parse_cached", "_parse_store", "_parse")   # the parse family every
+#                                   walker shares: the whole-read row names the first caller beyond it, the real walker
 _LAST_ENTRY = threading.local()   # .ent: the entry the last _read_jsonl_incremental on this thread served
 
 
@@ -1750,8 +1752,8 @@ def _read_jsonl_entry_unlocked(path, on_fail=None, tail_ok=False, tail_from=None
             if kind in _WHOLE_READ_KINDS:                 # a whole read: counted by kind and caller on /perf (T384), always on; the
                 try:                                      #  frame walk runs only here, on the rare whole read, never on a tail or an
                     fr = sys._getframe(1)                 #  append
-                    while fr is not None and fr.f_code.co_filename == __file__:
-                        fr = fr.f_back
+                    while fr is not None and (fr.f_code.co_filename == __file__ or fr.f_code.co_name in _WHOLE_READ_PASSTHROUGH):
+                        fr = fr.f_back                    #  past this module and past the parse family, to the walker (review, low 1)
                     who = fr.f_code.co_name if fr is not None else "?"
                 except Exception:
                     who = "?"
