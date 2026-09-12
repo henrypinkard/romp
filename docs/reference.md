@@ -1035,7 +1035,11 @@ is bounded: over it the oldest owed drop is paid by its pop alone, and an owed
 file since deleted has its entry popped when the cycle pays. A leaf unchanged for longer than the reader keeps a quiescent
 file's whole entry (two minutes) is refused by the pass and counted under
 `quiescent`: its heal would read the file whole every cycle and the write
-would find no entry (the boot's cold refold or the next settle converges it);
+would find no entry; the one exception is a leaf whose whole entry from the
+boot's own read is still resident, which the pass heals and primes in memory
+so that the launch fold's quiescence drop writes the document from that read
+and pops the entry (`viaDrop`), once, after which the leaf is refused like any
+other;
 a path the pass refused or whose write produced nothing is skipped until its
 file changes under the reader (`skipped` counts each such hold once, per file
 state, and the check reads the reader's own entry rather than stat the file

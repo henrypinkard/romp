@@ -1131,6 +1131,55 @@ class KernelFolds(Base):
         km._session_meta(self.leaf)                                       # a fold re-reads it: the entry's stamp moved
         self.assertFalse(km._converge_skipped(self.leaf), "the pass may look again")
 
+    def test_converge_primes_a_quiescent_leaf_whose_entry_is_whole_resident_and_the_drop_writes_it(self):
+        """T362 follow-up (the first live boot after the merge: dropWrites 0, the pairing still missing from 37 of 60 documents).
+        The only fold that drops quiescent leaves is the agent-launch fold, which the builders call for sessions with agents and
+        the pass never reached for a quiescent leaf (the T361 refusal), so after the boot's whole read nothing ran a drop over an
+        idle leaf and its document stayed stale with the read resident. The refusal is narrowed to a leaf whose entry is NOT
+        whole-resident: with the boot's read in hand the heal and the prime step records in memory, the prime's last fold is
+        the launch fold, and its drop writes the document from that read and pops the entry; the pass counts it."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "missing", "bgAll": "bare"}, quiescent=True)
+        size = os.path.getsize(self.leaf)
+        km._bg_scan_all_cached(self.leaf)                             # the boot: the background view restores cold over the tail
+        jd._bg_scan(self.leaf)                                        # the judges' first pass: the whole read, resident
+        self.assertTrue(em.entry_whole_resident(self.leaf)); self.assertEqual(em.cold_fold_reasons(self.leaf), {"bgAll": "cold"})
+        read0 = em.read_bytes_report().get(self.leaf, 0); dropped0 = em.record_cache_stats()["dropped"]
+        km._begin_checkpoint_cycle()
+        self.assertEqual(km._converge_checkpoints(TS0 + 600), 0, "the pass wrote nothing itself")
+        self.assertGreater(em._CKPT_CYCLE["spent"], 0, "the drop's write charged the cycle's take")
+        d = self.doc(self.leaf)
+        self.assertEqual(sorted(d["folds"]), ["agentLaunches", "bgAll", "bgJudge", "bgRunning", "sessionMeta"])
+        self.assertTrue(all("state" in f for f in d["folds"].values()), "the healed view and the primed folds, all complete")
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNone(em._JSONL_CACHE.get(self.leaf), "and the entry left memory")
+        self.assertEqual(em.checkpoint_converge_candidates(), [], "nothing left to converge")
+        for k in (1, 2):                                              # the guard (the T361 loop was a pass acting every cycle):
+            km._begin_checkpoint_cycle()                              #  two more cycles do nothing for this leaf
+            self.assertEqual(km._converge_checkpoints(TS0 + 600 + k), 0)
+        cv = em.checkpoint_stats()["converge"]
+        self.assertEqual((cv["passes"], cv["heals"], cv["viaDrop"], cv["dropWrites"], cv["quiescent"], cv["failed"], cv["writes"]),
+                         (1, 1, 1, 1, 0, 0, 0), "three cycles: one heal, one drop write, then nothing: %s" % cv)
+        self.assertEqual(em.record_cache_stats()["dropped"], dropped0 + 1, "one pop")
+        self.assertLess(em.read_bytes_report().get(self.leaf, 0) - read0, 256, "no read of records: the write's 64-byte guard check alone")
+        self.assertIn("viaDrop", km._PERF_STATS.snapshot()["checkpoints"]["converge"], "the story is on /perf")
+        self.fresh_process()
+        jd._bg_scan(self.leaf)
+        self.assertLess(em.read_bytes_report().get(self.leaf, 0), size / 2, "the next boot reads the tail")
+
+    def test_converge_over_a_resident_quiescent_leaf_whose_launch_fold_restores_writes_once(self):
+        """The other live shape: the document carries the launch state and lacks the pairing. The prime's launch fold restores
+        at the witness, the drop writes without popping (nothing stepped), and the pass, asking the rule, writes nothing more."""
+        self._converge_world({"bgJudge": "missing"}, quiescent=True)
+        jd._bg_scan(self.leaf)
+        km._begin_checkpoint_cycle()
+        self.assertEqual(km._converge_checkpoints(TS0 + 600), 0)
+        cv = em.checkpoint_stats()["converge"]
+        self.assertEqual((cv["viaDrop"], cv["dropWrites"], cv["writes"], cv["quiescent"]), (1, 1, 0, 0), "%s" % cv)
+        d = self.doc(self.leaf); self.assertIn("state", d["folds"]["bgJudge"])
+        self.assertTrue(em.entry_whole_resident(self.leaf), "nothing stepped: the entry stays")
+        km._begin_checkpoint_cycle(); self.assertEqual(km._converge_checkpoints(TS0 + 601), 0)
+        self.assertEqual((em.checkpoint_stats()["converge"]["passes"], self.doc(self.leaf)["seq"]), (1, d["seq"]), "one pass, one write")
+
     def test_converge_skips_a_path_whose_write_failed_until_its_file_changes(self):
         """T361 (b): a failed write must not repeat every cycle."""
         self._converge_world({"bgJudge": "missing"})
