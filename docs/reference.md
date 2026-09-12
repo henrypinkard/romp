@@ -1029,7 +1029,10 @@ reads whole as before, so a complete state is never replaced by a tail-only one.
 The knobs: `ROMP_CKPT_CONVERGE_MS=0` turns the pass off and the drop write with
 it (the drop then pops as it did before the write existed); `ROMP_CKPT_CONVERGE_MB`
 is the cycle budget both charge, and `0` turns the drop write off the same way
-rather than deferring every drop. A leaf unchanged for longer than the reader keeps a quiescent
+rather than deferring every drop; both are read where the drop lives, so they
+hold from the first fold, before the first pusher cycle begins. The owed table
+is bounded: over it the oldest owed drop is paid by its pop alone, and an owed
+file since deleted has its entry popped when the cycle pays. A leaf unchanged for longer than the reader keeps a quiescent
 file's whole entry (two minutes) is refused by the pass and counted under
 `quiescent`: its heal would read the file whole every cycle and the write
 would find no entry (the boot's cold refold or the next settle converges it);

@@ -9823,7 +9823,9 @@ except Exception:
 _CKPT_SETTLE_SEEN = {}          # sid -> (turn-end key, states-log stat) at the last checkpoint write of its files
 _CKPT_PERIODIC_SEEN = {}        # sid -> (leaf stat, monotonic time) at the last PERIODIC write (see _persist_checkpoints)
 CKPT_PERIOD_S = float(os.environ.get("ROMP_CKPT_PERIOD_S", "30"))   # a session mid-turn for hours writes at least this often
-CKPT_CONVERGE_MS = float(os.environ.get("ROMP_CKPT_CONVERGE_MS", "150"))          # the converge pass's wall budget per pusher cycle (T360)
+CKPT_CONVERGE_MS = em._CKPT_CONVERGE_MS_DEFAULT   # the converge pass's wall budget per pusher cycle (T360); 0 turns the pass off and the
+#                                                    quiescence drop's write with it (T362); the event model reads the knob so both reach
+#                                                    the drop before the first cycle begins
 CKPT_CONVERGE_BYTES = em._CKPT_CYCLE_CAP_DEFAULT   # ...and its bytes (documents written plus leaves read for a heal), the cycle budget the
 #                                                     quiescence drop's writes share (T362); 0 turns those writes off too (the drop then pops as before)
 

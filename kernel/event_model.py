@@ -818,15 +818,6 @@ def _env_or(name, default, scale=1):
 # cold-refolded them whole, 1.74 GB read in the first pusher cycle (65 s of tick jobs); a document of a few MB reads in
 # milliseconds. ROMP_CKPT_FOLD_CAP_KB sets it outright.
 _CKPT_FOLD_CAP = _env_or("ROMP_CKPT_FOLD_CAP_KB", 8 * 1024 * 1024, 1024)
-_CKPT_CYCLE_CAP_DEFAULT = _env_or("ROMP_CKPT_CONVERGE_MB", 8 * 1024 * 1024, 1024 * 1024)   # the pusher cycle's byte budget for
-#                                   checkpoint work (documents written and read, leaves read for a heal), shared by the converge pass
-#                                   and the quiescence drop's write (T362); the kernel's knob reads the same default
-_CKPT_CYCLE = {"cap": _CKPT_CYCLE_CAP_DEFAULT, "spent": 0}   # the cycle in progress: the kernel begins each pusher cycle at its
-#                                   START (so the boot's first builds are capped where the volume is); before any cycle, and in a
-#                                   process that never begins one (the judges), the default cap stands; a cap of 0 turns the drop
-#                                   write off (the drop pops as before T362)
-_DROP_OWED = {}                   # path -> when its quiescence drop was deferred for the cycle's budget (T362): paid at the next
-#                                   cycle's start with the room it has, oldest first, or by the next fold over the file; bounded
 #                                   bytes of encoded state a fold may put in a checkpoint. A state that grows with its file (the postal
 #                                   log fold's map of every sent row, the state intervals' list of every transition, the every-task
 #                                   background view on a long transcript) would make the document a second copy of the file: reading
@@ -834,6 +825,28 @@ _DROP_OWED = {}                   # path -> when its quiescence drop was deferre
 #                                   44 MB world). Such a fold is left out, counted per name, and cold-folds at first touch; the folds
 #                                   whose state is bounded (the gist's capped steps, the running tasks, the newest rows) are the ones
 #                                   the checkpoint pays for. A bounded projection for the growing ones is a later stage's item.
+_CKPT_CYCLE_CAP_DEFAULT = _env_or("ROMP_CKPT_CONVERGE_MB", 8 * 1024 * 1024, 1024 * 1024)   # the pusher cycle's byte budget for
+#                                   checkpoint work (documents written and read, leaves read for a heal), shared by the converge pass
+#                                   and the quiescence drop's write (T362); the kernel's knobs read these defaults, so they reach
+#                                   the drop write before the first cycle begins (round two, low 3)
+try:
+    _CKPT_CONVERGE_MS_DEFAULT = float(os.environ.get("ROMP_CKPT_CONVERGE_MS", "150"))   # the pass's wall budget; 0 turns the pass
+except ValueError:                                                                        #  off and the drop write with it
+    _CKPT_CONVERGE_MS_DEFAULT = 150.0
+
+
+def _ckpt_cycle_default_cap():
+    """The cycle budget that stands before any pusher cycle has begun, and in a process that never begins one (the judges):
+    the byte knob, or 0 (the drop write off) when either knob is zero."""
+    return _CKPT_CYCLE_CAP_DEFAULT if _CKPT_CONVERGE_MS_DEFAULT > 0 and _CKPT_CYCLE_CAP_DEFAULT > 0 else 0
+
+
+_CKPT_CYCLE = {"cap": _ckpt_cycle_default_cap(), "spent": 0}   # the cycle in progress: the kernel begins each pusher cycle at
+#                                   its START (so the boot's first builds are capped where the volume is); before any cycle the
+#                                   default above stands; a cap of 0 turns the drop write off (the drop pops as before T362)
+_DROP_OWED = {}                   # path -> when its quiescence drop was deferred for the cycle's budget (T362): paid at the next
+#                                   cycle's start with the room it has, oldest first, or by the next fold over the file
+_DROP_OWED_MAX = 4096             # over it the OLDEST owed entry is popped unwritten (its memory released), never the table cleared
 _CKPT_LOCK = threading.Lock()
 _CKPT_PENDING = {}                # path -> {"count": N, "gen": g, "folds": {name: {"count", "state"}}} restores not yet taken
 _CKPT_SEQ = {}                    # path -> the seq of the last checkpoint read or written for it
@@ -908,7 +921,7 @@ def set_checkpoint_dir(fn):
     _CKPT_DIR_FN = fn
     with _CKPT_LOCK:
         _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear(); _DROP_OWED.clear()
-        _CKPT_CYCLE["cap"] = _CKPT_CYCLE_CAP_DEFAULT; _CKPT_CYCLE["spent"] = 0
+        _CKPT_CYCLE["cap"] = _ckpt_cycle_default_cap(); _CKPT_CYCLE["spent"] = 0
 
 
 def _ckpt_dir():
@@ -1206,6 +1219,15 @@ def checkpoint_drop_writes_on():
         return _CKPT_CYCLE["cap"] > 0
 
 
+def _pop_owed_entry(key):
+    """Release `key`'s cached entry unwritten (an owed drop paid by the pop alone), under the reader's lock only."""
+    with _JSONL_CACHE_LOCK:
+        w = _cache_pop_locked(key)
+        if w:
+            _RECORD_CACHE_STATS["dropped"] += 1
+            _RECORD_CACHE_STATS["droppedBytes"] += w
+
+
 def checkpoint_pay_owed_drops():
     """The cycle's start (T362 round one, low 2): the drops deferred for an earlier cycle's budget are paid now, oldest first,
     with the room this cycle has, since the files this serves (a returned subagent's transcript) may never be folded again and
@@ -1220,6 +1242,8 @@ def checkpoint_pay_owed_drops():
         if ent is None or not os.path.exists(key):
             with _CKPT_LOCK:
                 _DROP_OWED.pop(key, None)
+            if ent is not None:                           # the file is gone: nothing to write, everything to release (round two,
+                _pop_owed_entry(key)                      #  low 2: the memory the drop was owed for)
             continue
         _drop_quiescent_entry(key, ent, pop=True)         # takes the owed mark itself; over the budget again it re-defers
         with _CKPT_LOCK:
@@ -1861,12 +1885,16 @@ def _drop_quiescent_entry(key, ent, pop=True):
         if est <= 0:                                      # no previous document (a first write, or one the fallback removed): an
             est = max(4096, int(ent[1]) // 8)             #  estimate from the file, never a free pass against the budget
         if not checkpoint_cycle_take(2 * est):           # the previous document read for the carry, and about as much written:
-            with _CKPT_LOCK:                              #  taken in one step, or deferred (the drop owed) when it does not fit
+            oldest = None                                 #  taken in one step, or deferred (the drop owed) when it does not fit
+            with _CKPT_LOCK:
                 _CKPT_STATS["converge"]["dropDeferred"] += 1
                 if pop:
                     _DROP_OWED[key] = time.time()
-                    if len(_DROP_OWED) > 4096:            # bounded like its neighbours; the reader's own budget still frees entries
-                        _DROP_OWED.clear()
+                    if len(_DROP_OWED) > _DROP_OWED_MAX:  # over the bound the OLDEST owed drop is paid by its pop alone (round
+                        oldest = next(iter(_DROP_OWED))   #  two, low 1: a cleared mark left its entry neither paid nor popped)
+                        _DROP_OWED.pop(oldest, None)
+            if oldest is not None:
+                _pop_owed_entry(oldest)                   # outside _CKPT_LOCK: the reader's lock alone
             return
         if checkpoint_write(key):
             try:

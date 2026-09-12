@@ -1276,6 +1276,8 @@ class KernelFolds(Base):
         km._begin_checkpoint_cycle()                                  # still a one-byte budget: held again, counted again
         self.assertEqual(em.checkpoint_stats()["converge"]["dropDeferred"], 4)
         os.unlink(self.agent)
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNotNone(em._JSONL_CACHE.get(self.agent), "the deleted file's entry is still held")
         km.CKPT_CONVERGE_BYTES = saved
         km._begin_checkpoint_cycle()                                  # the next cycle's start pays what is owed: no fold over the file
         cv = em.checkpoint_stats()["converge"]
@@ -1283,11 +1285,42 @@ class KernelFolds(Base):
         self.assertIn("bgJudge", self.doc(self.leaf)["folds"])
         with em._JSONL_CACHE_LOCK:
             self.assertIsNone(em._JSONL_CACHE.get(self.leaf), "written, then popped")
+            self.assertIsNone(em._JSONL_CACHE.get(self.agent), "the deleted file's entry released by the payment (round two, low 2)")
         self.assertEqual(list(em._DROP_OWED), [], "paid, and the deleted file's path forgotten")
         import inspect
         src = inspect.getsource(km._pusher_cycle_jobs)
         self.assertLess(src.index("_begin_checkpoint_cycle()"), src.index("_push_all("), "the cycle's budget begins before its builds")
         self.assertNotIn("checkpoint_cycle_begin", inspect.getsource(km._converge_checkpoints), "the pass shares the cycle, it does not begin it")
+
+    def test_the_owed_tables_overflow_pops_the_oldest_owed_entry(self):
+        """Round two, low 1: over the bound the table was cleared, leaving those entries neither paid nor popped. The oldest owed
+        drop is paid by its pop alone instead."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "missing"}, quiescent=True)
+        old = time.time() - 600; os.utime(self.agent, (old, old))
+        d = self.doc(self.agent); d["folds"].pop("agentGist", None); d["mtime"] = os.stat(self.agent).st_mtime
+        em._ckpt_file(self.agent).write_text(json.dumps(d))
+        jd._bg_scan(self.leaf)
+        saved = (km.CKPT_CONVERGE_BYTES, em._DROP_OWED_MAX); km.CKPT_CONVERGE_BYTES = 1; em._DROP_OWED_MAX = 1
+        self.addCleanup(setattr, km, "CKPT_CONVERGE_BYTES", saved[0]); self.addCleanup(setattr, em, "_DROP_OWED_MAX", saved[1])
+        km._begin_checkpoint_cycle()
+        km._agent_launch_state(self.leaf)                             # owed: the leaf
+        km._agent_steps(self.agent)                                   # owed: the agent file; the table overflows, the leaf is popped
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNone(em._JSONL_CACHE.get(self.leaf), "the oldest owed entry released")
+            self.assertIsNotNone(em._JSONL_CACHE.get(self.agent), "the newest still owed and held")
+        self.assertEqual(list(em._DROP_OWED), [self.agent])
+        self.assertEqual(em.checkpoint_stats()["converge"]["dropWrites"], 0, "unwritten: the budget was gone")
+
+    def test_the_knobs_reach_the_drop_write_before_the_first_cycle(self):
+        """Round two, low 3: before the first pusher cycle the drop write was on whatever the knobs said. The event model reads
+        the knobs, and the kernel's constants are those reads."""
+        self.assertEqual(km.CKPT_CONVERGE_MS, em._CKPT_CONVERGE_MS_DEFAULT)
+        saved = em._CKPT_CONVERGE_MS_DEFAULT; em._CKPT_CONVERGE_MS_DEFAULT = 0.0
+        self.addCleanup(setattr, em, "_CKPT_CONVERGE_MS_DEFAULT", saved)
+        self.fresh_process()                                          # a process that has begun no cycle
+        self.assertFalse(em.checkpoint_drop_writes_on(), "the pass off: the drop write off before any cycle")
+        em._CKPT_CONVERGE_MS_DEFAULT = saved; self.fresh_process()
+        self.assertTrue(em.checkpoint_drop_writes_on())
 
     def test_the_cycle_budget_stands_before_the_first_cycle_begins(self):
         """Round one, low 3: the boot's first cycle charged no budget (no cap until the pass, near the cycle's end, began one), so
