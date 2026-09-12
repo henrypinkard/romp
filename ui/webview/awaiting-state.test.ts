@@ -45,7 +45,9 @@ test("the chat tab dot matches the chip: await-green for awaitingBg, yellow for 
 test("the feed dot matches too: dotFor picks work/await per name, the dot retints in place", () => {
   // the kernel's feed payload carries the awaiting name list beside working; federation merges + prefixes it
   assert.match(KERNEL, /"working": working, "awaiting": awaiting,/);
-  assert.match(KERNEL, /if sess_awaiting_why and not who_working:\s*\n\s*awaiting\.append\(name\)/);
+  // (T368: the per-session body records the dot name on its memoized entry; the fold appends it per build)
+  assert.match(KERNEL, /if sess_awaiting_why and not who_working:\s*\n\s*ent_awaiting = name/);
+  assert.match(KERNEL, /if entry\.get\("awaiting"\):\s*\n\s*awaiting\.append\(entry\["awaiting"\]\)/);
   assert.match(KERNEL, /\{"type": "working", "names": feed\["working"\],\s*\n\s*"awaiting": feed\.get\("awaiting"\) or \[\]\}/);
   assert.match(FEED, /awaitingSet = new Set\(Array\.isArray\(m\.awaiting\) \? m\.awaiting : \[\]\);/);
   // dotFor still ranks work over await; the unreadable-state quarter follows (feed-status-pips.test.ts)
