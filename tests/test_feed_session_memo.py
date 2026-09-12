@@ -33,6 +33,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -498,6 +499,98 @@ class TheRebuildWalksOnlyWhatMoved(_Board):
         n_moved, feed = self._walked(self._build)
         self.assertEqual(n_moved, 1, "one store moved: that session's tree alone is walked again")
         self.assertEqual(self._cards(feed)[API + ":g1"]["column"], "completed", "and its card wears the verdict")
+
+
+class TheClockDecidedBooleansAreComponents(_Board):
+    """The one read in the derivation's closure that consults its own clock is the billing-switch offer
+    (_cap_switch_offer: a login-account usage window at its cap with resets_at still ahead). The reset passing ends the
+    offer on the base's next build; a memo hit would keep offering a switch past the reset, so the crossing is the
+    `offer` component, a boolean the key computes from usage.json against the build's clock (the verifier's shape,
+    T368 review). Red on the memo without the component: the second build serves the offer with derived 0."""
+
+    def _cap_death(self, sid, resets_at):
+        """web dead on a plain retryable API error, billing the login, a key on hand, the five-hour window at its cap:
+        every leg of the offer."""
+        with open(self.tpath[sid], "a") as fh:
+            fh.write(json.dumps({"type": "assistant", "timestamp": iso(T0 + 80), "uuid": "a2", "parentUuid": "a1",
+                                 "isApiErrorMessage": True, "apiErrorStatus": 529, "error": "overloaded_error",
+                                 "message": {"role": "assistant", "stop_reason": "stop_sequence",   # the failed turn ENDS on the record
+                                             "content": [{"type": "text", "text": "API Error: 529 overloaded"}]}}) + "\n")
+        km._parse(str(self.tpath[sid]), sid, NOW)          # the feed reads the parse cache-only: warm it (the error tail rides the parse)
+        self.live[sid] = dict(self._row(), authLive="login")
+        (jd.STATE / "usage.json").write_text(json.dumps({"five_hour": {"pct": 100, "resets_at": resets_at}}))
+
+    def test_the_offer_leaves_the_card_when_its_reset_passes_on_a_served_entry(self):
+        # The reset sits ahead of BOTH clocks the offer has been read against (the build's, and the wall clock the
+        # memo's first head still minted from), so the served-stale case shows on that head as it did on the
+        # verifier's kernel: the window passes, the entry hits, the card keeps offering.
+        resets_at = max(NOW, int(time.time())) + 600
+        self._cap_death(WEB, resets_at)
+        with mock.patch.object(km, "_auth_key_present", lambda: True), \
+                mock.patch.object(km, "_live_map", lambda: self.live):   # the offer reads the cycle's live snapshot
+            d, f = self._delta(self._build)
+            self.assertEqual(d["derived"], 3)
+            offer = {"resetsAt": resets_at, "window": "five_hour"}
+            blocked = self._cards(f)[WEB + ":g1"]["blocked"]     # the api-error block carries the offer
+            self.assertEqual(blocked.get("capOffer"), offer,
+                             "the offer rides the card while the window is capped with its reset ahead: %r" % blocked)
+            d, f = self._delta(self._build)
+            self.assertEqual(d["derived"], 0, "nothing moved: a hit, the offer still current")
+            self.assertEqual(self._cards(f)[WEB + ":g1"]["blocked"].get("capOffer"), offer)
+            d, f = self._delta(lambda: self._build(resets_at + 1))
+            self.assertEqual((d["derived"], d["miss_by"]), (1, {"offer": 1}),
+                             "the reset passed: the crossing moved web's key and web alone re-derived: %r" % d)
+            blocked = self._cards(f)[WEB + ":g1"]["blocked"]
+            self.assertEqual(blocked.get("state"), "apiError", "the error block stays: %r" % blocked)
+            self.assertNotIn("capOffer", blocked, "a rebuilt card drops the offer; a served one must too")
+            d, f = self._delta(lambda: self._build(resets_at + 2))
+            self.assertEqual(d["derived"], 0, "closed stays closed: a hit")
+            self.assertNotIn("capOffer", self._cards(f)[WEB + ":g1"]["blocked"])
+
+    def test_the_offer_is_keyed_only_for_the_session_that_read_usage(self):
+        self._cap_death(WEB, max(NOW, int(time.time())) + 600)
+        with mock.patch.object(km, "_auth_key_present", lambda: True), \
+                mock.patch.object(km, "_live_map", lambda: self.live):
+            self._build()
+            k_web = km._feed_memo_get(WEB)[0]
+            k_api = km._feed_memo_get(API)[0]
+            at = km._FEED_MEMO_LABELS.index("offer")
+            self.assertIs(k_web[at], True, "web read usage.json: its key carries the window's state")
+            self.assertIsNone(k_api[at], "api did not: the crossing is no input of its card")
+
+
+class ThePostalLogIsKeyedPerSession(_Board):
+    """The postal log is one file every session's derivation reads, but a session's cards read only the rows it is
+    a party to (its own asks, the replies to them, its peers' names), so the key holds that slice by value, not
+    the whole log's identity: a row between two other sessions moves no key of this one (T368 review: the
+    whole-log identity re-derived the board on every row)."""
+
+    def _mail(self, frm, to, kind, t, body):
+        p = jd.MESSAGES
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as fh:
+            fh.write(json.dumps({"id": "m-%d" % t, "from_id": frm, "to_id": to, "from": NAME_OF[frm], "to": NAME_OF[to],
+                                 "kind": kind, "t": t, "body": body}) + "\n")
+
+    def test_a_row_between_two_other_sessions_leaves_a_sessions_key_where_it_was(self):
+        self._build()
+        self._mail(WEB, API, "question", NOW - 50, "Is the list endpoint paginated?")
+        d, _ = self._delta(self._build)
+        self.assertEqual(d["derived"], 2, "the two parties re-derive, the third does not: %r" % d)
+        self.assertEqual(d["miss_by"], {"postal": 2, "wait": 1}, "the question also opens the asker's wait edge")
+        self.assertEqual(km._feed_memo_get(TESTS)[0][km._FEED_MEMO_LABELS.index("postal")], ((), ()),
+                         "tests is party to no row: its slice is empty and its key stood")
+        d, _ = self._delta(self._build)
+        self.assertEqual(d["derived"], 0)
+        self._mail(API, WEB, "coordinate", NOW - 40, "Yes, by cursor.")
+        d, _ = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (2, {"postal": 2, "wait": 1}), "the reply moves the pair's rows and closes the edge: %r" % d)
+        self.assertEqual(km._feed_memo_get(TESTS)[0][km._FEED_MEMO_LABELS.index("postal")], ((), ()))
+        self._mail(TESTS, WEB, "coordinate", NOW - 30, "Covering the cursor case.")
+        d, _ = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (2, {"postal": 2}), "tests and web, never api: %r" % d)
+        self.assertEqual(km._feed_memo_get(API)[0][km._FEED_MEMO_LABELS.index("postal")][0][0][0], (WEB, API),
+                         "api's slice still holds its own pair alone")
 
 
 if __name__ == "__main__":

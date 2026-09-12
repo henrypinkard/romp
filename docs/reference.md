@@ -1530,9 +1530,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   session's cards are derived once and served while every input of that
   derivation stands (the transcript, states, names, captions, store, journal
   and archive by identity; the live row, the wait graph, the stall and nudge
-  records, the watches and the background tasks by value; the interrupt and
-  settle-gap booleans the clock decides; the peers the cards read), so a
-  rebuild re-derives only the sessions whose inputs moved. `hit`, `miss` and
+  records, the session's own rows of the postal log, the watches and the
+  background tasks by value; the interrupt, settle-gap and billing-offer
+  booleans the clock decides; the peers the cards read), so a rebuild
+  re-derives only the sessions whose inputs moved. The sections that span
+  sessions (the serving-fold join, the parked handoffs, the quarantine cards,
+  the bell pass, the working and awaiting dot lists, the unreadable-state
+  ring) are never memoized: every build recomposes them from the served
+  entries, decoded fresh, so nothing memoized is mutated. `hit`, `miss` and
   `derived` count per session per build, `evict` the entries shed (a departed
   session, or the byte bound), `entries` and `bytes` are the resident set
   against `bound` (a sixty-fourth of the machine's memory, or
@@ -1540,11 +1545,17 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   per-session key (`transcript`, `parse`, `cut`, `states`, `names`,
   `captions`, `store`, `anchors`, `reg`, `cleared`, `row`, `ask`, `live`,
   `bg`, `wait`, `postal`, `stalls`, `nudge`, `jauth`, `jactive`, `hide`,
-  `watch`, `subagents`, `usage`, `auth`, `downtime`, `debug`,
+  `watch`, `subagents`, `usage`, `offer`, `auth`, `downtime`, `debug`,
   `interrupting`, `closer`, `peers`, plus `cold` for a session with no
   entry) to the re-derivations it caused; a miss with several moved
-  components counts under each. The age tint every card wears is stamped
-  per build outside the memo, so no clock is a component.
+  components counts under each. The nudge records, the key on hand, the
+  host-suspension spans and the debug mode are board-wide inputs: a change
+  to one re-derives every session. The clock is not a component of the key:
+  a card's clock-derived fields either leave the memoized entry and are
+  stamped per build (the age tint, a placeholder's time), or enter the key
+  as the boolean the clock decides (the interrupt window, the settle gap,
+  the billing offer's window), so a served card shows what a rebuilt one
+  would.
 - `sends`: `full`, `delta`, `deduped`, each a map from slot name (`chat`,
   `feed`, `bars`, `taborder`, ...) to `count` and `bytes`. A deduplicated frame
   was built and compared, then not sent.

@@ -3,10 +3,9 @@
 
 build_feed serves each living session's cards from _feed_memo while _feed_session_key(s, ...) is unchanged, so the
 key must contain every input _feed_session_entry reads that can change the entry. This module is the census that
-argument rests on, in the shape of tests/test_chat_build_sig_inputs.py: HELPERS classifies every helper the body
-calls by name (`_name(`, `jd.name(` and `em.name(` calls in the function's source, comments and strings excluded),
-CTX every field the body reads from the build's context dict, and LOCAL the closures defined inside the body.
-Each HELPERS or CTX entry is one of:
+argument rests on, in the shape of tests/test_chat_build_sig_inputs.py: HELPERS classifies every callee the body
+reads from module scope (the derivation rule below), CTX every field the body reads from the build's context dict,
+and LOCAL the closures defined inside the body. Each HELPERS or CTX entry is one of:
 
   sig    an input the key folds, under the named labels (_FEED_MEMO_LABELS; several when the helper reads
          under more than one component); the first label is the one its main read rides;
@@ -16,21 +15,38 @@ Each HELPERS or CTX entry is one of:
          `t` and every card's age tint are stamped per build by the fold): tests/test_feed_session_memo.py's
          clock case pins that two builds apart in time differ in those fields alone.
 
-The test derives the call set from the function's source and requires it to EQUAL the tables' keys, so a helper
-added to the body without a classification fails the suite by name (a future read must be labelled), and so does
-a stale entry for one removed. Further pins: every `sig` label exists in the key's label tuple; every label in
-the tuple is claimed by some read (no dead component); every LOCAL name is a def nested in the body; the label
-tuple matches the list the key builder's docstring documents, in order; the miss attribution map covers the
+The test derives the call set from the function's AST, every ast.Call in the body (nested defs, lambdas,
+comprehensions and f-strings included), and requires it to EQUAL the tables' keys, so a helper added to the body
+without a classification fails the suite by name (a future read must be labelled), and so does a stale entry for
+one removed. The rule: a callee is reduced to its ROOT by walking down through attribute, subscript and call nodes
+(`a.b`, `a[i]`, `a(...)`) until a node that is none of those, and is read under the dotted name of the root joined
+with the attributes that follow it up to the first subscript or call: `_seg_key`, `jd.load_goals_shared_or_fault`,
+`os.path.basename` (every attribute of a module chain), and `_auto_nudge_data` for `_auto_nudge_data().get(...)`
+(the `.get` is a method on the value the classified call returned). A root that is a Name is one of three things.
+A name the body binds (a parameter of the def, of a nested def or of a lambda; an assignment, for, with, walrus or
+comprehension target; an except handler's name; a nested def's name) is a LOCAL: a callee rooted in it (`tm.get`,
+`out.append`) is skipped, except a nested def's own call, which must be in LOCAL. A name the kernel does not bind
+and the builtins module does is a builtin (`len`, `sorted`, `str`, `dict.fromkeys`) and is skipped, `open`
+excepted: the one builtin that reads a file is classified like any helper. Every other Name is a module-level name
+of the kernel (a helper, a module alias such as jd, em, cm, sb, os or json, a class such as Sessions) and its dotted
+name MUST be in HELPERS, so nothing rooted in module scope passes unlabelled, whatever the shape of the call. A root
+that is not a Name (a literal's method, `", ".join`; a bool-op's, `(nd.get("x") or {}).get`) is a method on a value
+an expression produced: the calls inside that expression are walked on their own and the method itself names
+nothing of module scope, so it is skipped. Further pins: every `sig` label exists in the key's label tuple; every
+label in the tuple is claimed by some read (no dead component); every LOCAL name is a def nested in the body; the
+label tuple matches the list the key builder's docstring documents, in order; the miss attribution map covers the
 labels plus `cold`. Names, not lines: the tables say what each read is, the key builder's docstring says how each
 component is taken. The census enforces ONE level, the helpers the body calls directly; what each reads in turn
 is the classification's claim, verified by the differential cases in tests/test_feed_session_memo.py.
 """
 import ast
+import builtins
 import inspect
 import io
 import os
 import re
 import tempfile
+import textwrap
 import tokenize
 import unittest
 from romp_load import load_source
@@ -98,7 +114,7 @@ HELPERS = {
     "_nudge_times": ("sig", ("nudge",)),
     "_session_flag": ("sig", ("hide",)),
     "_card_warn_rows": ("sig", ("debug",)),
-    "_cap_switch_offer": ("sig", ("row", "usage", "auth")),            # authLive, usage.json (recorded), the key on hand
+    "_cap_switch_offer": ("sig", ("row", "usage", "offer", "auth")),   # authLive, usage.json (recorded), its cap window's crossing, the key on hand
     # pure over classified inputs
     "_awaiting_peer_items": ("pure", "over the peer identities _session_awaiting resolved (peers), nothing else"),
 }
@@ -121,7 +137,7 @@ CTX = {
 }
 
 # closures defined inside the body: pure over its locals, no component
-LOCAL = ("_subtree", "_closure_done", "_fsubmax", "_closure_blocked", "_block_check_floor", "_note_peers")
+LOCAL = ("_subtree", "_closure_done", "_fsubmax", "_closure_blocked", "_block_check_floor", "_note_peers", "flatten")
 
 KINDS = {"sig", "pure", "clock"}
 
@@ -140,12 +156,71 @@ def _stripped(src, strings=False):
     return tokenize.untokenize(toks)
 
 
-def _calls_of(src):
-    """Every `_name(`, `jd.name(` and `em.name(` call in the stripped source."""
-    text = _stripped(src)
-    own = set(re.findall(r"(?<![\w.])(_[a-z_0-9]+)\(", text))
-    dotted = set("%s.%s" % m for m in re.findall(r"\b(jd|em)\.([a-z_0-9]+)\(", text))
-    return own | dotted
+def _callee_root(func):
+    """A callee reduced to its root (the module docstring's rule): walks down through Attribute, Subscript and Call
+    nodes until a node that is none of those, and returns (root node, dotted name), the name the root's id joined
+    with the attributes that follow it up to the first Subscript or Call (`os.path.basename`; `_auto_nudge_data` for
+    `_auto_nudge_data().get`), or None when the root is not a Name (a literal, a bool-op: a method on a value)."""
+    attrs, f = [], func
+    while True:
+        if isinstance(f, ast.Attribute):
+            attrs.append(f.attr)
+            f = f.value
+        elif isinstance(f, ast.Subscript):
+            attrs, f = [], f.value
+        elif isinstance(f, ast.Call):
+            attrs, f = [], f.func
+        else:
+            break
+    return f, (".".join([f.id] + attrs[::-1]) if isinstance(f, ast.Name) else None)
+
+
+def _bound_in(fn):
+    """Every name the body binds, at any depth: the parameters of the def, of a nested def and of a lambda (every
+    ast.arg), every Store-context Name (assignment, augmented assignment, for, with, walrus and comprehension
+    targets, unpacking included), an except handler's name, an import alias, a nested def's or class's name. A name
+    the body declares `global` is not bound here."""
+    names = set()
+    for x in ast.walk(fn):
+        if isinstance(x, ast.arg):
+            names.add(x.arg)
+        elif isinstance(x, ast.Name) and isinstance(x.ctx, ast.Store):
+            names.add(x.id)
+        elif isinstance(x, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and x is not fn:
+            names.add(x.name)
+        elif isinstance(x, ast.ExceptHandler) and x.name:
+            names.add(x.name)
+        elif isinstance(x, ast.alias):
+            names.add((x.asname or x.name).split(".")[0])
+    for x in ast.walk(fn):
+        if isinstance(x, ast.Global):
+            names.difference_update(x.names)
+    return names
+
+
+def _calls_of(fn, module):
+    """The callees the body reads from module scope, plus the nested defs it calls, as dotted names: every ast.Call
+    under `fn`, its callee reduced by _callee_root and its root classified by the module docstring's rule (a local's
+    method skipped, a builtin other than `open` skipped, a non-Name root skipped, everything else kept). `module` is
+    the kernel: a name it binds is never a builtin, however it is spelled."""
+    local, nested = _bound_in(fn), {x.name for x in ast.walk(fn) if isinstance(x, ast.FunctionDef) and x is not fn}
+    bound = vars(module)
+    calls = set()
+    for x in ast.walk(fn):
+        if not isinstance(x, ast.Call):
+            continue
+        root, name = _callee_root(x.func)
+        if name is None:
+            continue                              # a method on a value an expression produced (its calls walked too)
+        if root.id in nested:
+            calls.add(name)                       # a closure's call: LOCAL must name it
+        elif root.id in local:
+            continue                              # a local's method (tm.get, out.append)
+        elif root.id not in bound and hasattr(builtins, root.id) and root.id != "open":
+            continue                              # a builtin (len, sorted, str, dict.fromkeys); open reads a file: kept
+        else:
+            calls.add(name)                       # rooted in module scope: HELPERS must name it
+    return calls
 
 
 def _ctx_reads_of(src):
@@ -166,7 +241,8 @@ class Census(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.src = inspect.getsource(km._feed_session_entry)
-        cls.calls = _calls_of(cls.src) - {"_feed_session_entry"}       # the def line names the function itself
+        cls.fn = ast.parse(textwrap.dedent(cls.src)).body[0]
+        cls.calls = _calls_of(cls.fn, km)
         cls.ctx = _ctx_reads_of(cls.src)
 
     def test_every_helper_the_body_calls_is_classified_and_nothing_stale_remains(self):
@@ -203,17 +279,49 @@ class Census(unittest.TestCase):
                          % sorted(claimed ^ set(km._FEED_MEMO_LABELS)))
 
     def test_the_local_closures_are_defs_nested_in_the_body(self):
-        fn = ast.parse(self.src).body[0]
+        fn = self.fn
         nested = {x.name for x in ast.walk(fn) if isinstance(x, ast.FunctionDef) and x is not fn}
         for name in LOCAL:
             self.assertIn(name, nested, "%s is listed as a local closure but the body defines no such def" % name)
         self.assertFalse(set(LOCAL) & set(HELPERS), "a name is a closure or a helper, never both")
 
     def test_the_helper_names_resolve_in_the_kernel(self):
+        """Every dotted name walks from the kernel's namespace (or, for a classified builtin such as `open`, from
+        builtins) through each attribute to a callable: `os.path.basename` is `km.os`, then `.path`, then
+        `.basename`."""
         for name in HELPERS:
-            mod, _, attr = name.rpartition(".")
-            owner = getattr(km, mod) if mod else km
-            self.assertTrue(callable(getattr(owner, attr, None)), name)
+            root, *attrs = name.split(".")
+            obj = getattr(km, root) if root in vars(km) else getattr(builtins, root, None)
+            for a in attrs:
+                obj = getattr(obj, a, None)
+            self.assertTrue(callable(obj), name)
+
+    def test_the_derivation_sees_every_callee_shape(self):
+        """The rule on a synthetic body, so a regression to a narrower reader fails here rather than passing a read
+        unlabelled: a module alias chain, a class method, a bare module helper, a builtin that reads (`open`), a
+        method on a call's result, a local's method, a nested def, a lambda's parameter, an except name."""
+        src = textwrap.dedent('''
+            def body(s, ctx):
+                def inner(x):
+                    return x
+                p = os.path.basename(s["path"])
+                be = Sessions.backend_for(p)
+                data = json.dumps(_helper().get("k"), sort_keys=True)
+                with open(p) as fh:
+                    rows = [str(r).strip() for r in fh]
+                try:
+                    tm = ctx.get("tm")
+                except Exception as exc:
+                    tm = exc.args
+                f = lambda q: q.lower()
+                out = ", ".join(sorted(rows, key=f)) + (tm or {}).get("x", "")
+                return inner(out), be, data, dict.fromkeys(rows), sb.thing(len(rows))
+        ''')
+        fn = ast.parse(src).body[0]
+        module = type(km)("synthetic")            # binds nothing: every non-local, non-builtin root is module scope
+        self.assertEqual(_calls_of(fn, module),
+                         {"os.path.basename", "Sessions.backend_for", "json.dumps", "_helper", "open", "sb.thing",
+                          "inner"})
 
 
 class LabelsAndDocstring(unittest.TestCase):

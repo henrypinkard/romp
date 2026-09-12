@@ -16234,7 +16234,7 @@ def _auth_avail_status():
     return out
 
 
-def _cap_switch_offer(sid, aerr):
+def _cap_switch_offer(sid, aerr, now=None):
     """The explicit billing-switch OFFER for a login-billed session dead on the account's usage cap —
     or None. The user's BINDING ruling (2026-08-30, via the nightly optimizer): a session must NEVER
     silently switch billing in either direction — so romp only OFFERS, and only the user's explicit
@@ -16252,11 +16252,21 @@ def _cap_switch_offer(sid, aerr):
     tm = (_live_map() or {}).get(str(sid)) or {}
     if str(tm.get("authLive") or tm.get("auth") or "") != "login" or not _auth_key_present():
         return None
+    return _usage_cap_open(now)
+
+
+def _usage_cap_open(now=None):
+    """The login account's usage window sitting AT its cap with a readable reset still ahead of `now` (the caller's
+    clock, else the wall clock), as {"resetsAt", "window"}, or None: usage.json's five-hour and seven-day windows
+    (the authority the retry pause reads), the first at 100 percent whose resets_at has not passed. The ONE rule
+    the billing-switch offer mints from (_cap_switch_offer) and the feed memo's `offer` key component reads
+    (T368 review): the offer self-expires when resets_at passes, and that crossing has to move the memo key the
+    way the interrupt window and the settle gap do, or a served card would keep offering a switch past the reset."""
     try:
         u = json.loads((jd.STATE / "usage.json").read_text())
     except Exception:
         return None
-    now = time.time()
+    now = time.time() if now is None else now
     for k in ("five_hour", "seven_day"):
         w = u.get(k) or {}
         if isinstance(w, dict) and (w.get("pct") or 0) >= 100 and (w.get("resets_at") or 0) > now:
@@ -36163,9 +36173,9 @@ def _state_unknown_names(alive, live_map, working, awaiting):
 # recompose per build from the per-session results and are never memoized across sessions.
 _FEED_MEMO_LABELS = ("transcript", "parse", "cut", "states", "names", "captions", "store", "anchors", "reg",
                      "cleared", "row", "ask", "live", "bg", "wait", "postal", "stalls", "nudge", "jauth", "jactive",
-                     "hide", "watch", "subagents", "usage", "auth", "downtime", "debug", "interrupting", "closer",
-                     "peers")
-_FEED_MEMO_DEPS = ("usage", "peers")             # the components evaluated over the PREVIOUS entry's record (see _feed_session_key)
+                     "hide", "watch", "subagents", "usage", "offer", "auth", "downtime", "debug", "interrupting",
+                     "closer", "peers")
+_FEED_MEMO_DEPS = ("usage", "offer", "peers")    # the components evaluated over the PREVIOUS entry's record (see _feed_session_key)
 _feed_memo = {}                                  # sid → (key, entry_json, size); dict order is the LRU order: a served entry
 #                                                  moves to the tail, the head goes first when the bytes exceed the bound
 _feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
@@ -36257,7 +36267,7 @@ def _feed_memo_report():
     return out
 
 
-def _feed_peer_facts(p, cleared):
+def _feed_peer_facts(p, cleared_by_sid):
     """What one card-owning session's derivation read about a PEER p (an origin sender, a handoff recipient, a stamped
     or awaited peer), by identity and value: the peer's goal store, journal and archive (jd._store_identity; the shared
     read-only view the origin badge reads) with whether that view READS (jd.load_goals_shared_or_fault's fault
@@ -36272,8 +36282,92 @@ def _feed_peer_facts(p, cleared):
     return (ident, _chat_ident(jd.GOALDIR / (p + ".json")),   # + ctime: a permissions fault or repair moves it alone
             jd.load_goals_shared_or_fault(p)[1] is not None,
             tuple(_names_parts(p) or ()),
-            tuple(sorted(i for i in cleared if i.startswith(p + ":"))),
+            cleared_by_sid.get(p, ()),
             host, _remote_name_of(host, p) if r else None)
+
+
+_SUBAGENT_DIRS_MEMO = {}                         # subagents root → (its directories, their identities): the walk, memoized
+
+
+def _subagent_dirs_ident(d):
+    """(the directories under the subagents root `d`, their identities), the walk memoized: an unchanged tree costs
+    one stat per known directory, not an os.walk per session per build (the T368 review's profile: the walk was a
+    third of the memo key's cost). Sound because a directory added or removed under `d` moves its PARENT's mtime,
+    and every parent is a known directory, so the known identities standing means the tree stands; any of them
+    moving (a sidecar landing, a directory appearing or vanishing, the root itself) re-walks. A root that does not
+    exist is the tree [d] with identity None, and its appearance re-walks the same way."""
+    hit = _SUBAGENT_DIRS_MEMO.get(d)
+    if hit is not None:
+        idents = tuple(_chat_ident(x) for x in hit[0])
+        if idents == hit[1]:
+            return hit
+    dirs = tuple(_subagent_dirs(d) or [d])
+    idents = tuple(_chat_ident(x) for x in dirs)
+    _SUBAGENT_DIRS_MEMO[d] = (dirs, idents)
+    return dirs, idents
+
+
+def _postal_session_slice(sid, maps=None):
+    """The postal log's rows that can reach ONE session's cards, by value: for every ordered pair the session is a
+    party to (as sender or recipient; a cross-host recipient by its stable id or peer key), the latest message
+    time, the latest reply-expecting ask, the latest reply-requiring send, the returned or withdrawn sends, and the
+    log's display names for the other parties. Everything the body reads of the log is a function of these rows
+    (_peer_answered and _peer_answered_at walk the session's own pairs, _session_stamp_read's superseding clock is
+    that walk, _peer_identity's remote names are the join), so a row between two OTHER sessions leaves this
+    session's key where it was; the whole log's identity keyed every session before (T368 review: one row
+    re-derived the board). The maps are the one cached scan (_postal_wait_maps, keyed on the log's stat)."""
+    sid = str(sid)
+    last_any, last_ask, last_await, returned, names, by_party = maps if maps is not None else _postal_maps_indexed()
+    pairs = by_party.get(sid) or ()
+    rows = tuple((p, last_any.get(p), last_ask.get(p), last_await.get(p),
+                  tuple(sorted((returned.get(p) or {}).items(), key=repr)))
+                 for p in pairs)
+    parties = {x for p in pairs for x in p if x != sid}
+    return (rows, tuple(sorted((x, names.get(x)) for x in parties if x in names)))
+
+
+def _postal_maps_indexed():
+    """The postal wait maps, the returns and the display names from the one cached scan, plus an index party → its
+    ordered pairs (sorted by repr), built once per build (_feed_board_facts) so each session's slice is a lookup
+    rather than a pass over every pair."""
+    last_any, last_ask, last_await = _postal_wait_maps()
+    returned = _postal_returned()
+    names = _postal_peer_names()
+    by_party = {}
+    for p in set(last_any) | set(last_ask) | set(last_await) | set(returned):
+        if isinstance(p, tuple):
+            for x in p:
+                by_party.setdefault(x, []).append(p)
+    for x in by_party:
+        by_party[x] = tuple(sorted(set(by_party[x]), key=repr))
+    return last_any, last_ask, last_await, returned, names, by_party
+
+
+def _feed_board_facts(ctx, now):
+    """The board-wide inputs of every session's key, taken ONCE per build into ctx (the same value for every
+    session: one stat each, not one per living session): the clear set indexed by session, the postal maps indexed
+    by party, the nudge records' identities, usage.json's identity and
+    whether a login-account window sits at its cap with its reset ahead (the `offer` crossing), the key on hand,
+    the host-suspension spans, the debug mode and its rows' identity. Taken before any session's derivation, so
+    every session's read follows its stat (stat-then-read)."""
+    b = ctx.get("board")
+    if b is None:
+        dbg = bool(jd._debug_mode())
+        by_sid = {}
+        for i in ctx["cleared"]:                    # the clear set indexed by the id's session prefix, once per build
+            by_sid.setdefault(i.partition(":")[0], []).append(i)
+        b = {"cleared_by_sid": {k: tuple(sorted(v)) for k, v in by_sid.items()},
+             "postal": _postal_maps_indexed(),
+             "nudge": (_chat_ident(jd.STATE / "auto-nudge.json"), _chat_ident(jd.STATE / "nudge-events.jsonl")),
+             "usage_ident": _chat_ident(jd.STATE / "usage.json"),
+             "cap_open": _usage_cap_open(now) is not None,
+             "auth": _auth_key_present(),
+             "downtime": (len(_downtime), _downtime[-1] if _downtime else None),
+             "debug": (dbg, _chat_ident(jd.ERRORS) if dbg else None)}
+        ctx["board"] = b
+        ctx["usage_ident"] = b["usage_ident"]      # the deps re-evaluation reads these two (see _feed_key_with_deps)
+        ctx["cap_open"] = b["cap_open"]
+    return b
 
 
 def _feed_session_key(s, tm, ctx, prev_entry):
@@ -36328,8 +36422,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         parse is warm, else None. The task set the awaiting sources, the blocked-yield ownership, the service chip
         and the awaiting pill read; a deadline crossing (em._bg_expired) is the row leaving the tuple.
       wait: wmap[fsid] as sorted items, or None. The peer-wait floor and the waitingOn chip.
-      postal: _chat_ident(jd.MESSAGES), board-wide. _peer_answered and _peer_answered_at (the wait maps and the returns
-        from the one log scan), _session_stamp_read's log key, _postal_peer_names inside _peer_identity.
+      postal: _postal_session_slice(fsid), the log's rows the session is a party to, by value (the pairs' latest
+        times, asks, reply-requiring sends and returns, the other parties' display names). _peer_answered and
+        _peer_answered_at walk those pairs, _session_stamp_read's superseding clock is that walk, _peer_identity's
+        remote names are the join; a row between two other sessions moves no key of this one.
       stalls: the session's slice of _stalled_goals() as (gid, why, since), sorted. The stalled section and the
         in-flight swirl.
       nudge: (_chat_ident(STATE/auto-nudge.json), _chat_ident(STATE/nudge-events.jsonl)), board-wide.
@@ -36338,9 +36434,14 @@ def _feed_session_key(s, tm, ctx, prev_entry):
       jactive: fsid in {r["fsid"] for r in jd.active_runs()}. The Analyzing swirl's active prong.
       hide: _session_flag(fsid, "hideFromFeed"). The session yields no entry while set.
       watch: json of _watch_awaiting(fsid) (the in-memory watches for this sid). An awaiting source.
-      subagents: _chat_ident of the transcript's subagents directory and every directory under it. _subagent_meta_map.
+      subagents: _chat_ident of the transcript's subagents directory and every directory under it (the walk memoized
+        on those identities, _subagent_dirs_ident). _subagent_meta_map.
       usage: _chat_ident(STATE/usage.json) when the previous entry recorded reading it (an api error's cap offer,
         _cap_switch_offer), else None. A deps component.
+      offer: whether a login-account usage window sits at its cap with its reset still ahead of the build's clock
+        (_usage_cap_open(now) is not None), when the previous entry recorded reading usage.json, else None. The
+        billing-switch offer's own clock crossing (resets_at passing ends the mint, _cap_switch_offer) as the
+        boolean it decides, the way `interrupting` and `closer` are. A deps component.
       auth: _auth_key_present(). The cap offer's key-on-hand leg.
       downtime: (len(_downtime), its last span). _session_working's host-suspension read (_suspended_after).
       debug: (jd._debug_mode(), _chat_ident(STATE/judge-errors.jsonl) when on). dbg_rows → _card_warn_rows.
@@ -36354,9 +36455,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     NOT components: the clock (the fold stamps trgb and a clock-stamped placeholder's t per build), the colormap (the
     fold reads it), notify-cards.json (the post-loop notify pass), session-order, the views, the notices (post-loop)."""
     fsid, path = s["sid"], s.get("path")
-    now, cleared = ctx["now"], ctx["cleared"]
+    now = ctx["now"]
     live = tm is not None
     hide = bool(_session_flag(fsid, "hideFromFeed"))
+    board = _feed_board_facts(ctx, now)         # the board-wide identities and indexes, once per build (before any read)
     # ── file identities, every one BEFORE the reads below ──
     transcript = _chat_ident(path) if path else None
     states = tuple(_chat_ident(jd.STATESDIR / (k + ".jsonl"))
@@ -36371,27 +36473,23 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     hold = (_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None
     anchors = _node_anchor_rev.get(fsid, 0)
     reg = (_chat_ident(jd.STATE / "sdk" / (fsid + ".json")), _chat_ident(jd.GONEDIR / (fsid + ".json")))
-    cl = tuple(sorted(i for i in cleared if i.startswith(fsid + ":")))
+    cl = board["cleared_by_sid"].get(fsid, ())
     row = (tuple(sorted(((k, v) for k, v in tm.items() if k not in ("snapT", "interrupting")), key=lambda kv: kv[0]))
            if tm else None)
-    postal = _chat_ident(jd.MESSAGES)
-    nudge = (_chat_ident(jd.STATE / "auto-nudge.json"), _chat_ident(jd.STATE / "nudge-events.jsonl"))
+    postal = _postal_session_slice(fsid, board["postal"])
+    nudge = board["nudge"]
     stalls = tuple(sorted((k, v.get("why"), v.get("since")) for k, v in ctx["stalls"].items()
                           if k.startswith(fsid + ":")))
     jauth = tuple(sorted((ctx["jauth_map"].get(fsid) or {}).items(), key=str)) or None
     jactive = fsid in ctx["jactive"]
-    if path:
-        _sd = str(_subagents_dir(path))
-        subagents = tuple(_chat_ident(d) for d in (_subagent_dirs(_sd) or [_sd]))
-    else:
-        subagents = None
-    ctx["usage_ident"] = _chat_ident(jd.STATE / "usage.json")   # taken every build; keyed only when the entry read it
-    usage = ctx["usage_ident"] if ((prev_entry or {}).get("reads") or {}).get("usage") else None
-    auth = _auth_key_present()
-    downtime = (len(_downtime), _downtime[-1] if _downtime else None)
-    dbg = bool(jd._debug_mode())
-    debug = (dbg, _chat_ident(jd.ERRORS) if dbg else None)
-    facts = {p: _feed_peer_facts(p, cleared) for p in ((prev_entry or {}).get("peers") or ())}
+    subagents = _subagent_dirs_ident(str(_subagents_dir(path)))[1] if path else None
+    reads_usage = bool(((prev_entry or {}).get("reads") or {}).get("usage"))   # the entry read usage.json (the cap offer)
+    usage = board["usage_ident"] if reads_usage else None
+    offer = board["cap_open"] if reads_usage else None
+    auth = board["auth"]
+    downtime = board["downtime"]
+    debug = board["debug"]
+    facts = {p: _feed_peer_facts(p, board["cleared_by_sid"]) for p in ((prev_entry or {}).get("peers") or ())}
     ctx["peer_facts"] = facts                        # pre-derivation facts: _feed_key_with_deps keeps these for the peers
     peers = tuple((p, facts[p]) for p in sorted(facts)) if prev_entry is not None else None   # the new entry names again
     # ── the in-memory reads ──
@@ -36432,8 +36530,8 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     bg = (tuple((r.get("tid"), r.get("desc"), r.get("t"), r.get("type"), r.get("deadline"), r.get("agentId"))
                 for r in _bg_live_norm(fsid, path)) if (ps is not None and path) else None)
     return (transcript, ps is not None, cut, states, names, captions, store, anchors, reg, cl, row, ask, live_rev,
-            bg, wait, postal, stalls, nudge, jauth, jactive, hide, watch, subagents, usage, auth, downtime, debug,
-            interrupting, closer, peers)
+            bg, wait, postal, stalls, nudge, jauth, jactive, hide, watch, subagents, usage, offer, auth, downtime,
+            debug, interrupting, closer, peers)
 
 
 _FEED_PEERS_UNSETTLED = ("unsettled",)           # a `peers` component no build's key can equal (the builder makes None or
@@ -36441,8 +36539,8 @@ _FEED_PEERS_UNSETTLED = ("unsettled",)           # a `peers` component no build'
 
 
 def _feed_key_with_deps(key, ctx, entry):
-    """The key with its two dependency components re-evaluated over the entry a derivation just produced: `usage`
-    from the entry's `reads`, `peers` from the entry's `peers`, each peer's facts the PRE-derivation ones the key
+    """The key with its dependency components re-evaluated over the entry a derivation just produced: `usage` and
+    `offer` from the entry's `reads`, `peers` from the entry's `peers`, each peer's facts the PRE-derivation ones the key
     took when the previous entry already named that peer. A peer this derivation read for the FIRST time has no
     pre-derivation facts, and facts taken now could pair a new key with old content (the peer's store moving while
     the body read it, the order stat-then-read forbids), so the stored key carries _FEED_PEERS_UNSETTLED instead:
@@ -36451,6 +36549,7 @@ def _feed_key_with_deps(key, ctx, entry):
     k = list(key)
     reads = (entry or {}).get("reads") or {}
     k[_FEED_MEMO_LABELS.index("usage")] = ctx.get("usage_ident") if reads.get("usage") else None
+    k[_FEED_MEMO_LABELS.index("offer")] = ctx.get("cap_open") if reads.get("usage") else None
     if entry is None:
         peers = None
     else:
@@ -36838,7 +36937,8 @@ def _feed_session_entry(s, ctx):
     # the truth. One formula, one truth: awaiting wins; the floor applies only to a session truly dead
     # in the water.
     aerr = _api_error(s["path"]) if (ps and not who_working and not sess_awaiting_why) else None   # cache-only: fills in after the warm
-    _cap_off = _cap_switch_offer(fsid, aerr) if aerr else None   # the billing-switch OFFER (never a silent switch, 2026-08-30)
+    _cap_off = _cap_switch_offer(fsid, aerr, now) if aerr else None   # the billing-switch OFFER (never a silent switch, 2026-08-30);
+    #                                              the build's clock, the one the key's `offer` component reads the cap window against
     if aerr:
         reads["usage"] = True                    # the offer reads usage.json: the key's `usage` component rides this record
     api_top = None
