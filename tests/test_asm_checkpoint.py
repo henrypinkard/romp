@@ -945,10 +945,28 @@ class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
         for bad in ({"_echo_text": "a line", "command": True}, {"_echo_text": "a line", "dropped": True},
                     {"_echo_text": "a line", "_landed": True}, {"_echo_text": ""}, {}):
             self.assertFalse(km._echo_holdable(bad), "%r" % bad)
-        self.assertIn("_echo_holdable(", inspect.getsource(km._echo_landing_atoms))
+        self.assertIn("_echo_holdable(", inspect.getsource(km._echo_floor))
+        self.assertIn("_echo_floor(", inspect.getsource(km._echo_landing_atoms))
         frame = inspect.getsource(km._comments_frame)
         self.assertIn("_echo_holdable(", frame)
         self.assertNotIn('not a.get("dropped") and not a.get("_landed")', frame, "the clauses live in the predicate alone")
+
+    def test_the_echo_landing_sets_floor_ignores_a_dropped_echo_too(self):
+        """The first boot with T384 hydrated 198 MB through `_atom_user_texts<-_merge_tx_sets`: the echo landing set's floor took
+        every live echo with a text, so a dropped send older than the compaction sank it. One floor (`_echo_floor`, over the
+        holdable echoes) serves the landing set's caller and the comments frame's walk."""
+        import inspect
+        km = self.km
+        newest = 1800000000.0
+        live = [{"_echo_text": "an old dropped line", "t": 0, "dropped": True}, {"_echo_text": "a new line", "t": newest}]
+        self.assertEqual(km._echo_floor(live), newest, "the dropped echo does not set the floor")
+        self.assertIsNone(km._echo_floor([{"_echo_text": "landed", "t": 1, "_landed": True}]), "no holdable echo: no floor")
+        self.assertIn("echo_floor = _echo_floor(live)", inspect.getsource(km._merge_live_atoms), "the landing set's caller takes the same floor")
+        self.assertIn("since = _echo_floor(live)", inspect.getsource(km._echo_landing_atoms))
+        path, tree = self._restored("setfloor")
+        km._merge_sets_memo.clear()
+        km._merge_tx_sets(tree, SID + "-setfloor", km._echo_floor(live))   # the floor a dropped echo no longer sinks: above every atom
+        self.assertEqual(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "%s" % em.asm_checkpoint_stats()["hydratedBy"])
 
     def test_a_dropped_echo_below_the_cut_does_not_sink_the_landing_floor(self):
         """Round two, low 4: the floor was the min over every live echo with a text, but the frame holds only echoes that are not

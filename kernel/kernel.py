@@ -15163,16 +15163,21 @@ def _echo_holdable(e):
     return bool(sb.echo_text_key(e.get("_echo_text"))) and not e.get("command") and not e.get("dropped") and not e.get("_landed")
 
 
+def _echo_floor(live):
+    """The oldest send among the live echoes the frame can hold (`_echo_holdable`), or None with none: the floor below which no
+    user text is read for an echo's landing, in the comments frame's walk and in the echo landing set alike (T384 follow-up: the
+    landing set's own floor took every echo with a text, so one dropped send older than the compaction, never popped by the
+    backend's prune, sank it and every pre-cut user text above it was read; 198 MB on the first boot with T384)."""
+    return min((float(e.get("t") or 0) for e in live if _echo_holdable(e)), default=None)
+
+
 def _echo_landing_atoms(turns, live):
     """[(stamp, its texts)] for the user atoms an echo could have landed as: those at or after the oldest live echo's send
     (a text lands at or after its send, so no older atom can hold an echo's landing). The stamp is a scalar every lazy atom
     carries, so the atoms below the floor are never hydrated (T384: the comments frame read every user atom of a thread's
     whole parse for this, a body read of every pre-cut user message on every frame with a live echo)."""
-    since = min((float(e.get("t") or 0) for e in live if _echo_holdable(e)), default=None)   # the floor over the echoes the frame
-    #                                                                                          can hold: a dropped or landed one is never
-    #                                                                                          popped by the backend's prune and must not
-    #                                                                                          sink it (round two, low 4)
-    if since is None:
+    since = _echo_floor(live)                             # over the echoes the frame can hold: a dropped or landed one is never popped
+    if since is None:                                     #  by the backend's prune and must not sink it (round two, low 4)
         return []
     return [(float(a.get("t") or 0), set(_atom_user_texts(a)))
             for tr in turns for a in (tr.get("atoms") or [])
@@ -32528,7 +32533,7 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     # The transcript-side sets come from the per-sid memo (_merge_tx_sets): a function of the parsed
     # session alone, which the parse cache hands back as the same object until the transcript changes,
     # and which every build of a cycle (chat, feed, timeline) used to derive again from every atom.
-    echo_floor = min((float(a.get("t") or 0) for a in live if a.get("_echo_text")), default=None)   # the oldest echo's send:
+    echo_floor = _echo_floor(live)             # the oldest HOLDABLE echo's send (a dropped or landed one must not sink the floor):
     tx_uuids, tx_text_uuids, tx_texts, tx_text_t, human_floor = _merge_tx_sets(session, sid, echo_floor)   # no text lands before it
     # A TEXTLESS disk twin must not land a texty live atom (the user 2026-07-28): on some model+tool
     # combinations (observed: fable-5 replying before an AskUserQuestion) the CLI persists the reply
