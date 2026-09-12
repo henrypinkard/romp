@@ -13256,21 +13256,35 @@ function virtualizeToViewport(): void {
   if (c) c.addEventListener("scroll", virtualizeToViewport, { passive: true });
 }
 
-// A small "Loading earlier messages…" pill at the top-center of the chat pane, shown while a window
+// A small "Loading earlier messages…" pill at the top-center of the CHAT SECTION, shown while a window
 // expand/jump is rendering so a scroll into un-rendered history reads as loading-in-progress, not frozen
-// (the user 2026-06-25). Lives in the chat iframe's body; idempotent.
+// (the user 2026-06-25). Anchored to the section, never the viewport (T365, the user 2026-09-12, whose strip
+// wraps onto several rows: the viewport-fixed pill sat on the tabs): the first show inserts a zero-height
+// .tx-loading-anchor right before #content, which the page's flex column places exactly where the transcript
+// starts, below the tab strip and the ledger box, so the pill's top follows the strip's bottom by layout
+// alone, whatever the row count and however it changes while the pill shows. Idempotent; no pointer events.
 let loadingPillEl: HTMLElement | null = null;
 function showLoadingPill(): void {
   if (revealProgress) return;   // the reveal progress line is the one message for that wait (T336)
+  const content = document.getElementById("content");
+  if (!content || !content.parentNode) return;   // no chat section on this page: nothing to anchor to
   if (!loadingPillEl) {
     loadingPillEl = document.createElement("div");
     loadingPillEl.className = "tx-loading-pill";
     loadingPillEl.textContent = "Loading earlier messages…";
-    document.body.appendChild(loadingPillEl);
+  }
+  if (!loadingPillEl.isConnected) {   // the first show, or a rebuild that dropped the anchor
+    const anchor = document.createElement("div");
+    anchor.className = "tx-loading-anchor";
+    anchor.appendChild(loadingPillEl);
+    content.parentNode.insertBefore(anchor, content);
   }
   loadingPillEl.style.display = "";
 }
 function hideLoadingPill(): void { if (loadingPillEl) loadingPillEl.style.display = "none"; }
+// the served geometry lab (tests/test_loading_pill_anchor_browser.py) shows the pill on demand: its real
+// showings last the span of a fetch, too brief to measure against the strip
+if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLoadingPill(); else hideLoadingPill(); };
 
 // ---- ledger box (rolling per-session digest, just below the tabs) ----
 
