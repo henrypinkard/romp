@@ -2099,36 +2099,18 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
   color: var(--dim); background: transparent; border: 0; border-radius: 6px; padding: 0;
 }
 .queued-x:hover { color: var(--vscode-errorForeground, #f48771); background: rgba(255, 255, 255, 0.08); }
-/* EDITABLE — a ✎ beside the ✕ (the user 2026-09-08): a message that has not reached the session yet is still
-   the user's to change. Same corner, same dim-until-hover treatment; the ACCENT (not red) on its own hover — it
-   changes the message, it does not remove it. The bubble reserves room for both controls. */
-.queued-bubble.editable { padding-right: 52px; }
+/* EDIT — a ✎ in the ✕'s corner (the user 2026-09-08; the message's ONE control since T373): a message that has not
+   reached the session yet is still the user's to change; the ✎ takes it out of the queue and back into the composer.
+   The ✕ stays on commands and romp's own words. Same dim-until-hover treatment; the ACCENT (not red) on its own
+   hover — it gives the message back, it does not remove it. The bubble reserves room for the one control. */
+.queued-bubble.editable { padding-right: 28px; }
 .queued-edit {
-  position: absolute; top: 3px; right: 26px; width: 20px; height: 20px;
+  position: absolute; top: 3px; right: 4px; width: 20px; height: 20px;
   display: flex; align-items: center; justify-content: center;
   font: inherit; font-size: 0.82em; line-height: 1; cursor: pointer;
   color: var(--dim); background: transparent; border: 0; border-radius: 6px; padding: 0;
 }
 .queued-edit:hover { color: var(--accent); background: rgba(255, 255, 255, 0.08); }
-/* EDITING IN PLACE (T306, the user 2026-09-10): the ✎ turns the bubble's text into a field where it sits — the same
-   width, the dashed provisional look kept, the ✕ still in its corner — with Save and Cancel under the text. The field
-   inherits the bubble's type; the buttons and the labels wear the queued header's 0.82em. A bubble another client is
-   editing reads "editing" beside its text; a refused edit says why on its own line. */
-.queued-bubble.editing { --prov-ink: var(--fg); border-color: var(--accent); padding-right: 52px; box-sizing: border-box; }   /* full ink while editing (the old opacity lift, now the ink: T337); the width set from the measured bubble is its border box; the idle padding kept, so the words keep their wrap (the ✎'s room stays empty) */
-.queued-editor { display: flex; flex-direction: column; gap: 6px; }
-.queued-editbox {
-  width: 100%; box-sizing: border-box; display: block; resize: none; overflow: hidden;
-  font: inherit; line-height: inherit; color: var(--fg); background: transparent; border: 0; padding: 0; margin: 0; outline: none;
-}
-.queued-editbtns { display: flex; justify-content: flex-end; gap: 6px; }
-.queued-editbtn {
-  font: inherit; font-size: 0.82em; line-height: 1.4; cursor: pointer; padding: 2px 9px; border-radius: 6px;
-  color: var(--fg); background: transparent; border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent);
-}
-.queued-editbtn:hover { border-color: var(--accent); }
-.queued-editbtn.save { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
-.queued-held-label { font-size: 0.82em; color: var(--dim); margin-left: 8px; font-style: italic; }
-.queued-editnote { font-size: 0.82em; color: var(--vscode-errorForeground, #f48771); margin-top: 4px; }
 /* A notice romp itself queued (T243) wears the LANDED romp notice card nested inside the queued bubble: the
    dashed "you" dress comes off the wrapper (the card brings its own gray tone), and the ✕ moves inside the
    card's corner so it reads as the card's control. */
@@ -3237,9 +3219,6 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 }
 .warn-toast-x:hover { color: var(--fg); background: rgba(255, 255, 255, 0.08); }
 .warn-toast.fade { opacity: 0; }
-.warn-toast.sticky { border-color: var(--accent); }
-.warn-toast-copy { font: inherit; font-size: 0.82em; cursor: pointer; padding: 1px 8px; border-radius: 6px; color: var(--fg); background: transparent; border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); margin-left: 6px; }
-.warn-toast-copy:hover { border-color: var(--accent); }
 
 /* INTERRUPTING… chip (the user 2026-07-02): the stop is in flight — busy-yellow like working (it still
    is, briefly) but dimmed and static (no pulse, no timer); clears to READY on its own when the stop lands. */

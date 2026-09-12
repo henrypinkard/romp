@@ -13,7 +13,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("a queued ChatEvent carries the pending messages (backend-agnostic, per-message md)", () => {
   // idx = backend-queue position (SDK); park = _pending_ops position (compaction/model parking, any backend)
   // `optimistic` (romp's own unconfirmed echo) rides along at the end — see optimistic-send.test.ts
-  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean; optimistic\?: boolean; romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; held\?: boolean; hiddenByPending\?: boolean; landing\?: boolean \}\[\]/);   // gist: a queued romp SYSTEM notice's user-facing head (2026-09-08); imgPaths: the echo's dragged-image thumbnails (2026-08-25); romp flags: T243; lost + qts: the pending entry's connection-drop state and its identity for the ✕ (2026-09-06)
+  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; goalId\?: string; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean; optimistic\?: boolean; romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; hiddenByPending\?: boolean; landing\?: boolean \}\[\]/);   // gist: a queued romp SYSTEM notice's user-facing head (2026-09-08); imgPaths: the echo's dragged-image thumbnails (2026-08-25); romp flags: T243; lost + qts: the pending entry's connection-drop state and its identity for the ✕ (2026-09-06)
 });
 
 test("renderQueued draws a wireframe-hourglass header (singular/plural) + one markdown bubble per queued message", () => {
@@ -43,11 +43,12 @@ test("a queued slash command renders as a command chip, not a plain 'message' (t
   assert.match(RENDER, /const nCmd = texts\.filter\(\(t\) => SLASH_CMD_RE\.test\(t\.md\)\)\.length;/);
 });
 
-test("a cancelable queued bubble carries an explicit ✕ — messages AND parked commands (the user 2026-07-08)", () => {
+test("a cancelable queued bubble carries an explicit control at every stage: the ✕ on commands and romp's words, the ✎ on messages (the user 2026-07-08; T373)", () => {
   // every stage cancels: the backend's own queue (idx), ops parked during compaction/model switches
   // (park), and the pre-confirmation optimistic echo (qopt — the 2026-08-30 rule: labeled and
-  // cancellable from the instant send is pressed)
-  assert.match(RENDER, /if \(t\.cancelable && \(t\.idx !== undefined \|\| t\.park !== undefined \|\| t\.optimistic\)\)/);
+  // cancellable from the instant send is pressed); a message's control is the ✎, which rescinds it to the composer
+  assert.match(RENDER, /if \(t\.cancelable && \(isCmd \|\| t\.romp\) && \(t\.idx !== undefined \|\| t\.park !== undefined \|\| t\.optimistic\)\)/);
+  assert.match(RENDER, /if \(t\.cancelable && !t\.romp && !isCmd && \(t\.idx !== undefined \|\| t\.park !== undefined \|\| t\.optimistic\)\)/);
   assert.match(RENDER, /if \(t\.optimistic\) x\.dataset\.qopt = "1";/);
   assert.match(RENDER, /el\("button", "queued-x"\)/);
   assert.match(RENDER, /x\.dataset\.act = "qx";/, "the ✕ routes through the stable document.body delegate");
@@ -61,15 +62,18 @@ test("a cancelable queued bubble carries an explicit ✕ — messages AND parked
   assert.match(CSS, /\.queued-x:hover \{ color: var\(--vscode-errorForeground/, "red on hover = the remove reading");
 });
 
-test("the delegated qx handler cancels click-safely: kernel op + composer restore for messages only", () => {
-  // one handler on document.body (stable across every per-push rebuild) — never a per-render listener
-  assert.match(RENDER, /qx: \(el\) => \{/);
+test("the delegated qx handler cancels click-safely: kernel op for commands and romp's words; the qedit twin rescinds a message to the composer (T373)", () => {
+  // one handler on document.body (stable across every per-push rebuild) — never a per-render listener; the two
+  // controls share one function, the cross without the composer half, the pencil with it
+  assert.match(RENDER, /qx: \(el\) => rescindQueued\(el, false\),/);
+  assert.match(RENDER, /qedit: \(el\) => rescindQueued\(el, true\),/);
   assert.match(RENDER, /\{ type: "cancelQueued", id: sidQ, md: qmd \}/, "the body rides along as the kernel's drift guard; owner-scoped for the popover (2026-08-26, sidQ = owningSidOf ?? activeId)");
   assert.match(RENDER, /if \(el\.dataset\.qidx !== undefined\) msg\.idx = Number\(el\.dataset\.qidx\);/);
   assert.match(RENDER, /if \(el\.dataset\.qpark !== undefined\) msg\.park = Number\(el\.dataset\.qpark\);/);
-  // a MESSAGE returns to the composer to re-edit; a slash COMMAND (qcmd) just cancels
-  assert.match(RENDER, /if \(qmd && el\.dataset\.qcmd !== "1" && el\.dataset\.qromp !== "1"\) \{/);
-  assert.match(RENDER, /restoreToComposer\(edx && edx\.open && edx\.text\.trim\(\) \? edx\.text : qmd\);/, "the message's words come back — the words being edited when a field was open on it (T306)");
+  // a MESSAGE returns to the composer (the ✎, toComposer): its words, its quote citations and its attachments as chips
+  assert.match(RENDER, /if \(toComposer && qmd\) \{/);
+  assert.match(RENDER, /const back = rescindedComposerState\(qmd, known\);/, "the send's composition is undone (queued-rescind.ts)");
+  assert.match(RENDER, /for \(const f of back\.files\) addComposerFile\(sidQ, f\);\s*\n\s*restoreToComposer\(back\.text\);/, "the attachments as chips, then the words");
   assert.match(RENDER, /const bub = el\.closest\("\.queued-bubble"\) as HTMLElement \| null;[\s\S]*?bub\?\.remove\(\);/,
     "optimistic removal before the next push");
   // restoreToComposer fills the composer textarea, fires input (autosize/enable), focuses, caret to end
@@ -247,7 +251,7 @@ test("the kernel flags a romp-injected queued entry from the same markers as a l
 });
 
 test("what romp itself queued wears the LANDED romp grammar, split as landed: notice card vs gray romp bubble (T243)", () => {
-  assert.match(RENDER, /romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; held\?: boolean; hiddenByPending\?: boolean; landing\?: boolean \}\[\]/, "the queued text shape carries the flags (+ the gist, 2026-09-08)");
+  assert.match(RENDER, /romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; hiddenByPending\?: boolean; landing\?: boolean \}\[\]/, "the queued text shape carries the flags (+ the gist, 2026-09-08)");
   const body = RENDER.split("function renderQueued(")[1].split("\nfunction ")[0];
   assert.match(body, /const bubble = el\("div", "queued-bubble md" \+ \(t\.cancelable \? " cancelable" : ""\)\s*\n\s*\+ \(t\.romp \? " queued-romp" : ""\) \+ \(t\.rompSystem \? " queued-sys" : ""\)\);/);
   // a SYSTEM notice → the landed card's own builder, nested; a one-line notice gets no body repeating its head
@@ -274,7 +278,6 @@ test("what romp itself queued wears the LANDED romp grammar, split as landed: no
   // the ✕ stays; romp's words are never restored to the composer on cancel
   assert.match(body, /x\.title = t\.rompSystem \? "cancel this queued notice" : t\.romp \? "cancel this queued nudge"/);
   assert.match(body, /if \(t\.romp\) x\.dataset\.qromp = "1";/);
-  assert.match(RENDER, /if \(qmd && el\.dataset\.qcmd !== "1" && el\.dataset\.qromp !== "1"\)/);
   // the gray tone replaces the dashed blue on the romp variants; the ✕ room is reserved only when there is a ✕
   assert.match(CSS, /\.queued-bubble\.queued-romp \{[^}]*background: transparent;[^}]*border: 0;/);
   assert.match(CSS, /\.queued-bubble\.queued-romp\.cancelable > \.notice,\s*\n\s*\.queued-bubble\.queued-romp\.cancelable > \.romp-bubble \{ padding-right: 30px; \}/);   // .notice since 2026-09-08
