@@ -78,7 +78,9 @@ test("the lightbox offers a download beside the close, saving the same bytes it 
     "between the filename and the ✕ — with copy slotted beside it where the clipboard API exists (2026-08-31)");
   // an inline TRAY SVG, not a codepoint: "⭳" (U+2B73) has no coverage in the mac system fonts and
   // rendered as a tofu box (the user 2026-08-19). Same stroke family as the composer's buttons.
-  assert.ok(body.indexOf('<polyline points="7 10 12 15 17 10"/>') > 0, "the arrow-into-tray glyph");
+  assert.ok(body.indexOf("dl.innerHTML = ICON_DOWNLOAD") > 0, "the tray glyph from icons.ts (T367: one drawing, shared with the file viewer's bar)");
+  const ICONS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "icons.ts"), "utf8");
+  assert.ok(ICONS.indexOf('<polyline points="7 10 12 15 17 10"/>') > 0, "the arrow-into-tray glyph");
   assert.ok(body.indexOf("\u2b73") < 0 && body.indexOf("⭳") < 0, "the uncovered codepoint is gone");
   const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
   assert.match(CSS, /\.romp-lightbox-dl, \.romp-lightbox-copy \{ font: inherit; font-size: 0\.86em;/,

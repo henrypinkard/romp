@@ -25,11 +25,17 @@ const RULES = [
   ".fileview-dir {", ".fileview-base {", ".fileview-sess {", ".fileview-sess .host-prefix {", ".fileview-acts {",
   ".fileview-bar .fileview-name {", ".fileview-bar .fileview-acts {",   // the bar's own wrap (scoped: the file browser's row wears .fileview-acts too)
   ".fileview-btn {", ".fileview-btn:hover {",
-  "a.fileview-btn {", ".fileview-gh {", ".fileview-gh-why {", ".fileview-gh-dots {",
+  "a.fileview-btn {", ".fileview-gh {",
   // one disabled dress for every bar button: the GitHub unit's no-link state and the text-size control's ends
   '.fileview-btn:disabled, .fileview-btn[aria-disabled="true"] {', '.fileview-btn:disabled:hover, .fileview-btn[aria-disabled="true"]:hover {',
   '.fileview-btn:disabled:active, .fileview-btn[aria-disabled="true"]:active {', ".fileview-size-reset {", ".fileview-size-reset.fileview-size-default {",
   "a.fileview-gh-note {", ".fileview-body {",
+  // T367: the grouped row, the segmented pair, the glyph buttons and the text-size flyout
+  ".fileview-group {", ".fileview-acts > .fileview-group + .fileview-group, .fileview-acts > .fileview-group ~ .fileview-close {",
+  ".fileview-seg {", ".fileview-seg .fileview-btn {", ".fileview-seg .fileview-btn + .fileview-btn {", ".fileview-seg .fileview-btn:first-child {",
+  ".fileview-seg .fileview-btn:last-child {", ".fileview-seg .fileview-btn.on {",
+  ".fileview-btn.fileview-icon {", ".fileview-btn.fileview-icon svg {", ".fileview-btn[hidden], .fileview-group[hidden], .fileview-zoom[hidden], .fileview-gh[hidden] {", ".fileview-btn.fileview-icon.ok {", ".fileview-btn.fileview-icon.err {", ".fileview-btn.fileview-busy {",
+  ".fileview-zoom {", ".fileview-zoom-menu {", ".fileview-zoom-menu[hidden] {",
   ".fileview-cm {", ".fileview-cm .cm-editor {", ".fileview-editor {", ".fileview > .fileview-err {",
   ".fileview-dir-link {", ".fileview-dir-link:hover {",
   ".fileview-imgbox {", ".fileview-img {", ".fileview-frame {",

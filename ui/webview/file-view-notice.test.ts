@@ -142,7 +142,7 @@ function cardUp(): Card {
   const body = card.children[card.children.length - 1];
   assert.equal(body.className, "fileview-body");
   const acts = bar.children.find((c) => c.classList.contains("fileview-acts"))!;
-  const btn = (label: string) => acts.children.find((c) => c.tagName === "button" && c.textContent === label)!;
+  const btn = (label: string) => { const walk = (n: El): El | undefined => { for (const c of n.children) { if (c.tagName === "button" && (c.textContent === label || c.getAttribute("aria-label") === label)) return c; const d = walk(c); if (d) return d; } return undefined; }; const b = walk(acts); assert.ok(b, "the " + label + " button"); return b!; };   // T367: controls sit in groups, glyph buttons carry their word as aria-label
   return { wrap, card, bar, body, edit: btn("Edit"), save: btn("Save"), cancel: btn("Cancel") };
 }
 /** Open the file, let the text land, click Edit: the editor chunk has no bundle to load from, so the plain
