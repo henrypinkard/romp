@@ -233,10 +233,13 @@ function textSizeControl(root: HTMLElement, textShowing: () => boolean): { butto
   for (const b of buttons) menu.appendChild(b);
   wrap.appendChild(trigger); wrap.appendChild(menu);
   const setOpen = (open: boolean) => {
+    if (open && zoomOpen && zoomOpen.wrap !== wrap) zoomOpen.close();   // one flyout at a time, by rule (review)
+    const focusInside = !open && !menu.hidden && !!document.activeElement && typeof menu.contains === "function" && menu.contains(document.activeElement);
     menu.hidden = !open;
     trigger.setAttribute("aria-expanded", open ? "true" : "false");
     trigger.classList.toggle("on", open);
     zoomOpen = open ? { wrap, close: () => setOpen(false) } : (zoomOpen && zoomOpen.wrap === wrap ? null : zoomOpen);
+    if (focusInside) trigger.focus();   // Escape, or an outside press with the focus inside: back to the glyph, never left on a hidden button (review)
   };
   trigger.addEventListener("click", () => setOpen(menu.hidden));
   wireZoomDismiss();
@@ -281,8 +284,11 @@ let zoomDismissWired = false;
 function wireZoomDismiss(): void {
   if (zoomDismissWired) return;
   zoomDismissWired = true;
-  document.addEventListener("mousedown", (e) => { if (zoomOpen && !zoomOpen.wrap.contains(e.target as Node)) zoomOpen.close(); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && zoomOpen) { zoomOpen.close(); e.stopPropagation(); } }, true);
+  // a viewer closed with its flyout open (the close cross from the keyboard) leaves no reference behind that could
+  // swallow the next viewer's Escape: closeFileView clears it, and a detached wrap is dropped here as well (review)
+  const live = () => { if (zoomOpen && !zoomOpen.wrap.isConnected) zoomOpen = null; return zoomOpen; };
+  document.addEventListener("mousedown", (e) => { const z = live(); if (z && !z.wrap.contains(e.target as Node)) z.close(); });
+  document.addEventListener("keydown", (e) => { const z = live(); if (e.key === "Escape" && z) { z.close(); e.stopPropagation(); } }, true);
 }
 
 // The romp loader (swirl + wordmark + three pulsing accent dots), per the loading-state rule: the
@@ -411,7 +417,9 @@ export function registerFileViewAction(a: FileViewAction): void {
 // branch is not on origin stays an anchor, dashed, with the kernel's note in the tooltip and aria-label,
 // since GitHub 404s it until the push. No URL (no repo, uncommitted, no GitHub origin, an older kernel)
 // leaves the unit hidden: the verdict still rides the reply, it is just not rowed. The unit stays in the
-// row hidden while the check is out (aria-busy names the wait), so the answer lands in place. One question
+// row hidden while the check is out, so the answer lands in place; aria-busy marks the pending unit in the
+// DOM (the tests read it), and hidden it sits outside the accessibility tree, so no wait is announced for a
+// link nobody sees yet. One question
 // per open, reqId-guarded; a socket drop while it is out is the one thing that loses the reply, and the
 // shim's reconnect event re-asks (initFileView), so the wait never outlives the socket. Exported for the
 // DOM-shape test.
@@ -487,6 +495,7 @@ export function closeFileView(): void {
   dropMediaUrl();                                      // an image/PDF view's bytes leave with the viewer
   dropUrlRead();                                       // …and a URL view's in-flight read is cancelled
   dropWidthWatch();                                    // …and the body's width watch (watchBodyWidth)
+  if (zoomOpen) { zoomOpen.close(); zoomOpen = null; }   // the text-size flyout's reference leaves with the viewer (review: a keyboard close kept it, and the next viewer's first Escape was swallowed)
   wrap.remove();
   document.body.classList.remove("fileview-open");
 }
@@ -916,7 +925,7 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
     }
     editBtn.hidden = editing || text === null || !isText || !mtimeNs;
     textSize.sync();                          // the text-size control follows every paint: shown over a text view only
-    viewGroup.hidden = !(segBtns.length > 0 || !textSize.trigger.hidden || !srcBtn.hidden);   // an all-hidden group takes no gap
+    viewGroup.hidden = !(segBtns.some(([, b]) => !b.hidden) || !textSize.trigger.hidden || !srcBtn.hidden);   // an all-hidden group takes no gap (edit mode hides the pair too)
     saveBtn.hidden = !editing;
     cancelBtn.hidden = !editing;
     if (isImage || isPdf) {

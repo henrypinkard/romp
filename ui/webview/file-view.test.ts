@@ -474,6 +474,12 @@ test("the title bar offers Download as the lightbox's tray glyph, in the file gr
   assert.match(VIEW, /fileGroup\.appendChild\(dl\);/);
   assert.match(VIEW, /const copy = el\("button", "fileview-btn fileview-icon"\) as HTMLButtonElement;/);
   assert.match(VIEW, /fileGroup\.appendChild\(copy\);/);
+  // the wider gaps apply only where groups exist: the close cross after a GROUP sibling, never the file browser's row or
+  // the URL viewer's flat row (review)
+  for (const css of [CHAT_CSS, FEED_CSS]) {
+    assert.match(css, /\.fileview-acts > \.fileview-group \+ \.fileview-group, \.fileview-acts > \.fileview-group ~ \.fileview-close \{ margin-left: 10px; \}/);
+    assert.doesNotMatch(css, /\.fileview-acts > \.fileview-close \{/, "an unscoped close margin would move the file browser's and the URL viewer's cross");
+  }
   assert.match(VIEW, /const dl = el\("button", "fileview-btn"\) as HTMLButtonElement;/, "no new styling, no new font size");
 });
 

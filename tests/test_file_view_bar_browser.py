@@ -102,7 +102,7 @@ const bar = (label) => page.evaluate((label) => {
   const seg = acts.querySelector(".fileview-seg");
   const segBtns = seg ? Array.from(seg.children).map((e) => ({ text: e.textContent.trim(), rect: rect(e), radius: getComputedStyle(e).borderRadius, on: e.classList.contains("on") })) : [];
   return { label, controls, bar: rect(barEl), box: rect(box),
-    gh: gh ? { hidden: gh.hidden, busy: gh.getAttribute("aria-busy"), children: gh.children.length, text: gh.textContent.trim() } : null,
+    gh: gh ? { hidden: gh.hidden, busy: gh.getAttribute("aria-busy"), children: gh.children.length, text: gh.textContent.trim(), display: getComputedStyle(gh).display, w: gh.getBoundingClientRect().width } : null,
     seg: seg ? { group: groupOf(seg), sameParent: seg.children.length === 2 && seg.children[0].nextElementSibling === seg.children[1], btns: segBtns } : null,
     groups: Array.from(acts.children).map((c) => c.className + (c.hidden ? "[hidden]" : "")),
     ghWhy: !!acts.querySelector(".fileview-gh-why") };
@@ -155,6 +155,25 @@ for (const f of cfg.files_list) {
     await page.evaluate(() => document.body.classList.remove("theme-light")); await page.waitForTimeout(60);
   }
 }
+// the keyboard road (review): Enter on the glyph opens the flyout, Tab moves inside, Escape closes it and returns the focus
+// to the glyph with the viewer still up; then a viewer closed from the keyboard with its flyout OPEN (the cross focused, Enter)
+// must leave no reference behind: Escape on the next file closes that viewer at once
+await open(cfg.files_list[3].path);
+await page.focus("#romp-fileview .fileview-zoom-btn"); await page.keyboard.press("Enter");
+const k1 = await page.evaluate(() => ({ open: !document.querySelector("#romp-fileview .fileview-zoom-menu").hidden, expanded: document.querySelector("#romp-fileview .fileview-zoom-btn").getAttribute("aria-expanded") }));
+await page.keyboard.press("Tab");
+const k2 = await page.evaluate(() => ({ inside: !!(document.activeElement && document.activeElement.closest(".fileview-zoom-menu")), label: document.activeElement ? document.activeElement.getAttribute("aria-label") : null }));
+await page.keyboard.press("Escape");
+const k3 = await page.evaluate(() => ({ closed: document.querySelector("#romp-fileview .fileview-zoom-menu").hidden, focusOnGlyph: document.activeElement === document.querySelector("#romp-fileview .fileview-zoom-btn"), viewerUp: !!document.getElementById("romp-fileview") }));
+await page.focus("#romp-fileview .fileview-zoom-btn"); await page.keyboard.press("Enter");
+await page.focus("#romp-fileview .fileview-close"); await page.keyboard.press("Enter");
+await page.waitForTimeout(100);
+const k4 = await page.evaluate(() => ({ viewerGone: !document.getElementById("romp-fileview") }));
+await open(cfg.files_list[0].path);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(150);
+const k5 = await page.evaluate(() => ({ viewerGone: !document.getElementById("romp-fileview") }));
+out.keys = { k1, k2, k3, k4, k5 };
 fs.writeFileSync(cfg.out, JSON.stringify(out));
 await browser.close();
 console.log("RESULT: ok");
@@ -317,6 +336,8 @@ class ServedFileViewBar(unittest.TestCase):
         self.assertFalse(m["ghWhy"], "no caption text in the bar" + table)
         gh = m["gh"]
         self.assertTrue(gh is None or (gh["hidden"] and gh["children"] == 0), "the unit is hidden and empty: " + json.dumps(gh) + table)
+        if gh is not None:   # and out of the row's flow: a live inline-flex item would eat a gap between the pencil and Download (review)
+            self.assertEqual((gh["display"], gh["w"]), ("none", 0), "the hidden unit still takes room: " + json.dumps(gh))
         self.assertFalse(any(c["text"].startswith("GitHub") and not c["hidden"] for c in m["controls"]), "no GitHub control" + table)
         self.assertFalse(any("not in a git repository" in c["text"] for c in m["controls"]) or "not in a git repository" in json.dumps(m["groups"]), table)
 
@@ -386,6 +407,20 @@ class ServedFileViewBar(unittest.TestCase):
         self.assertGreaterEqual(z["open"]["rect"]["top"], z["open"]["trigger"]["bottom"], "the flyout hangs under the glyph")
         self.assertNotEqual(z["open"]["bg"], "rgba(0, 0, 0, 0)", "the menu surface (the menu tokens)")
         self.assertEqual((z["after"]["hidden"], z["after"]["expanded"], z["after"]["viewerUp"]), (True, "false", True), "Escape closes the flyout and leaves the viewer up: " + json.dumps(z["after"]))
+
+    # ── the keyboard road ──
+    def test_keyboard_enter_opens_the_flyout_escape_closes_it_with_the_focus_back_on_the_glyph(self):
+        k = self._run()["keys"]
+        self.assertEqual((k["k1"]["open"], k["k1"]["expanded"]), (True, "true"), json.dumps(k))
+        self.assertTrue(k["k2"]["inside"], "Tab moves into the flyout: " + json.dumps(k["k2"]))
+        self.assertEqual(k["k2"]["label"], "Smaller text")
+        self.assertEqual((k["k3"]["closed"], k["k3"]["viewerUp"]), (True, True), json.dumps(k["k3"]))
+        self.assertTrue(k["k3"]["focusOnGlyph"], "Escape returns the focus to the glyph, never leaves it on a hidden button (review): " + json.dumps(k["k3"]))
+
+    def test_a_viewer_closed_from_the_keyboard_with_its_flyout_open_leaves_no_stale_flyout_to_swallow_the_next_escape(self):
+        k = self._run()["keys"]
+        self.assertTrue(k["k4"]["viewerGone"], "Enter on the close cross closes the viewer: " + json.dumps(k["k4"]))
+        self.assertTrue(k["k5"]["viewerGone"], "Escape on the NEXT file closes that viewer at once; a stale flyout reference swallowed it before (review): " + json.dumps(k["k5"]))
 
     # ── copy path acknowledges ──
     def test_copy_path_acknowledges_in_the_same_tick_and_settles_to_copied_or_copy_failed(self):

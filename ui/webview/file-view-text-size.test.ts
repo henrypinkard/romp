@@ -477,13 +477,16 @@ test("the control is absent for a picture and a PDF, present for the SVG Source 
   o.btn("Edit").click();
   await settle();
   assert.equal(o.btn("Cancel").hidden, false, "edit mode");
+  assert.equal(o.acts.children[0].hidden, true, "the view group takes no room in edit mode: the pair and the glyph are hidden (review)");
   assert.equal(o.zoom.hidden, true, "the editor keeps its own size");   // the glyph is the control's visibility (T367)
   const ev2 = wheel({ dy: -100, ctrl: true });
   o.body.dispatchEvent(ev2);
   assert.equal(size(o), "115", "the wheel stands down in edit mode"); assert.equal(ev2.defaultPrevented, false);
   o.btn("Cancel").click();
   assert.equal(o.btn("Cancel").hidden, true);
-  assert.equal(o.zoom.hidden, false);   // the glyph is the control's visibility (T367) assert.equal(blank(o), false, "back with the read view");
+  assert.equal(o.acts.children[0].hidden, false, "the view group is back with the read view");
+  assert.equal(o.zoom.hidden, false);   // the glyph is the control's visibility (T367)
+  assert.equal(blank(o), false, "back with the read view");
 });
 
 test("the control shows only once a text body is KNOWN: hidden beside the loader, shown when a text file's bytes land, never for a picture", async (t) => {
@@ -492,7 +495,8 @@ test("the control shows only once a text body is KNOWN: hidden beside the loader
   assert.equal(o.zoom.hidden, true, "the loader holds the body: not yet a text view");   // the glyph is the control's visibility (T367)
   assert.equal(size(o), "130", "the step is on the root already, so the first paint is at size");
   await settle();
-  assert.equal(o.zoom.hidden, false);   // the glyph is the control's visibility (T367) assert.equal(o.reset.textContent, "130%");
+  assert.equal(o.zoom.hidden, false);   // the glyph is the control's visibility (T367)
+  assert.equal(o.reset.textContent, "130%");
   o.fv.closeFileView();
   const pic = await openFile(t, PLOT, false);
   assert.equal(pic.zoom.hidden, true, "a picture: hidden for the load");

@@ -187,20 +187,16 @@ test("the poster is bound at the boot of the document that hosts the viewer", ()
   assert.match(RENDER, /initFileView\(\(m\) => vscodeApi\?\.postMessage\(m\)\);/);
 });
 
-test("the sheets dress the unit: the caption at button size, the disabled button inert, the note dashed", () => {
+test("the sheets dress the unit: the link at button size, hidden and out of the row's flow when there is none, the note dashed (T367)", () => {
   // both sheets: the FEED hosts the same viewer (the file browser), so its unit dresses the same
   for (const css of [CHAT_CSS, FEED_CSS]) {
     assert.match(css, /a\.fileview-btn \{ text-decoration: none;/);
     assert.match(css, /\.fileview-gh \{ display: inline-flex; align-items: center; gap: 5px; min-width: 0; \}/);
-    assert.doesNotMatch(css, /\.fileview-gh\[hidden\]/, "nothing hides the unit any more: the wait is shown, not skipped");
-    // the pending placeholder's dots are the pane's own loader dots (accent, pulsing), laid out inline
-    assert.match(css, /\.fileview-gh-dots \{ display: inline-flex; align-items: center; gap: 4px; \}/);
-    assert.match(css, /\.fileview-dot \{ width: 4px; height: 4px; border-radius: 50%; background: var\(--accent\);\n  animation: fileview-pulse/);
-    // same size as the buttons it annotates (labels match labels), bounded in width and WRAPPING: the
-    // unit takes no tap, click or focus, so a truncated caption was a sentence nobody could finish
-    assert.match(css, /\.fileview-gh-why \{ font-size: 0\.82em; line-height: 1\.25; color: var\(--dim\); max-width: 18em; text-align: right; \}/);
-    const why = css.slice(css.indexOf(".fileview-gh-why {"), css.indexOf("}", css.indexOf(".fileview-gh-why {")));
-    assert.doesNotMatch(why, /nowrap|ellipsis|overflow: hidden/, "the caption wraps; it is never cut");
+    // the unit's inline-flex would beat the browser's [hidden] rule and leave a live flex item eating a gap (review)
+    assert.match(css, /\.fileview-btn\[hidden\], \.fileview-group\[hidden\], \.fileview-zoom\[hidden\], \.fileview-gh\[hidden\] \{ display: none; \}/);
+    // the caption and the placeholder dots are gone with the always-fill-the-slot rule: no dead rules for them
+    assert.doesNotMatch(css, /\.fileview-gh-(why|dots)/, "the caption and the placeholder dots left (T367)");
+    assert.match(css, /\.fileview-dot \{ width: 4px; height: 4px; border-radius: 50%; background: var\(--accent\);\n  animation: fileview-pulse/, "the pane's loader dots stay");
     assert.match(css, /\.fileview-btn \{ font: inherit; font-size: 0\.82em;/);
     // the disabled dress is every bar button's since the text-size control's ends took it too; the unit's no-link
     // button is a real disabled button under it

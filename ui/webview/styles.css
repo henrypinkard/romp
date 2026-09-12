@@ -3906,39 +3906,29 @@ body.fileview-open { overflow: hidden; }
 .fileview-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 /* the GitHub link wears the button treatment but IS an anchor — the browser owns the new tab */
 a.fileview-btn { text-decoration: none; display: inline-flex; align-items: center; }
-/* the GitHub action is one unit: the control and, when the kernel gave one, its reason as a caption
-   beside it — visible without hover (touch has none, and a disabled button takes no focus), and whole:
-   it wraps inside a bounded width rather than truncating, because nothing in the unit takes a tap,
-   click or focus that could finish a cut sentence; same size as the buttons it annotates, ragged edge
-   away from the control it precedes. */
+/* the GitHub action is one unit holding the link when the kernel's check resolves to a URL, and hidden otherwise
+   (T367: no greyed button, no caption; the [hidden] rule below takes it out of the row's flow) */
 .fileview-gh { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-.fileview-gh-why { font-size: 0.82em; line-height: 1.25; color: var(--dim); max-width: 18em; text-align: right; }
-/* pending: the kernel's check is on its way (up to 3 s when it must ask origin), so the slot holds the
-   dimmed button and the loader's dots (.fileview-dot, the pane's own) where the caption will go — a slow
-   check must read as a wait, not as the old no-button state nor as a verdict (the loading-state rule) */
-.fileview-gh-dots { display: inline-flex; align-items: center; gap: 4px; }
-/* a disabled bar button, greyed, hover inert: the GitHub unit's no-link state (a real disabled button, never
-   hidden: an absent button read as "broken" when the file was simply not committed yet, 2026-09-05), the
-   editor's Save while a save is in flight (disabled and reading "Saving…"), and the text-size control's ends
-   (A− at the smallest step, A+ at the largest; aria-disabled, so the button keeps the keyboard focus it holds
-   and the ring stays where the person left it). One treatment for every bar button, so neither an end nor a
-   save in progress reads as live under the pointer. */
+/* a disabled bar button, greyed, hover inert: the editor's Save while a save is in flight (disabled and reading
+   "Saving…"), and the text-size control's ends (A− at the smallest step, A+ at the largest; aria-disabled, so
+   the button keeps the keyboard focus it holds and the ring stays where the person left it). One treatment for
+   every bar button, so neither an end nor a save in progress reads as live under the pointer. */
 .fileview-btn:disabled, .fileview-btn[aria-disabled="true"] { opacity: 0.55; cursor: default; }
 .fileview-btn:disabled:hover, .fileview-btn[aria-disabled="true"]:hover { border-color: var(--card-border); color: var(--fg); background: transparent; }
 .fileview-btn:disabled:active, .fileview-btn[aria-disabled="true"]:active { transform: none; }
-/* the text-size readout between A− and A+ (file-view.ts textSizeControl): a slot of ONE width whatever it
-   says, and at the default (nothing to reset, nothing to say) an empty slot rather than none, so A− never
-   moves under the pointer when the readout appears after the first press. visibility, not display: the slot
-   stays, the button leaves the tab order. */
+/* the text-size readout between A− and A+ in the zoom flyout (file-view.ts textSizeControl): a slot of ONE
+   width whatever it says, so A− never moves under the pointer as the number changes; at the default (nothing
+   to reset) it reads dimmed rather than empty (T367). */
 .fileview-size-reset { min-width: 5.5em; box-sizing: border-box; text-align: center; font-variant-numeric: tabular-nums; }
 .fileview-size-reset.fileview-size-default { color: var(--dim); }
-/* a link whose branch is not on origin yet: dashed, the caption carries the note */
+/* a link whose branch is not on origin yet: dashed, the note in its tooltip and aria-label */
 a.fileview-gh-note { border-style: dashed; }
 /* T367 (the user 2026-09-12): the bar's controls in GROUPS that read as units — the view group (the Rendered|Raw
    pair, the SVG Source toggle, the text-size glyph) and the file group (edit, the GitHub link, download, copy path),
-   set apart by a wider gap than the controls within them; the close cross alone at the end. */
+   set apart by a wider gap than the controls within them; the close cross alone at the end. The wider gaps apply
+   only where groups exist: the file browser's row and the URL viewer's flat row keep their spacing. */
 .fileview-group { display: inline-flex; align-items: center; gap: 4px; }
-.fileview-acts > .fileview-group + .fileview-group, .fileview-acts > .fileview-close { margin-left: 10px; }
+.fileview-acts > .fileview-group + .fileview-group, .fileview-acts > .fileview-group ~ .fileview-close { margin-left: 10px; }
 /* the Rendered|Raw pair is ONE segmented control: joined, the shared hairline drawn once, the outer corners rounded,
    the pressed segment's accent border over the seam */
 .fileview-seg { display: inline-flex; align-items: stretch; }
@@ -3953,7 +3943,7 @@ a.fileview-gh-note { border-style: dashed; }
 .fileview-btn.fileview-icon svg { display: block; }
 /* the display an author rule sets (inline-flex on a glyph button, on a group) would beat the browser's own [hidden]
    rule, and a hidden edit pencil or zoom glyph would still paint (found on the lab's image screenshot) */
-.fileview-btn[hidden], .fileview-group[hidden], .fileview-zoom[hidden] { display: none; }
+.fileview-btn[hidden], .fileview-group[hidden], .fileview-zoom[hidden], .fileview-gh[hidden] { display: none; }
 .fileview-btn.fileview-icon.ok { color: var(--accent); border-color: var(--accent); }
 .fileview-btn.fileview-icon.err { color: var(--err); border-color: var(--err); }
 .fileview-btn.fileview-busy { opacity: 0.55; }
