@@ -3417,7 +3417,7 @@ body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: 
 #romp-lightbox { position: fixed; inset: 0; z-index: 1300; background: rgba(0, 0, 0, 0.72);
   display: flex; align-items: center; justify-content: center; }
 .romp-lightbox-inner { display: flex; flex-direction: column; gap: 8px; max-width: 92vw; max-height: 90vh; }
-.romp-lightbox-img { max-width: 92vw; max-height: 82vh; object-fit: contain; border-radius: 8px;
+.romp-lightbox-img { max-width: 92vw; max-height: 82vh; object-fit: contain; border-radius: 8px; align-self: center;
   box-shadow: var(--shadow-modal);
   transform-origin: 0 0; will-change: transform; }   /* pinch-zoom renders translate+scale from this corner (T162; pinch.ts) */
 /* the stage owns every touch gesture (T162): pinch must zoom the IMAGE, never the page — the bar's
@@ -3425,24 +3425,26 @@ body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: 
 .romp-lightbox-inner { touch-action: none; }
 .romp-lightbox-inner.pdf { width: 88vw; height: 88vh; }
 .romp-lightbox-frame { flex: 1 1 auto; width: 100%; border: 0; border-radius: 8px; background: #fff; }
-.romp-lightbox-bar { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.romp-lightbox-name { flex: 1 1 auto; font-size: 0.86em; color: var(--fg); opacity: 0.85;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.romp-lightbox-close { font: inherit; font-size: 0.86em; cursor: pointer; flex: 0 0 auto;
-  padding: 2px 9px; border-radius: 6px; background: transparent; border: 1px solid var(--card-border); color: var(--fg);   /* T151: the one button rest */
-  border: 1px solid rgba(255, 255, 255, 0.18); }
-.romp-lightbox-close:hover { border-color: var(--accent); }
-/* download: an anchor dressed exactly like the close button beside it (one control vocabulary —
-   same chip, same hover cue), sitting between the filename and the ✕ */
+/* the bar sits ABOVE the picture and the PDF frame (T385, the user 2026-09-12: the controls at the top, the way a
+   file opens): it IS the file viewer's bar (.fileview-bar; .fileview-name as dimmed directory + basename; .fileview-acts
+   with the file group and the close cross alone at the end; .fileview-btn.fileview-icon glyph buttons; file-view.ts,
+   T367), one set of rules for both surfaces, so a control added to one wears the same dress in the other. The
+   lightbox's own classes stay as hooks: the placement here and the stage's tap rule (pinch.ts, closest(".romp-lightbox-bar")).
+   The bar's OWN placement rules are scoped under the lightbox id: an id outranks the viewer's later rules of equal
+   specificity, which a plain .romp-lightbox-bar rule tied with and lost to (round one measured the served bar at the
+   viewer's 7px 10px and the title at 12em; the repo's cascade rule: pin the tiebreak). No side padding: the picture's
+   edges are the column's. contain: inline-size makes the bar contribute NO intrinsic width, so the PICTURE sets the
+   column (a 120px thumbnail is a 120px column, not a bar-wide one) and the bar stretches to it; inside, the title
+   truncates, the basename too (the viewer's card owns its width and keeps its basename whole; the lightbox's column is
+   the picture's), and the actions wrap beneath the title when the picture is narrower than they are. */
+#romp-lightbox .romp-lightbox-bar { padding: 0 2px 6px; contain: inline-size; }
+#romp-lightbox .romp-lightbox-bar .fileview-name { min-width: 0; overflow: hidden; }
+#romp-lightbox .romp-lightbox-bar .fileview-base { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* the backdrop is 72% black in BOTH themes, so inside the lightbox the bar's tokens are the dark theme's whatever the
+   page wears: the light theme's near-black prose, hairline and clay accent would sit on a dark field otherwise */
+#romp-lightbox { --fg: #e8e8e8; --dim: #b8b8b8; --accent: #9cd2ff; --accent-fg: #0c1a2e; --accent-wash: rgba(156, 210, 255, 0.12);
+  --err: #f48771; --card-border: rgba(255, 255, 255, 0.18); --box-border: rgba(255, 255, 255, 0.18); }
 .romp-lightbox-cue { flex: 0 0 auto; font-size: 0.82em; color: var(--dim); font-variant-numeric: tabular-nums; }   /* the ←/→ position mark (house sub scale) */
-.romp-lightbox-dl, .romp-lightbox-copy { font: inherit; font-size: 0.86em; cursor: pointer; flex: 0 0 auto;
-  display: inline-flex; align-items: center;   /* centers the inline SVG in the chip */
-  padding: 3px 9px; border-radius: 6px; background: transparent; border: 1px solid var(--card-border); color: var(--fg);   /* T151: the one button rest */
-  border: 1px solid rgba(255, 255, 255, 0.18); text-decoration: none; line-height: normal; }
-.romp-lightbox-dl:hover, .romp-lightbox-copy:hover { border-color: var(--accent); }
-/* copy's spoken states: the ✓/✕ glyphs sit where the icon was — same chip, no reflow */
-.romp-lightbox-copy.ok { color: var(--accent); border-color: var(--accent); }
-.romp-lightbox-copy.err { color: #f48771; border-color: #f48771; }
 
 /* The "host:" prefix on a FEDERATED session's name (host-prefix.ts): metadata, not part of the name
    (the user 2026-07-11) — quiet gray, never bold, italic, a step smaller than the name it precedes.
