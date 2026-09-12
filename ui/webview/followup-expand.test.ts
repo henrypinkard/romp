@@ -14,7 +14,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("the follow-up events carry the stripped quote (fuCtx) end to end", () => {
   // typed on both event shapes — a queued follow-up must expand exactly like a landed one
   assert.match(RENDER, /kind: "user";[^\n]*fuCtx\?: string;/);
-  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; fuCtx\?: string;/);
+  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; goalId\?: string; fuCtx\?: string;/);
   // both call sites hand it to the header, each with a stable expansion key
   assert.match(RENDER, /followUpHeader\(ev\.goal, ev\.fuCtx, ev\.uuid \? "u:" \+ ev\.uuid : undefined\)/);
   assert.match(RENDER, /followUpHeader\(t\.goal, t\.fuCtx, t\.idx !== undefined \? "q:" \+ t\.idx : undefined\)/);

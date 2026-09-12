@@ -145,11 +145,11 @@ test("something IS queued → the kernel's copy of OUR text is hidden and ours s
 test("an unconfirmed echo keeps its tooltip AND carries a ✕ from the press (the 2026-08-30 rule)", () => {
   // The retargeted contract: from the instant send is pressed the message is labeled and cancellable —
   // the old cancelable:false stage was exactly where the user sat during a mid-compaction send. The
-  // optimistic ✕ rides the same qx delegate with data-qopt (no idx/park exists yet).
+  // the optimistic control (the ✎ on a message, T373) rides the shared rescind with data-qopt (no idx/park exists yet).
   assert.match(RENDER, /if \(t\.optimistic\) bubble\.title = "sent just now — romp hasn't confirmed the session has it yet";/);
   assert.match(RENDER, /optimistic: true, cancelable: true/);
-  assert.match(RENDER, /if \(t\.cancelable && \(t\.idx !== undefined \|\| t\.park !== undefined \|\| t\.optimistic\)\) \{/);
-  assert.match(RENDER, /if \(t\.optimistic\) x\.dataset\.qopt = "1";/);
+  assert.match(RENDER, /if \(t\.cancelable && !t\.romp && !isCmd && \(t\.idx !== undefined \|\| t\.park !== undefined \|\| t\.optimistic\)\) \{/);
+  assert.match(RENDER, /if \(t\.optimistic\) ed\.dataset\.qopt = "1";/);   // the message's control is the ✎ since T373; it rides the same delegate path
 });
 
 test("EVERY ✕ stops our re-injection first; the optimistic one cancels by body at the kernel", () => {
@@ -162,7 +162,7 @@ test("EVERY ✕ stops our re-injection first; the optimistic one cancels by body
   // cancelResult, and the composer restore reverts (pendingCancelRestores).
   assert.match(RENDER, /if \(qmd\) \{/);
   // …by the bubble's OWN identity when it has one (data-qts) — send-pending.test.ts runs the lookup
-  assert.match(RENDER, /const qts = el\.dataset\.qts !== undefined \? Number\(el\.dataset\.qts\) : undefined;\s*\n\s*const qid = el\.dataset\.qid \|\| undefined;\s*\n\s*if \(dropPending\(list, qmd, qts, qid\)\)/);
+  assert.match(RENDER, /const qts = el\.dataset\.qts !== undefined \? Number\(el\.dataset\.qts\) : undefined;\s*\n\s*const qid = el\.dataset\.qid \|\| undefined;\s*\n(?:.*\n){0,2}\s*if \(dropPending\(list, qmd, qts, qid\)\)/);
   // …and the kernel's copies carry their own enqueue stamp under `qts` now (T252c): only OUR bubble's stamp is its identity
   // for the ✕, while a kernel copy's ✕ names the copy's id, so it drops the send that owns it (third review)
   assert.match(RENDER, /if \(t\.optimistic && t\.qts !== undefined\) x\.dataset\.qts = String\(t\.qts\);/);
