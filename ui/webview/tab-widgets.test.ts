@@ -26,7 +26,7 @@ const W = require("./tab-widgets") as typeof import("./tab-widgets");
 const S = require("./settings") as typeof import("./settings");
 
 const classes = (e: El) => e.className.split(/\s+/).filter(Boolean);
-const compose = (slot: "before" | "after" | "corner", status: WidgetStatus, prefs: TabWidgetPrefs, sid = "11111111-2222-3333-4444-555555555555") => {
+const compose = (slot: "before" | "after", status: WidgetStatus, prefs: TabWidgetPrefs, sid = "11111111-2222-3333-4444-555555555555") => {
   const tab = mkEl("div"); W.composeTabWidgets(tab as unknown as HTMLElement, slot, sid, status, prefs); return tab.children;
 };
 const P = (p: Partial<TabWidgetPrefs> = {}): TabWidgetPrefs => ({ on: {}, order: [], opts: {}, ...p });
@@ -38,11 +38,11 @@ test("the three built-in widgets register in order: the dot before the name, the
 });
 
 test("registration by id replaces; a contributed widget lands after the built-ins in the default order", () => {
-  W.registerTabWidget({ id: "pin", label: "Pin badge", description: "a pinned tab", defaultOn: false, slot: "corner", render: () => { const e = mkEl("span"); e.className = "tab-pin"; return e as unknown as HTMLElement; } });
-  assert.deepEqual(W.tabWidgets().map((w) => w.id), ["dot", "ctx", "hotkey", "pin"]);
-  W.registerTabWidget({ id: "pin", label: "Pin badge", description: "a pinned tab, again", defaultOn: false, slot: "corner", render: () => null });
+  W.registerTabWidget({ id: "mark", label: "Demo mark", description: "a synthetic mark", defaultOn: false, slot: "after", render: () => { const e = mkEl("span"); e.className = "tab-mark"; return e as unknown as HTMLElement; } });
+  assert.deepEqual(W.tabWidgets().map((w) => w.id), ["dot", "ctx", "hotkey", "mark"]);
+  W.registerTabWidget({ id: "mark", label: "Demo mark", description: "a synthetic mark, again", defaultOn: false, slot: "after", render: () => null });
   assert.equal(W.tabWidgets().length, 4, "the same id replaces, never duplicates");
-  assert.equal(W.tabWidget("pin")!.description, "a pinned tab, again");
+  assert.equal(W.tabWidget("mark")!.description, "a synthetic mark, again");
 });
 
 test("the dot: the state rule's classes, hidden when idle by default, a quiet grey dot on the option; compacting yields nothing (its bar takes the slot)", () => {
@@ -74,7 +74,7 @@ test("the context bar: from 50 percent by default, always on the option, never w
   assert.equal(g.title, "context 62% used");
 });
 
-test("the hot key: nothing until a hot key is assigned; the pinned-tabs store shape (a set of sids, a keybinding override per sid) yields the keycap at its shortest", () => {
+test("the hot key: nothing until a hot key is assigned; the tab hot-key store shape (a set of sids, a keybinding override per sid) yields the keycap at its shortest", () => {
   const sid = "11111111-2222-3333-4444-555555555555";
   assert.deepEqual(compose("after", { state: "working" }, P()).filter((c) => classes(c).includes("tab-key")), [], "no set: no keycap");
   store.set(W.TABKEYS_KEY, JSON.stringify({ [sid]: "web" }));
@@ -98,11 +98,12 @@ test("the after slot composes in registration order: the bar, then the keycap; t
   store.delete(W.TABKEYS_KEY); store.delete("romp:keys");
 });
 
-test("the corner slot wraps a contributed widget in the strip's holder, and a widget that throws costs nothing", () => {
-  W.registerTabWidget({ id: "pin", label: "Pin badge", description: "a pinned tab", defaultOn: true, slot: "corner", render: () => { const e = mkEl("span"); e.className = "tab-pin"; return e as unknown as HTMLElement; } });
-  const corner = compose("corner", { state: "ready" }, P());
-  assert.deepEqual(corner.map(classes), [["tab-corner"]]);
-  assert.deepEqual(corner[0].children.map(classes), [["tab-pin"]]);
+test("a contributed widget draws in its slot after the built-ins once switched on (off by default, nothing), and a widget that throws costs nothing", () => {
+  W.registerTabWidget({ id: "mark", label: "Demo mark", description: "a synthetic mark", defaultOn: false, slot: "after", render: () => { const e = mkEl("span"); e.className = "tab-mark"; return e as unknown as HTMLElement; } });
+  const after = compose("after", { state: "working", ctx: "70%" }, P({ on: { mark: true } })).map((c) => classes(c)[0]);
+  assert.equal(after[0], "tab-ctx", "the built-ins first (registration order)");
+  assert.equal(after[after.length - 1], "tab-mark", "the contributed widget last, in its slot, with no wrapper of its own");
+  assert.ok(!compose("after", { state: "working", ctx: "70%" }, P()).map((c) => classes(c)[0]).includes("tab-mark"), "off by default: not drawn");
   W.registerTabWidget({ id: "boom", label: "Boom", description: "throws", defaultOn: true, slot: "before", render: () => { throw new Error("no"); } });
   assert.deepEqual(compose("before", { state: "working" }, P()).map(classes), [["tab-dot"]], "the throwing widget is skipped, the dot still drawn");
 });
@@ -156,9 +157,9 @@ test("the settings row's live rendering is the strip's own render over the demo 
 test("source: the strip and the gear draw from this ONE module; the dot rule has its one site here", () => {
   const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-widgets.ts"), "utf8");
   assert.equal((SRC.match(/tabDotClass\(status\.state\)/g) || []).length, 1, "the dot slot's one site (tab-dot-slot.test.ts's rule)");
-  assert.match(SRC, /^export function tabCtxGauge\(ctxStr: string, ctxColor\?: number\[\]\): HTMLElement \{/m, "the gauge builder lives here now (render.ts imports it)");
+  assert.match(SRC, /^export function tabCtxGauge\(ctxStr: string, ctxColor\?: number\[\]\): HTMLElement \{/m, "the gauge builder lives here now (the ctx widget calls it)");
   const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
-  assert.match(RENDER, /^import \{ composeTabWidgets, tabCtxGauge, tabHotkey \} from "\.\/tab-widgets";/m);
+  assert.match(RENDER, /^import \{ composeTabWidgets, tabHotkey \} from "\.\/tab-widgets";/m);
   assert.doesNotMatch(RENDER, /^function tabCtxGauge\(/m, "one builder, not two");
   assert.equal((RENDER.match(/const dotCls = tabDotClass\(st\);/g) || []).length, 0, "render.ts no longer appends the dot itself");
   const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");

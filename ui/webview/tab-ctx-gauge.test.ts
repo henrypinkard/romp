@@ -64,7 +64,7 @@ test("the mode defaults to over50 and normalizes the boolean-era store", () => {
 });
 
 test("gear → Tabs: the Context bar widget's WHEN option (From 50% full / Always; off is the switch), persisted as tabWidgets and mirrored to settings.tabCtx", () => {
-  // T379 (the user 2026-09-12): the picker is the Context bar row's option on the Tabs tab, one of the widget rows gear.js
+  // T379 (the user 2026-09-12): the picker is the Context bar row's option in the Chat tab's Tab widgets section, one of the widget rows gear.js
   // builds from tab-widgets.ts; the older tabCtx key is written back from the prefs so every older reader keeps its meaning
   assert.match(TW, /id: "ctx", label: "Context bar", defaultOn: true, slot: "after",/);
   assert.match(TW, /options: \[\{ key: "show", label: "Show", default: "over50",\s*\n\s*choices: \[\{ value: "over50", label: "From 50% full" \}, \{ value: "always", label: "Always" \}\] \}\],/);

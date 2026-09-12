@@ -1,9 +1,10 @@
 // TAB-TITLE WIDGETS (T379, the user 2026-09-12): the small marks a chat tab's title carries (the status dot at the
 // left, the slim context bar and the hot-key keycap after the name) are WIDGETS in a registry, composed onto every tab
-// in a configured set and order, and configured from the settings gear's Tabs tab, where each widget is a row showing
+// in a configured set and order, and configured from the settings gear (the Chat tab's Tab widgets section), where each
+// widget is a row showing
 // what it does (a live rendering over a synthetic status), an on/off switch and its own options. The default set is
 // the dot and the context bar (and the keycap, which shows only when a hot key is assigned); anything can be added by
-// registering it (the pinned-tabs pull request's pin badge registers the same way, in the corner slot).
+// registering it.
 //
 // ONE module for both bundles: the chat (render.ts composes the strip from it) and the gear (gear.js renders the rows'
 // live demos from the same render functions), so a row's demo and the strip can never draw a widget differently.
@@ -19,16 +20,16 @@ import { tabDotClass, tabDotTitle } from "./tab-state";
 import { ctxFallbackColor, pickTone } from "./ctx-color";
 import { effectiveChord, loadOverrides, resolveChord } from "./keybindings";
 
-export type WidgetSlot = "before" | "after" | "corner";
+export type WidgetSlot = "before" | "after";
 export interface WidgetChoice { value: string; label: string }
 export interface WidgetOption { key: string; label: string; choices: WidgetChoice[]; default: string }
 export interface WidgetStatus { state?: string; ctx?: string; ctxColor?: number[]; ctxTone?: number[]; faded?: boolean }
 export interface TabWidget {
-  id: string;                 // "dot" | "ctx" | "hotkey" | a contributor's id ("pin")
+  id: string;                 // "dot" | "ctx" | "hotkey" | a contributor's id
   label: string;              // the settings row's name
   description: string;        // one line: what it shows and when
   defaultOn: boolean;         // the default set
-  slot: WidgetSlot;           // before the name, after the name, the tab's corner (an absolutely placed child)
+  slot: WidgetSlot;           // before the name, after the name
   options?: WidgetOption[];
   render(sid: string, status: WidgetStatus, opts: Record<string, string>): HTMLElement | null;   // null = nothing on this tab
   demo?: WidgetStatus;        // the settings row's live rendering renders over this status (else DEMO_STATUS)
@@ -107,7 +108,7 @@ export function orderedWidgets(prefs: TabWidgetPrefs, slot?: WidgetSlot): TabWid
 }
 
 /** Compose one slot onto a tab: every enabled widget of the slot, in order, appended when it renders something.
- *  Returns the nodes appended. The corner slot's nodes are wrapped in the strip's .tab-corner holder. */
+ *  Returns the nodes appended. */
 export function composeTabWidgets(tab: HTMLElement, slot: WidgetSlot, sid: string, status: WidgetStatus, prefs: TabWidgetPrefs): HTMLElement[] {
   const out: HTMLElement[] = [];
   for (const w of orderedWidgets(prefs, slot)) {
@@ -115,7 +116,6 @@ export function composeTabWidgets(tab: HTMLElement, slot: WidgetSlot, sid: strin
     let node: HTMLElement | null = null;
     try { node = w.render(sid, status, widgetOpts(prefs, w)); } catch { node = null; }   // a contributed widget's throw never costs the tab
     if (!node) continue;
-    if (slot === "corner") { const c = document.createElement("span"); c.className = "tab-corner"; c.appendChild(node); node = c; }
     tab.appendChild(node);
     out.push(node);
   }
@@ -185,9 +185,9 @@ registerTabWidget({
 });
 
 // The HOT KEY keycap (the user 2026-09-12, amending T379): the chord that switches to this tab, at its shortest, after
-// the name. The per-tab hot keys are the pinned-tabs pull request's (its tab-keys.ts: a set of sids under romp:tabkeys
-// and a keybinding override per sid under session.hotkey.<sid>); this widget reads that same store shape so the keycap
-// composes through it the day that lands, and renders nothing until a hot key is assigned. No options.
+// the name. The per-tab hot keys live under romp:tabkeys (a set of sids) with a keybinding override per sid under
+// session.hotkey.<sid>; nothing in this tree writes them yet, so the keycap composes the day an assignment ships, and
+// renders nothing until a hot key is assigned. No options.
 export const TABKEYS_KEY = "romp:tabkeys";
 export const HOTKEY_PREFIX = "session.hotkey.";
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test((navigator as { platform?: string }).platform || "");
@@ -198,7 +198,7 @@ export function tabHotkey(sid: string, storage: { getItem(k: string): string | n
   if (!(sid in set)) return "";
   return effectiveChord(HOTKEY_PREFIX + sid, undefined, loadOverrides(), IS_MAC);
 }
-/** The keycap's text: the chord at its shortest, symbols and no separators (the pinned-tabs pull request's miniChord). */
+/** The keycap's text: the chord at its shortest, symbols and no separators (the shortest keycap form). */
 export function miniChord(chord: string, mac = IS_MAC): string {
   if (!chord) return "";
   const c = resolveChord(chord, mac);

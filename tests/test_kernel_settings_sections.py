@@ -22,15 +22,15 @@ km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 class SettingsSectionsTest(unittest.TestCase):
-    """The panel is in TABS since T379 (the user 2026-09-12): seven pills (Chat, Tabs, Feed, Sessions, Automatic, Appearance,
-    System), one pane each; every row keeps its id and its key; each pane opens with a first section head and keeps its
+    """The panel is in TABS since T379 (the user 2026-09-12): six pills (Chat, Feed, Sessions, Automatic, Appearance,
+    System), one pane each (the tab widgets are a section of Chat, the user's amendment); every row keeps its id and its key; each pane opens with a first section head and keeps its
     sub-heads in the approved order; the version footer stays last."""
-    PANES = ("chat", "tabs", "feed", "sessions", "automatic", "appearance", "system")
+    PANES = ("chat", "feed", "sessions", "automatic", "appearance", "system")
 
     def test_the_subsection_headers_are_present_in_order(self):
         h = _gear_src()
         self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=chat"), "the pills come first")
-        for pane, heads in (("chat", ["Transcript", "Files", "Text and comments"]), ("tabs", ["Tab widgets", "Strip"]), ("feed", ["Cards", "Judging bands"]),
+        for pane, heads in (("chat", ["Transcript", "Files", "Text and comments", "Tab widgets", "Strip"]), ("feed", ["Cards", "Judging bands"]),
                             ("sessions", ["New sessions", "Panes", "Sessions pane"]), ("automatic", ["Sessions", "Judges"]), ("appearance", ["Appearance"]),
                             ("system", ["Account", "Keyboard shortcuts", "Updates & debug"])):
             p = _pane(h, pane)
@@ -38,13 +38,15 @@ class SettingsSectionsTest(unittest.TestCase):
             idx = [p.index(">%s<" % t) for t in heads]
             self.assertEqual(idx, sorted(idx), pane + ": sub-heads in order")
         self.assertIn("<div class=rs-sec id=rs-panes-sec>Panes</div>", h)   # the Panes head keeps its id (initGear hides it off the dashboard)
+        # the tab widgets are a SECTION of Chat (the user 2026-09-12), its head the anchor the strip's gear opens the panel at; no Tabs tab
+        self.assertIn("<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>", _pane(h, "chat"))
+        self.assertNotIn("data-pane=tabs", h)
         self.assertLess(h.index(">Updates & debug<"), h.index(">romp · version<"), "version last")
 
     def test_each_setting_sits_under_the_right_section(self):
         h = _gear_src()
         where = {
-            "chat": ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-filelink", "rs-filesctl", "rs-chatscheme", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast"],
-            "tabs": ["rs-widgets", "rs-striprows"],
+            "chat": ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-filelink", "rs-filesctl", "rs-chatscheme", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-widgets", "rs-striprows"],
             "feed": ["rs-feedcollapsed", "rs-judges-index", "rs-judges-triage"],
             "sessions": ["rs-defaultdir", "rs-backend", "rs-fileedit", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-activeonly", "rs-collapsegaps"],
             "automatic": ["rs-autonudge", "rs-suggestcompact", "rs-conserve", "rs-thinksum", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
@@ -72,7 +74,7 @@ class SettingsSectionsTest(unittest.TestCase):
         sy = panes["system"]
         self.assertTrue(sy.index(">Account<") < sy.index("id=rs-login-btn") < sy.index(">Keyboard shortcuts<") < sy.index(">Updates & debug<") < sy.index("id=rs-updates") < sy.index("id=ra-open") < sy.index("id=rs-log-open") < sy.index("id=rsver"))
         self.assertNotIn("rs-oldest", h)
-        # the old Context gauge row is gone: its WHEN is the Context bar widget's option on the Tabs tab
+        # the old Context gauge row is gone: its WHEN is the Context bar widget's option in the Chat tab's Tab widgets section
         self.assertNotIn("id=rs-tabctx", h)
 
 

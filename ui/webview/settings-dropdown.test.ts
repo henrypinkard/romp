@@ -102,7 +102,7 @@ test("every remaining native select rides the adapter — one vocabulary across 
 
 test("the Context bar widget's option rides the same builder (the Context-gauge picker moved onto its row, T379); tabCtx is written as the widgets' mirror", () => {
   // The user (2026-08-27) approved the one menu vocabulary across the panel; since T379 the gauge's WHEN is the Context bar
-  // widget's option on the Tabs tab, a house picker per option, and the older tabCtx key is written from the prefs on every
+  // widget's option in the Chat tab's Tab widgets section, a house picker per option, and the older tabCtx key is written from the prefs on every
   // widget save so older readers keep their meaning (tab-widgets.ts tabCtxOfPrefs).
   assert.doesNotMatch(GEAR, /id=rs-tabctx\b/, "the old Context gauge row and its hidden select are gone");
   assert.match(GEAR, /var drop = housePick\(wrap, 'wopt-' \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/);

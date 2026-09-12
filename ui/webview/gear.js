@@ -23,7 +23,7 @@
 
 var gclock = require('./gesture-clock.js');   // every `gt` below is minted here (see that file)
 var BN = require('./backend-names.ts');   // the backends' user-facing names and the offer rule (T288)
-var TW = require('./tab-widgets.ts');   // the tab-title widgets (T379): the registry the Tabs tab's rows render from, the strip's own module
+var TW = require('./tab-widgets.ts');   // the tab-title widgets (T379): the registry the Tab widgets section's rows render from, the strip's own module
 function kb() { return (typeof window !== 'undefined' && window.__rompKernelBase) || ''; }
 function ku(path) {
   var tok = (typeof window !== 'undefined' && window.__rompKernelToken) || '';
@@ -37,7 +37,7 @@ function ku(path) {
 // commands, rebindable in VS Code's own Keyboard Shortcuts editor, so the row says that instead
 // (a second editor there would fight the native one). The old static list is gone with the section
 // (it opened with "Enter — send message", a typing key nobody looks up, and went stale per surface).
-var RS_TABS = [['chat', 'Chat'], ['tabs', 'Tabs'], ['feed', 'Feed'], ['sessions', 'Sessions'], ['automatic', 'Automatic'], ['appearance', 'Appearance'], ['system', 'System']];
+var RS_TABS = [['chat', 'Chat'], ['feed', 'Feed'], ['sessions', 'Sessions'], ['automatic', 'Automatic'], ['appearance', 'Appearance'], ['system', 'System']];
 var SHORTCUT_ROWS =
   '<div class=rs-key id=rs-keys-web hidden><button id=rs-keys-btn type=button>Customize shortcuts…</button>' +
   '<span class=rs-key-desc>view, record and rebind every dashboard shortcut</span></div>' +
@@ -63,10 +63,10 @@ var GEAR_HTML =
   '<button id=rgear hidden aria-hidden=true></button>' +
   '<div id=rsettings hidden><div class=rs-card>' +
   '<div class=rs-h>Settings</div>' +
-  // THE TABS (T379, the user 2026-09-12): the settings grouped by the surface they belong to, seven pills under the
+  // THE TABS (T379, the user 2026-09-12): the settings grouped by the surface they belong to, six pills under the
   // title in the menu vocabulary; every row keeps its id and its key. The tab-widgets gear on the chat strip opens the
-  // Tabs tab (openSettings(tab)); the last tab used is remembered per browser (romp:settingsTab). RS_TABS is the one list
-  // the pills, the panes and selectTab read.
+  // Chat tab scrolled to its Tab widgets section (openSettings(tab, section)); the last tab used is remembered per
+  // browser (romp:settingsTab). RS_TABS is the one list the pills, the panes and selectTab read.
   '<div class=rs-tabs id=rs-tabs role=tablist>' + RS_TABS.map(function (t) { return '<button class=rs-tab type=button role=tab data-tab=' + t[0] + ' aria-selected=false>' + t[1] + '</button>'; }).join('') + '</div>' +
   '<div class=rs-pane data-pane=chat hidden>' +
   "<div class='rs-sec rs-sec-first'>Transcript</div>" +
@@ -125,9 +125,9 @@ var GEAR_HTML =
   '<span><b>Fast comment threads</b><span class=rs-mixed hidden></span>' +
   "<span class=rs-sub>Start new comment threads in fast mode (Opus-only research preview). If the thread's model can't run it, the thread still opens on that model at normal speed, with a notice. Off = same as the session. Follows to every connected machine's kernel.</span>" +
   '</span></label>' +
-  '</div>' +
-  '<div class=rs-pane data-pane=tabs hidden>' +
-  "<div class='rs-sec rs-sec-first'>Tab widgets</div>" +
+  // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own): the strip's gear opens the
+  // panel here (data-section is the anchor showSection scrolls the card to), then the strip's own controls follow
+  "<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>" +
   // the widget rows are built by initGear from the registry (tab-widgets.ts): a live demo, the name and what it does, the
   // sliding switch and the widget's own options; every control built once and re-filled in place (click-safe)
   '<div class=rs-hint>What a tab title carries, in this order. Each row shows the widget live.</div>' +
@@ -344,7 +344,11 @@ function initGear(post, opts) {
     pn = { timeline: document.getElementById('rs-pane-timeline'), fleet: document.getElementById('rs-pane-fleet'), feed: document.getElementById('rs-pane-feed') },
     ths = document.getElementById('rs-thinksum'),
     ans = document.getElementById('rs-autonudge-split'), asub = document.getElementById('rs-autonudge-sub');
-  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true, tabWidgets: { on: {}, order: [], opts: {} } }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true, tabWidgets: { on: {}, order: [], opts: {} } }; } }
+  // No default for tabWidgets (round one, HIGH): an injected empty object won over a pre-widgets store's tabCtx, so the
+  // Context bar read as on at 50 percent whatever the user had chosen, and a save of ANY setting wrote the empty prefs and
+  // rewrote the mirror. A store with no tabWidgets derives the prefs from tabCtx at read time (widgetPrefs, the same
+  // derivation settings.ts makes), and only a widget change writes the key (saveWidgets).
+  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
   function tabCtxMode(v) { return (v === 'always' || v === 'never') ? v : (v === false ? 'never' : 'over50'); }
@@ -497,9 +501,9 @@ function initGear(post, opts) {
     ttDrop(THEMES, themeOf(load()));
   }
   ttPaint();
-  // (the Context gauge picker moved onto the Context bar widget's row in the Tabs tab, T379: tcPaint below is its stand-in)
+  // (the Context gauge picker moved onto the Context bar widget's row in the Chat tab's Tab widgets section, T379: tcPaint below is its stand-in)
   function tcPaint() {}
-  // ── THE TABS (T379) ── seven pills, one pane each; selectTab shows one pane and remembers it per browser
+  // ── THE TABS (T379) ── six pills, one pane each; selectTab shows one pane and remembers it per browser
   var TAB_KEY = 'romp:settingsTab';
   function knownTab(t) { return RS_TABS.some(function (x) { return x[0] === t; }) ? t : null; }
   function selectTab(t) {
@@ -510,6 +514,25 @@ function initGear(post, opts) {
     return t;
   }
   Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); selectTab(b.getAttribute('data-tab')); }); });
+  // a SECTION of the tab (the user 2026-09-12): an ask may name a section of the tab it opens (data-section on the section's
+  // head; the strip's tab-widgets gear asks for chat / tabwidgets), and the card scrolls so that head sits at its top, under
+  // the padding. Looked up in the SHOWN pane only, after the panel is displayed (rects exist only then). Set on the card,
+  // the modal's one scroll box, never scrollIntoView, which would scroll the host document too.
+  function showSection(section) {
+    if (typeof section !== 'string' || !section) return;
+    var sec = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="' + section + '"]');
+    var card = document.querySelector('#rsettings .rs-card');
+    if (!sec || !card) return;
+    var go = function () { card.scrollTop = card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - (parseFloat(getComputedStyle(card).paddingTop) || 0); };
+    if (card.clientHeight > 0) { go(); return; }   // laid out already: an open panel, or a host that never hides this document
+    // Not laid out yet: in the shell this document sits in an iframe that is display:none until the shell hears the
+    // settings-open message feedFull just posted, and a scroll set on a box with no size clamps to zero (the served lab
+    // measured 0 on the first open). The card gaining a size IS the event that says the panel is visible, so the
+    // scroll rides it, once. No timer: a frame or a delay would guess at the shell's round trip.
+    if (typeof ResizeObserver !== 'function') return;
+    var ro = new ResizeObserver(function () { if (card.clientHeight > 0) { ro.disconnect(); go(); } });
+    ro.observe(card);
+  }
   // ── THE WIDGET ROWS (T379) ── one per registered widget: the live demo (a miniature tab rendering the widget over a
   // synthetic status through the SAME render the strip uses), the name and what it does, the sliding switch, and the
   // widget's own options as house pickers. Built once; every paint re-fills in place (click-safe). A change writes
@@ -526,7 +549,7 @@ function initGear(post, opts) {
       var demo = document.createElement('span'); demo.className = 'rs-widget-demo';
       var name = document.createElement('span'); name.className = 'rs-widget-name';
       var b = document.createElement('b'); b.textContent = w.label; name.appendChild(b);
-      var d = document.createElement('span'); d.textContent = w.description; name.appendChild(d);
+      var d = document.createElement('span'); d.className = 'rs-sub'; d.textContent = w.description; name.appendChild(d);   // the panel's idiom: the description is the row's hover popover
       var sw = document.createElement('button'); sw.type = 'button'; sw.className = 'rs-switch'; sw.setAttribute('role', 'switch'); sw.setAttribute('aria-label', w.label);
       sw.addEventListener('click', function (e) { e.stopPropagation(); var prefs = widgetPrefs(load()); prefs.on[w.id] = !TW.widgetOn(prefs, w); saveWidgets(prefs); });
       var opts = document.createElement('span'); opts.className = 'rs-widget-opts';
@@ -550,13 +573,12 @@ function initGear(post, opts) {
       var on = TW.widgetOn(prefs, w);
       r.sw.classList.toggle('on', on); r.sw.setAttribute('aria-checked', on ? 'true' : 'false');
       r.row.classList.toggle('rs-widget-off', !on);
-      // the demo: a miniature tab, the widget's node where the strip would put it (before the name, after it, or the corner)
+      // the demo: a miniature tab, the widget's node where the strip would put it (before the name or after it)
       var tab = document.createElement('span'); tab.className = 'tab';
       var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web';
       var node = TW.renderWidgetDemo(w, prefs);
       if (w.slot === 'before') { if (node) tab.appendChild(node); tab.appendChild(label); }
-      else if (w.slot === 'after') { tab.appendChild(label); if (node) tab.appendChild(node); }
-      else { tab.appendChild(label); if (node) { var c = document.createElement('span'); c.className = 'tab-corner'; c.appendChild(node); tab.appendChild(c); } }
+      else { tab.appendChild(label); if (node) tab.appendChild(node); }
       r.demo.replaceChildren(tab);
       r.paints.forEach(function (fn) { fn(prefs); });
     });
@@ -1370,17 +1392,17 @@ function initGear(post, opts) {
       clearPaneVars();
       window.removeEventListener('resize', onRsResize); } }
   function closeSettings() { p.hidden = true; setModalCls(false); feedFull(false); }
-  function openSettings(tab) {
-    if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it (T379)
+  function openSettings(tab, section) {
+    if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); showSection(section); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)
     selectTab(tab);
     // Signal the SHELL first, then measure (the picker's order, adopted 2026-08-09): feedFull posts
     // settings-open, which is what un-hides #feed-pane when the feed is toggled off — measuring first
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fl) fl.value = s.fileLinkPane === 'pane' ? 'pane' : 'chat'; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fl) fl.value = s.fileLinkPane === 'pane' ? 'pane' : 'chat'; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); showSection(section); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
-  window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined); });   // the tab rides the ask (T379: the strip's gear opens Tabs)
+  window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin
   // document and calls this synchronously): close the modal and say so, unless one of its own dialogs is up
   // (the login card, an open house dropdown), which the document's own Escape handlers close one level at a

@@ -50,7 +50,7 @@ import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionR
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
 import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
-import { composeTabWidgets, tabCtxGauge, tabHotkey } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry
+import { composeTabWidgets, tabHotkey } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry
 import { titleWithKey, chordOf, effectiveChord, loadOverrides } from "./keybindings";
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
@@ -363,12 +363,14 @@ if ((window as any).__rompShowStrip) {
 initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
   (m) => vscodeApi?.postMessage(m));
 installSettingsSync();   // a gear save in ANOTHER VS Code pane lands here via the host
-// Open the settings gear on a NAMED tab (T379: the tab-widgets glyph opens the Tabs tab): the same openSettings message
-// every opener posts, with the tab named. Through the shell when this pane sits in one (the kernel's __rompOpenSettings
-// relays it into the settings iframe, tab and all); else to this window, whose own gear (the VS Code chat's, mounted
-// above) listens for it.
-function openSettingsOn(tab: string): void {
-  const m = { romp: "openSettings", tab };
+// Open the settings gear on a NAMED tab, at a named SECTION of it when one is given (T379: the tab-widgets glyph opens
+// the Chat tab scrolled to its Tab widgets section): the same openSettings message every opener posts, with the tab and
+// the section named. Through the shell when this pane sits in one (the kernel's __rompOpenSettings relays it into the
+// settings iframe, tab and section and all); else to this window, whose own gear (the VS Code chat's, mounted above)
+// listens for it.
+function openSettingsOn(tab: string, section?: string): void {
+  const m: { romp: string; tab: string; section?: string } = { romp: "openSettings", tab };
+  if (section) m.section = section;
   if (inRompShell()) { try { window.parent.postMessage(m, "*"); } catch { /* no shell to ask */ } return; }
   window.postMessage(m, "*");
 }
@@ -6314,7 +6316,7 @@ function makeSkeletonTab(id: string): HTMLElement {
 function appendTabAfterWidgets(tab: HTMLElement, s: { id?: string; status: Partial<Status> }): void {
   // The after-the-name WIDGETS (T379, the user 2026-09-12): the slim vertical context gauge (the user 2026-08-08: the
   // statusline battery's fill % + colormap colour, rotated upright, no % text, so "this session is filling up" reads at
-  // a glance across the strip; from half full by default, or always, the gear's Tabs tab picks; skipped while
+  // a glance across the strip; from half full by default, or always, the gear's Tab widgets section picks; skipped while
   // compacting and on dead tabs) and the hot-key keycap (when one is assigned), composed from the registry in the
   // configured order. Drawn AFTER the label by both callers, so the ✕ keeps the tab's right edge.
   composeTabWidgets(tab, "after", s.id || "", s.status, settings.tabWidgets);
@@ -6386,10 +6388,6 @@ function syncNoSessionsPlaceholder(visibleCount: number, totalCount = 0, heldCou
   ph.textContent = txt;
   content.appendChild(ph);
 }
-
-// The tab strip's vertical context gauge (tabCtxGauge) lives in tab-widgets.ts since T379: the context bar is a
-// widget the strip and the gear's live demo draw through the same builder (imported above; the tag overview's
-// rows keep calling it from here).
 
 // A hairline under EVERY row of tabs (T134, the user 2026-08-27, overturning the survey's
 // one-outer-line design — their call, flagged when it shipped: with three rows and a short third,
@@ -6682,7 +6680,6 @@ function renderTabs() {
     close.dataset.id = id;
     if (dead) close.dataset.dead = "1";
     tab.appendChild(close);
-    composeTabWidgets(tab, "corner", id, s.status, settings.tabWidgets);   // the corner slot (T379): a contributed badge, absolutely placed, takes no width
     // double-click a tab to show/hide the ledger overview — same as the strip's caret
     tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleLedgerCollapsed(); });
     // right-click → context menu; "Rename" edits the title in place (not for a viewer: nothing to rename/hide/end)
@@ -6728,7 +6725,8 @@ function renderTabs() {
   tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
   tagBox.appendChild(tagChipsHost);
   // THE TAB-WIDGETS GEAR (T379, the user 2026-09-12): one glyph at the strip's right end, inside the tag box so it
-  // takes no extra height, opening the settings on its Tabs tab (the widget rows). The ask rides the openSettings
+  // takes no extra height, opening the settings on the Chat tab scrolled to its Tab widgets section (the widget rows;
+  // the user's amendment 2026-09-12: no tab of their own). The ask rides the openSettings
   // message every opener uses, with the tab named: to the shell when this pane sits in one (the kernel's
   // __rompOpenSettings relays it into the settings iframe), else to this window (the VS Code chat hosts its own
   // gear). A standalone /chat with neither has no gear to open, so it shows no glyph (an honest absence, never a
@@ -6740,7 +6738,7 @@ function renderTabs() {
     gear.title = "Tab widgets…";
     gear.setAttribute("aria-label", "Tab widgets");
     gear.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
-    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("tabs"); });
+    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("chat", "tabwidgets"); });
     tagBox.appendChild(gear);
   }
   bar.appendChild(tagBox);

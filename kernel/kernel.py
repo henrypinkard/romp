@@ -52200,9 +52200,10 @@ function feedHere(){return !(window.__rompPaneEnabled&&!window.__rompPaneEnabled
 // document still on its way would be dropped, and the first click would show nothing. A second ask while that
 // one waits is not queued: the page's opener toggles, so two would open and close it.
 var sPend=false;
-window.__rompOpenSettings=function(tab){var f=document.getElementById('f-settings');if(!f)return;
-// tab (T379): the chat strip's tab-widgets gear asks for the Tabs tab; the rail's gear names none (the remembered tab)
-var open=function(){try{f.contentWindow&&f.contentWindow.postMessage(typeof tab==='string'&&tab?{romp:'openSettings',tab:tab}:{romp:'openSettings'},'*');}catch(e){}};
+window.__rompOpenSettings=function(tab,section){var f=document.getElementById('f-settings');if(!f)return;
+// tab and section (T379): the chat strip's tab-widgets gear asks for the Chat tab at its Tab widgets section; the rail's gear names none (the remembered tab)
+var msg={romp:'openSettings'};if(typeof tab==='string'&&tab)msg.tab=tab;if(typeof section==='string'&&section)msg.section=section;
+var open=function(){try{f.contentWindow&&f.contentWindow.postMessage(msg,'*');}catch(e){}};
 if(!f.getAttribute('src')){var u=f.getAttribute('data-src');if(!u)return;sPend=true;f.setAttribute('src',u);
   f.addEventListener('load',function(){try{if(f.contentDocument&&f.contentDocument.URL==='about:blank')return;}catch(e){}   // the empty document's own load, not the page's
     if(sPend){sPend=false;open();}});return;}
@@ -52216,7 +52217,7 @@ if(m.romp==='settings'){document.body.classList.toggle('settings-open',!!m.on);
 // column the user was in, and that focus re-aimed every later shell relay at column 1 too)
 if(!m.on){var fid=(window.__rompFocusedChatId&&window.__rompFocusedChatId())||'f-chat';var fc=document.getElementById(fid)||document.getElementById('f-chat');try{fc&&fc.contentWindow&&fc.contentWindow.focus();}catch(e){}}}
 // a pane asking for the gear (the feed's login card, ui/webview/gear-host.ts openGear: the feed page hosts no gear)
-if(m.romp==='openSettings')window.__rompOpenSettings(m.tab);
+if(m.romp==='openSettings')window.__rompOpenSettings(m.tab,m.section);
 // the gear's "Open log" (T290): the settings modal closes itself first, then asks the shell for the Log panel
 if(m.romp==='openLog'&&window.__rompOpenErrs)window.__rompOpenErrs();
 // the /chat iframe's new-session picker asks the shell to lift it full-window (see body.picker-open CSS)

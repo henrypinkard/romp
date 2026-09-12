@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """The tab-title WIDGETS and the settings panel in TABS (T379, the user 2026-09-12), on the served dashboard: a hermetic kernel
 serves the landing with two synthetic notes-api sessions (web and api, idle, TESTHOST); the chat frame's strip carries the
-widgets (the dot slot on every tab, the hot-key keycap on the tab whose hot key the pinned-tabs store names) and the
-tab-widgets gear glyph at the strip's right end; the glyph opens the settings frame on its Tabs tab (through the shell's
-relay), where each registered widget is a row with a live demo drawn by the strip's own render, a sliding switch and its
+widgets (the dot slot on every tab, the hot-key keycap on the tab whose hot key the tab hot-key store names) and the
+tab-widgets gear glyph at the strip's right end; the glyph opens the settings frame on the Chat tab scrolled to its Tab
+widgets section (through the shell's relay; the user's amendment 2026-09-12: no tab of their own), where each registered widget is a row with a live demo drawn by the strip's own render, a sliding switch and its
 options; a switch or an option written there reaches the chat frame's strip live (the storage event) and the store's
 tabCtx mirror; the last tab is remembered; the pills hide every other pane.
 
 TAB_WIDGETS_DIST=<dir> serves another tree's UI bundle (the red run's before); TAB_WIDGETS_SHOTS=<prefix> writes
-<prefix>-strip-<theme>.png and <prefix>-tabs-<theme>.png; TAB_WIDGETS_DUMP=<path> writes the whole measurement. Skips LOUDLY
+<prefix>-strip-<theme>.png and <prefix>-settings-<theme>.png; TAB_WIDGETS_DUMP=<path> writes the whole measurement. Skips LOUDLY
 without the extension deps or a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1 and installs both, so a skip
 there is a failure). Synthetic throughout: placeholder sids, TESTHOST, invented text.
 """
@@ -62,7 +62,7 @@ let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-// the pinned-tabs store shape (the hot key widget reads it): web is in the set, its chord Ctrl+Shift+1
+// the tab hot-key store shape (the hot key widget reads it): web is in the set, its chord Ctrl+Shift+1
 await ctx.addInitScript(([sid]) => {
   try { localStorage.setItem("romp:tabkeys", JSON.stringify({ [sid]: "web" })); localStorage.setItem("romp:keys", JSON.stringify({ ["session.hotkey." + sid]: "Ctrl+Shift+1" })); } catch (e) {}
 }, [cfg.sidWeb]);
@@ -94,7 +94,7 @@ const readStrip = () => chatF.evaluate(([sidWeb]) => {
 }, [cfg.sidWeb]);
 const out = {};
 out.strip0 = await readStrip();
-// the glyph opens the settings frame on the Tabs tab, through the shell
+// the glyph opens the settings frame on the Chat tab, scrolled to its Tab widgets section, through the shell
 const settingsOpen = () => page.evaluate(() => document.body.classList.contains("settings-open"));
 if (out.strip0.gear) await chatF.click("#tabs .tab-tagbox .tab-widgets-gear");
 await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
@@ -102,9 +102,9 @@ out.shellOpen = await settingsOpen();
 let setF = page.frames().find((f) => f.url().includes("/settings"));
 for (let i = 0; i < 50 && !setF; i++) { await page.waitForTimeout(100); setF = page.frames().find((f) => f.url().includes("/settings")); }
 if (!setF) {   // no settings frame opened (the red run's before: no glyph, no ask): every later reading is an honest empty, so each test fails on its own assertion
-  const none = { open: false, pills: [], panes: [], rows: [], remembered: null };
+  const none = { open: false, pills: [], panes: [], rows: [], remembered: null, section: null };
   Object.assign(out, { panel0: none, afterCtxOff: { panel: none, strip: out.strip0 }, dotOpt: { present: false, picked: false, labels: [] }, afterGrey: { panel: none, strip: out.strip0 },
-                       afterKeyOff: { strip: out.strip0 }, chatPane: none, afterEscape: { shellOpen: false, panel: none }, reopen: none });
+                       afterKeyOff: { strip: out.strip0 }, feedPane: none, reask: none, afterEscape: { shellOpen: false, panel: none }, reopen: none, legacy: {} });
   fs.writeFileSync(cfg.out, JSON.stringify(out)); console.log("RESULT: ok"); await browser.close(); process.exit(0);
 }
 await setF.waitForSelector("#rsettings:not([hidden])", { timeout: 15000 }).catch(() => {});
@@ -116,13 +116,19 @@ const readPanel = () => setF.evaluate(() => {
   const panes = Array.from(document.querySelectorAll("#rsettings .rs-pane")).map((pn) => ({ pane: pn.dataset.pane, hidden: pn.hidden, display: getComputedStyle(pn).display, rows: pn.querySelectorAll(".rs-row, .rs-widget").length }));
   const rows = Array.from(document.querySelectorAll("#rs-widgets .rs-widget")).map((r) => {
     const sw = r.querySelector(".rs-switch"); const cs = getComputedStyle(sw); const knob = getComputedStyle(sw, "::after");
-    const demo = r.querySelector(".rs-widget-demo .tab");
-    return { id: r.dataset.widget, label: r.querySelector(".rs-widget-name b").textContent, desc: r.querySelector(".rs-widget-name span").textContent,
+    const demo = r.querySelector(".rs-widget-demo .tab"); const desc = r.querySelector(".rs-widget-name .rs-sub, .rs-widget-name span");
+    return { id: r.dataset.widget, label: r.querySelector(".rs-widget-name b").textContent, desc: desc.textContent,
+             swLeft: sw.getBoundingClientRect().left, descDisplay: getComputedStyle(desc).display,
              sw: { role: sw.getAttribute("role"), checked: sw.getAttribute("aria-checked"), on: sw.classList.contains("on"), w: sw.getBoundingClientRect().width, h: sw.getBoundingClientRect().height, radius: cs.borderRadius, knobLeft: knob.left, bg: cs.backgroundColor },
              demo: demo ? Array.from(demo.children).map((c) => ({ cls: c.className, text: c.textContent, title: c.title || "" })) : null,
              opts: Array.from(r.querySelectorAll(".rs-widget-opt")).map((o) => ({ key: o.dataset.opt, label: o.title, current: (o.querySelector("button") || {}).textContent || "" })) };
   });
-  return { open: true, pills, panes, rows, remembered: localStorage.getItem("romp:settingsTab") };
+  // the SECTION: the Tab widgets head against the card's box and scroll (the gear's ask scrolls the card so the head sits under the padding)
+  const card = document.querySelector("#rsettings .rs-card"); const sec = document.querySelector('#rsettings .rs-sec[data-section="tabwidgets"]');
+  const cr = card.getBoundingClientRect(); const sr = sec ? sec.getBoundingClientRect() : null;
+  const section = sec ? { top: sr.top, cardTop: cr.top, cardBottom: cr.bottom, pad: parseFloat(getComputedStyle(card).paddingTop), scrollTop: card.scrollTop, overflow: card.scrollHeight - card.clientHeight,
+                          inChat: !!sec.closest('.rs-pane[data-pane="chat"]'), paneHidden: sec.closest(".rs-pane").hidden } : null;
+  return { open: true, pills, panes, rows, remembered: localStorage.getItem("romp:settingsTab"), section };
 });
 out.panel0 = await readPanel();
 // the Context bar's switch off: the store's prefs and mirror, the chat's strip on the storage event
@@ -147,11 +153,14 @@ out.afterGrey = { panel: await readPanel(), strip: await readStrip() };
 await flip("hotkey");
 out.afterKeyOff = { strip: await readStrip() };
 await flip("hotkey");
-// the pills: Chat hides Tabs; Escape closes; the next open remembers the tab
-await setF.click('#rsettings .rs-tab[data-tab="chat"]'); await setF.waitForTimeout(150);
-out.chatPane = await readPanel();
-await setF.click('#rsettings .rs-tab[data-tab="tabs"]'); await setF.waitForTimeout(150);
-// the screenshots: the strip with the glyph and the Tabs tab, dark then light
+// the pills: Feed hides Chat; Escape closes; the next open remembers the tab
+await setF.click('#rsettings .rs-tab[data-tab="feed"]'); await setF.waitForTimeout(150);
+out.feedPane = await readPanel();
+// an ask on an OPEN panel (through the shell's relay, the path the glyph's message takes; the lifted settings iframe covers the
+// strip while the panel is open, so the glyph itself is not reachable by a pointer then): switches back to Chat and scrolls
+await page.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets")); await setF.waitForTimeout(300);
+out.reask = await readPanel();
+// the screenshots: the strip with the glyph and the Chat tab at its Tab widgets section, dark then light
 const shot = async (theme) => {
   await page.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
   await chatF.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
@@ -160,7 +169,7 @@ const shot = async (theme) => {
   if (!cfg.shots) return;
   const card = await setF.evaluate(() => { const b = document.querySelector("#rsettings .rs-card").getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: Math.min(b.height, 520) }; });
   const fr = await page.evaluate(() => { const f = document.getElementById("f-settings").getBoundingClientRect(); return { x: f.left, y: f.top }; });
-  await page.screenshot({ path: cfg.shots + "-tabs-" + theme + ".png", clip: { x: fr.x + card.x, y: fr.y + card.y, width: card.width, height: card.height } });
+  await page.screenshot({ path: cfg.shots + "-settings-" + theme + ".png", clip: { x: fr.x + card.x, y: fr.y + card.y, width: card.width, height: card.height } });
 };
 await shot("dark"); await shot("light");
 await page.evaluate(() => document.body.classList.remove("theme-light")); await setF.evaluate(() => document.body.classList.remove("theme-light")); await chatF.evaluate(() => document.body.classList.remove("theme-light"));
@@ -178,11 +187,47 @@ for (const theme of ["dark", "light"]) {
   }
 }
 await chatF.evaluate(() => document.body.classList.remove("theme-light")); await page.evaluate(() => document.body.classList.remove("theme-light"));
-// reopen from the rail's gear: the remembered tab (Tabs) comes up
+// reopen from the rail's gear: the remembered tab (Chat) comes up
 await page.click("#rail-gear");
 await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 10000 }).catch(() => {});
 await setF.waitForTimeout(300);
 out.reopen = await readPanel();
+await page.close(); await ctx.close();
+// LEGACY STORES (round one, HIGH): a browser from before the widgets holds tabCtx and no tabWidgets. The panel must read the
+// context bar's row from tabCtx (always: on at Always; never: off), and a save of an UNRELATED setting (Compact transcript)
+// must leave the store's tabWidgets absent and tabCtx as it was, the strip unchanged. One fresh context per mode.
+out.legacy = {};
+for (const mode of ["always", "never"]) {
+  const c2 = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  await c2.addInitScript(([m]) => { try { localStorage.setItem("romp:settings", JSON.stringify({ compact: true, tabCtx: m })); } catch (e) {} }, [mode]);
+  const p2 = await c2.newPage();
+  await p2.goto(cfg.url);
+  await p2.waitForSelector("#rail-gear", { timeout: 20000 });
+  let cf = p2.frames().find((f) => f.url().includes("/chat"));
+  for (let i = 0; i < 100 && !cf; i++) { await p2.waitForTimeout(100); cf = p2.frames().find((f) => f.url().includes("/chat")); }
+  await cf.waitForFunction((n) => document.querySelectorAll("#tabs .tab[data-id]").length >= n, cfg.count, { timeout: 30000 });
+  await cf.waitForTimeout(400);
+  const strip = () => cf.evaluate(() => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
+    return { ctx: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => !!t.querySelector(".tab-ctx")), store: { tabWidgets: "tabWidgets" in s ? s.tabWidgets : "absent", tabCtx: s.tabCtx, compact: s.compact } }; });
+  const before = await strip();
+  // the shell's state before the ask is recorded (a lifted settings iframe would take the strip's pointer events); the ask
+  // itself goes through the shell's own relay, the path the glyph's message takes, so this scene reads the panel whatever
+  // the shell's pointer state is
+  const shellBefore = await p2.evaluate(() => { const f = document.getElementById("f-settings"); return { cls: document.body.className, fSrc: f ? f.getAttribute("src") : null, fDisplay: f ? getComputedStyle(f).display : null }; });
+  await p2.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets"));
+  await p2.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
+  let sf = p2.frames().find((f) => f.url().includes("/settings"));
+  for (let i = 0; i < 50 && !sf; i++) { await p2.waitForTimeout(100); sf = p2.frames().find((f) => f.url().includes("/settings")); }
+  await sf.waitForSelector("#rsettings:not([hidden])", { timeout: 15000 }).catch(() => {});
+  await sf.waitForTimeout(300);
+  const row = () => sf.evaluate(() => { const r = document.querySelector('#rs-widgets .rs-widget[data-widget="ctx"]'); if (!r) return null;
+    const sw = r.querySelector(".rs-switch"); const o = r.querySelector('.rs-widget-opt[data-opt="show"] button');
+    return { checked: sw.getAttribute("aria-checked"), show: o ? o.textContent.replace(/\u25be/g, "").trim() : null }; });
+  const panelBefore = await row();
+  await sf.click("#rs-compact"); await sf.waitForTimeout(500);   // an unrelated setting's save
+  out.legacy[mode] = { before, shellBefore, panelBefore, after: await strip(), panelAfter: await row() };
+  await p2.close(); await c2.close();
+}
 fs.writeFileSync(cfg.out, JSON.stringify(out));
 await browser.close();
 console.log("RESULT: ok");
@@ -318,7 +363,7 @@ class ServedTabWidgets(unittest.TestCase):
             self.assertEqual(t["dot"]["visibility"], "hidden", "idle: the slot is laid out and hidden" + table)
             self.assertEqual(t["children"][0], t["dot"]["cls"], "the dot is the tab's first child (the before-the-name slot)" + table)
         web = s["web"]
-        self.assertIsNotNone(web["key"], "web's hot key (the pinned-tabs store) renders as a keycap" + table)
+        self.assertIsNotNone(web["key"], "web's hot key (the tab hot-key store) renders as a keycap" + table)
         self.assertEqual(web["key"]["text"], "⌃⇧1", table)
         self.assertGreater(web["key"]["w"], 10, table)
         self.assertEqual(web["children"].index("tab-key"), web["children"].index("tab-label") + 1, "the keycap follows the name" + table)
@@ -328,20 +373,36 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertEqual((s["gear"]["title"], s["gear"]["aria"], s["gear"]["svg"], s["gear"]["inBox"]), ("Tab widgets…", "Tab widgets", True, True), table)
         self.assertLessEqual(s["gear"]["rect"]["h"], s["gear"]["boxH"] + 0.5, "it takes no extra height beyond the tag box" + table)
 
-    def test_the_glyph_opens_the_settings_on_the_tabs_tab_with_the_other_panes_hidden(self):
+    def _assert_scrolled_to_the_section(self, p, table):
+        # the section head sits inside the card's visible box, under its padding, unless the card ran out of scroll first
+        sec = p["section"]
+        self.assertIsNotNone(sec, "the Tab widgets head carries the section anchor" + table)
+        self.assertTrue(sec["inChat"] and not sec["paneHidden"], "the section is in the Chat pane, which is shown" + table)
+        self.assertGreaterEqual(sec["top"], sec["cardTop"] - 0.5, "the head is not above the card's box" + table)
+        self.assertLess(sec["top"], sec["cardBottom"], "the head is inside the card's box" + table)
+        if sec["overflow"] > 0:
+            self.assertGreater(sec["scrollTop"], 0, "the card scrolled" + table)
+            at_top = abs(sec["top"] - (sec["cardTop"] + sec["pad"])) < 3
+            # the scroll rides the card's first size (the shell lifts the iframe after a message round trip); a late layout
+            # after that first size (fonts, the model lists filling) can grow the pane by a pixel or two, so the scroll end
+            # is read with that much slack (measured 198 of 200 on the first open, 200 of 200 on a re-ask)
+            self.assertTrue(at_top or sec["scrollTop"] >= sec["overflow"] - 4, "the head sits under the card's padding, or the card is at its scroll end" + table)
+
+    def test_the_glyph_opens_the_settings_on_the_chat_tab_scrolled_to_the_tab_widgets_section_with_the_other_panes_hidden(self):
         r = self._run()
         self.assertTrue(r["shellOpen"], "the shell lifted the settings frame")
         p = r["panel0"]
         table = "\n  " + json.dumps(p)[:1500]
         self.assertTrue(p["open"], table)
-        self.assertEqual([x["tab"] for x in p["pills"]], ["chat", "tabs", "feed", "sessions", "automatic", "appearance", "system"], table)
-        self.assertEqual([x["text"] for x in p["pills"]], ["Chat", "Tabs", "Feed", "Sessions", "Automatic", "Appearance", "System"], table)
-        self.assertEqual([x["on"] for x in p["pills"]], [False, True, False, False, False, False, False], "the Tabs pill is on" + table)
-        self.assertEqual([x["selected"] for x in p["pills"]], ["false", "true", "false", "false", "false", "false", "false"], table)
+        self.assertEqual([x["tab"] for x in p["pills"]], ["chat", "feed", "sessions", "automatic", "appearance", "system"], "six pills: no Tabs tab (the user's amendment)" + table)
+        self.assertEqual([x["text"] for x in p["pills"]], ["Chat", "Feed", "Sessions", "Automatic", "Appearance", "System"], table)
+        self.assertEqual([x["on"] for x in p["pills"]], [True, False, False, False, False, False], "the Chat pill is on" + table)
+        self.assertEqual([x["selected"] for x in p["pills"]], ["true", "false", "false", "false", "false", "false"], table)
         shown = [x for x in p["panes"] if x["display"] != "none"]
-        self.assertEqual([x["pane"] for x in shown], ["tabs"], "one pane painted" + table)
+        self.assertEqual([x["pane"] for x in shown], ["chat"], "one pane painted" + table)
         self.assertTrue(all(x["rows"] > 0 for x in p["panes"]), "every pane holds rows" + table)
-        self.assertEqual(p["remembered"], "tabs", table)
+        self.assertEqual(p["remembered"], "chat", table)
+        self._assert_scrolled_to_the_section(p, table)
 
     def test_each_widget_row_shows_a_live_demo_drawn_by_the_strips_render_a_sliding_switch_and_its_options(self):
         p = self._run()["panel0"]
@@ -365,6 +426,23 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertEqual([[o["key"] for o in r["opts"]] for r in rows], [["idle"], ["show"], []], "the dot's idle option, the bar's show option, the hot key none" + table)
         self.assertEqual(dot["opts"][0]["current"].replace("▾", "").strip(), "Hide when idle", table)
         self.assertEqual(ctx["opts"][0]["current"].replace("▾", "").strip(), "From 50% full", table)
+        # round one, LOW 2: one grid across the rows, so every switch starts at the same x; the description sits behind the hover popover
+        self.assertEqual(len({round(r["swLeft"]) for r in rows}), 1, "the switches line up down the list" + table)
+        self.assertEqual([r["descDisplay"] for r in rows], ["none"] * 3, "the descriptions are hover popovers at rest, the panel's idiom" + table)
+
+    def test_a_store_from_before_the_widgets_reads_its_gauge_setting_and_an_unrelated_save_leaves_it_alone(self):
+        # round one, HIGH: an injected default for tabWidgets won over tabCtx (the row read on at 50 percent whatever the user had
+        # chosen) and a save of ANY setting wrote the empty prefs and rewrote the mirror
+        lg = self._run()["legacy"]
+        for mode, checked, show in (("always", "true", "Always"), ("never", "false", "From 50% full")):
+            sc = lg.get(mode)
+            table = "\n  " + json.dumps(sc)[:1500]
+            self.assertIsNotNone(sc, "the legacy scene ran" + table)
+            self.assertEqual(sc["before"]["store"], {"tabWidgets": "absent", "tabCtx": mode, "compact": True}, mode + ": the seeded store" + table)
+            self.assertEqual((sc["panelBefore"]["checked"], sc["panelBefore"]["show"]), (checked, show), mode + ": the row reads the older setting" + table)
+            self.assertEqual(sc["after"]["store"], {"tabWidgets": "absent", "tabCtx": mode, "compact": False}, mode + ": Compact saved; the widgets key still absent, the mirror untouched" + table)
+            self.assertEqual(sc["after"]["ctx"], sc["before"]["ctx"], mode + ": the strip unchanged" + table)
+            self.assertEqual(sc["panelAfter"], sc["panelBefore"], mode + ": the row unchanged" + table)
 
     def test_a_switch_writes_the_prefs_and_the_mirror_and_the_strip_follows_live(self):
         r = self._run()
@@ -390,16 +468,20 @@ class ServedTabWidgets(unittest.TestCase):
 
     def test_the_pills_switch_panes_escape_closes_and_the_next_open_remembers_the_tab(self):
         r = self._run()
-        c = r["chatPane"]
+        c = r["feedPane"]
         self.assertTrue(c["open"], "the panel opened: " + json.dumps(c)[:300])
         shown = [x["pane"] for x in c["panes"] if x["display"] != "none"]
-        self.assertEqual(shown, ["chat"], json.dumps(c["panes"]))
-        self.assertEqual(c["remembered"], "chat")
+        self.assertEqual(shown, ["feed"], json.dumps(c["panes"]))
+        self.assertEqual(c["remembered"], "feed")
+        self.assertTrue(c["section"]["paneHidden"], "the Tab widgets section is in the hidden Chat pane now")
+        a = r["reask"]
+        self.assertEqual([x["pane"] for x in a["panes"] if x["display"] != "none"], ["chat"], "the glyph on an open panel switches back to Chat: " + json.dumps(a["panes"]))
+        self._assert_scrolled_to_the_section(a, "\n  " + json.dumps(a["section"]))
         self.assertFalse(r["afterEscape"]["shellOpen"], "Escape closed the settings (the shell's chain)")
         self.assertFalse(r["afterEscape"]["panel"]["open"])
         ro = r["reopen"]
         self.assertTrue(ro["open"], "the rail's gear reopened it")
-        self.assertEqual([x["pane"] for x in ro["panes"] if x["display"] != "none"], ["tabs"], "…on the remembered tab (Tabs was picked last)")
+        self.assertEqual([x["pane"] for x in ro["panes"] if x["display"] != "none"], ["chat"], "…on the remembered tab (Chat was picked last)")
 
 
 if __name__ == "__main__":
