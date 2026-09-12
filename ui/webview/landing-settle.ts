@@ -10,6 +10,21 @@
 export const SETTLE_MS = 1200;
 /** Consecutive samples within the row before the landing counts as settled ahead of the window's end. */
 export const SETTLE_QUIET = 2;
+/** The one early backstop sample beside the event samples: the first paint after the landing's own render, where a page
+ *  that moves nothing settles on its two quiet samples instead of waiting for the window's end (round one, low 5). */
+export const SETTLE_FIRST_PAINT_MS = 250;
+/** The row a landing must sit within is the aligned element's own height, capped at this fraction of the viewport: a
+ *  600 px miss on a 900 px message is a miss (round one, low 1). */
+export const SETTLE_ROW_VIEWPORT_CAP = 0.25;
+
+/** How far short of the viewport top the scroll clamp stops a target: with the target `targetY` px into the scroll space
+ *  and the scroller able to scroll at most scrollHeight − clientHeight, the target's top can come no closer to the viewport
+ *  top than this many px. 0 when the target can reach the top. A landing near the tail is judged against this spot, not the
+ *  top (round one, medium 3: a correct landing within a viewport of the tail read as a 93 px miss and re-landed no-op writes). */
+export function reachableOffset(targetY: number, scrollHeight: number, clientHeight: number): number {
+  const maxScroll = Math.max(0, scrollHeight - clientHeight);
+  return Math.max(0, Math.round(targetY - maxScroll));
+}
 
 export interface SettleSample { at: number; dist: number }   // at: ms since the landing write; dist: the target's top vs the viewport top, px
 

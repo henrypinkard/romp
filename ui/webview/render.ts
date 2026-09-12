@@ -109,7 +109,7 @@ import { dragSlotIndex } from "./dragslot";
 import { acceptDragEnter } from "./drag-accept";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, senderPrRepo, postalSenderHost } from "./pr-links";
-import { SETTLE_MS, settleStep, settleRowFields, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
+import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
 import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey } from "./frame-listener";
 import { highlightHtml } from "./highlight-cache";
 import { wrapCodeLines, addCopyBtn } from "./code-block";   // a fence's per-line rows and Copy button, shared with the file viewer
@@ -11213,11 +11213,17 @@ function turnAtomsOf(target: HTMLElement): HTMLElement[] {
   }
   return out;
 }
-/** The first text atom below a tool or thinking anchor within its turn (the element the words live in), else null. */
+/** The first text atom below a tool, tool-group or thinking anchor within its turn (the element the words live in), else
+ *  null. A grouped run of tool calls renders as ONE .turn-toolgroup head carrying the first tool's uuid (renderToolGroup),
+ *  which is the shape a card's anchor takes on a long turn (round one, medium 5): the head counts as a tool atom. */
 function firstTextAtomBelow(target: HTMLElement): HTMLElement | null {
-  if (!target.classList.contains("turn-tool") && !target.classList.contains("turn-thinking")) return null;
+  if (!isToolOrThinkingAtom(target)) return null;
   for (const n of turnAtomsOf(target).slice(1)) { const md = n.querySelector(".assistant.md"); if (md) return md as HTMLElement; }
   return null;
+}
+/** A tool atom, a grouped run of them, or a thinking atom: the shapes a turn opens with before its words. */
+function isToolOrThinkingAtom(n: Element): boolean {
+  return n.classList.contains("turn-tool") || n.classList.contains("turn-toolgroup") || n.classList.contains("turn-thinking");
 }
 
 /** The time-only landing (see landActive): the event whose epoch sits nearest `t` among the
@@ -11278,8 +11284,12 @@ function highlightCiteSpan(target: HTMLElement, quote: string): HTMLElement | nu
   try {
     const H = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
     if (!H || typeof Highlight === "undefined") return null;
+    // the words are looked for in the turn's TEXT atoms first, then in its tool and thinking atoms (round one, low 3): a
+    // sentence written through a Write tool and then said in prose must land on the prose, where the card quoted it
+    const atoms = turnAtomsOf(target);
+    const ordered = [...atoms.filter((a) => !isToolOrThinkingAtom(a)), ...atoms.filter((a) => isToolOrThinkingAtom(a))];
     const nodes: Text[] = []; let full = "";
-    for (const atom of turnAtomsOf(target)) {
+    for (const atom of ordered) {
       const walker = document.createTreeWalker(atom, NodeFilter.SHOW_TEXT);
       for (let n = walker.nextNode(); n; n = walker.nextNode()) { nodes.push(n as Text); full += (n as Text).data; }
     }
@@ -11319,14 +11329,23 @@ function highlightCiteSpan(target: HTMLElement, quote: string): HTMLElement | nu
 // measured distance and whether it settled, so `ok` alone is never again the whole verdict. One settle in flight: a
 // newer landing supersedes the older's. The walk-forward of a detached window that fits the viewport waits for it.
 let landSettling: { turn: HTMLElement; at: HTMLElement; uuid: string | null; quote: string | null; rowH: number; samples: SettleSample[]; start: number;
-                    gesture: boolean; row: Record<string, unknown> | null; ro: ResizeObserver | null; timers: number[]; done: boolean } | null = null;
+                    gesture: boolean; row: Record<string, unknown> | null; ro: ResizeObserver | null; timers: number[]; done: boolean; clamp: number } | null = null;
 const afterSettle: (() => void)[] = [];   // what waits for the landing to settle (the window's edge check)
 function settleEnd(s: NonNullable<typeof landSettling>): void {
   s.done = true; s.ro?.disconnect(); s.ro = null;
   for (const t of s.timers) clearTimeout(t);
-  window.removeEventListener("wheel", settleGesture); window.removeEventListener("keydown", settleGesture);
+  window.removeEventListener("keydown", settleGesture);
   if (landSettling === s) landSettling = null;
 }
+/** A newer landing takes over before this one settled: its deferred row is FILED, not dropped (round one, medium 2: the
+ *  user's own double click lost its first row in the very machinery built to diagnose it), as it stood, with the mark. */
+function settleSupersede(s: NonNullable<typeof landSettling>): void {
+  settleEnd(s);
+  if (s.row) vscodeApi?.postMessage({ ...s.row, ...settleRowFields("gave-up", s.samples, s.rowH), settled: false, superseded: true, ...(s.clamp ? { clamp: s.clamp } : {}) });
+}
+/** The reader took over, by any input: the scroll classifier's gesture verdict (a wheel, a scrollbar drag, a touch swipe, a
+ *  key), never a write's echo; the landing yields (round one, medium 1: only a wheel or a key ended it before, so a
+ *  scrollbar drag during the settle was undone by the re-land). */
 function settleGesture(): void { const s = landSettling; if (s && !s.done) { s.gesture = true; settleTick(); } }
 /** The anchor's element by uuid in the active view: the selectors scrollToAnchor lands by. */
 function findTurnEl(uuid: string): HTMLElement | null {
@@ -11339,13 +11358,23 @@ function findTurnEl(uuid: string): HTMLElement | null {
  *  rewindow after a far landing detaches the old nodes; a detached box measures as zeros, which read as a constant miss and
  *  walked the view up one tab bar's height per re-land in the lab). null when the anchor's turn is gone from the view. */
 function settleResolve(s: NonNullable<typeof landSettling>): HTMLElement | null {
-  if (s.at.isConnected) return s.at;
+  // a connected element with a box: measurable. A detached one (the rewindow replaced the DOM) or one with no box (the view
+  // hidden by a tab switch mid-settle: display none measures as zeros, round one low 4) is re-found by uuid, and a turn that
+  // still has no box is treated as gone
+  if (s.at.isConnected && s.at.getClientRects().length) return s.at;
   const turn = s.uuid ? findTurnEl(s.uuid) : null;
-  if (!turn) return null;
+  if (!turn || !turn.getClientRects().length) return null;
   s.turn = turn;
   s.at = (s.quote ? highlightCiteSpan(turn, s.quote) : null) ?? firstTextAtomBelow(turn) ?? turn;
+  s.rowH = settleRowHeight(s.at);   // the swapped element's own row (round one, low 1)
   s.ro?.observe(s.at); if (s.at !== turn) s.ro?.observe(turn);
   return s.at;
+}
+/** The row the landing must sit within: the aligned element's own height, capped at a fraction of the viewport (round one,
+ *  low 1: a 600 px miss on a 900 px message read settled), never under a few pixels (withinRow's floor). */
+function settleRowHeight(at: HTMLElement): number {
+  const c = document.getElementById("content");
+  return Math.max(8, Math.min(at.getBoundingClientRect().height, (c ? c.clientHeight : 600) * SETTLE_ROW_VIEWPORT_CAP));
 }
 function settleLand(s: NonNullable<typeof landSettling>, writer: string): void {
   const c = document.getElementById("content"); const at = settleResolve(s);
@@ -11353,17 +11382,23 @@ function settleLand(s: NonNullable<typeof landSettling>, writer: string): void {
 }
 function settleFinish(s: NonNullable<typeof landSettling>, fields: { dist: number | null; settled: boolean }): void {
   settleEnd(s);
-  if (s.row) vscodeApi?.postMessage({ ...s.row, ...fields });
+  if (s.row) vscodeApi?.postMessage({ ...s.row, ...fields, ...(s.clamp ? { clamp: s.clamp } : {}) });
   const q = afterSettle.splice(0);
   for (const f of q) f();
 }
-/** One measurement of the target against the viewport top, then the rule's step. */
+/** One measurement of the target against the spot it CAN reach, then the rule's step. Near the tail the scroll clamp stops
+ *  the target short of the viewport top (round one, medium 3: a correct landing within a viewport of the tail read dist 93,
+ *  settled false, and re-landed no-op writes for the whole window); the reachable offset is subtracted, and the row carries
+ *  it as `clamp` so the reader of the audit knows why the target sits where it does. */
 function settleSample(): void {
   const s = landSettling; if (!s || s.done) return;
   const c = document.getElementById("content"); if (!c) return;
   const at = settleResolve(s);
   if (!at) { settleFinish(s, { dist: null, settled: false }); return; }   // the turn left the view: nothing to align, the row says so
-  s.samples.push({ at: Date.now() - s.start, dist: at.getBoundingClientRect().top - c.getBoundingClientRect().top });
+  const cr = c.getBoundingClientRect(), r = at.getBoundingClientRect();
+  const floor = reachableOffset(r.top - cr.top + c.scrollTop, c.scrollHeight, c.clientHeight);
+  s.clamp = floor;
+  s.samples.push({ at: Date.now() - s.start, dist: (r.top - cr.top) - floor });
   settleTick();
 }
 function settleTick(): void {
@@ -11386,12 +11421,12 @@ function landOn(target: HTMLElement, flashKey?: string, alignOn?: HTMLElement | 
   { const c = document.getElementById("content"); const v = activeId ? views.get(activeId) : null; if (c && v) v.stick = atBottom(c); }
   if (flashKey == null || flashKey !== flashedAnchor) {   // one flash per navigation (see flashedAnchor)
     if (flashKey != null) flashedAnchor = flashKey;
-    target.classList.add("anchor-flash");
-    setTimeout(() => target.classList.remove("anchor-flash"), 1700);
+    at.classList.add("anchor-flash");                     // the ALIGNED element flashes: the turn may sit above the viewport when the words are aligned (round one, low 2)
+    setTimeout(() => at.classList.remove("anchor-flash"), 1700);
   }
-  if (landSettling) settleEnd(landSettling);   // a newer landing supersedes the older's settle (its row was filed or never armed)
-  const landSettle = { turn: target, at, uuid: flashKey ?? null, quote: quote ?? null, rowH: Math.max(8, at.getBoundingClientRect().height), samples: [] as SettleSample[],
-                       start: Date.now(), gesture: false, row: null as Record<string, unknown> | null, ro: null as ResizeObserver | null, timers: [] as number[], done: false };
+  if (landSettling) settleSupersede(landSettling);   // a newer landing supersedes the older's settle: its row is filed as it stood, marked
+  const landSettle = { turn: target, at, uuid: flashKey ?? null, quote: quote ?? null, rowH: settleRowHeight(at), samples: [] as SettleSample[],
+                       start: Date.now(), gesture: false, row: null as Record<string, unknown> | null, ro: null as ResizeObserver | null, timers: [] as number[], done: false, clamp: 0 };
   landSettling = landSettle;
   if (typeof ResizeObserver === "function") {
     const ro = new ResizeObserver(() => settleSample());
@@ -11401,9 +11436,13 @@ function landOn(target: HTMLElement, flashKey?: string, alignOn?: HTMLElement | 
     if (v) for (const sp of Array.from(v.el.querySelectorAll(".tx-spacer"))) ro.observe(sp);
     landSettle.ro = ro;
   }
-  window.addEventListener("wheel", settleGesture, { passive: true });
+  // a key is a gesture the scroll classifier never sees (it moves the view through a write); every other input reaches
+  // settleGesture through the classifier's verdict in the scroll listener
   window.addEventListener("keydown", settleGesture);
-  landSettle.timers.push(window.setTimeout(settleSample, 250), window.setTimeout(settleSample, 700), window.setTimeout(settleSample, SETTLE_MS + 20));
+  // two bounded backstops beside the event samples (round one, low 5): the first paint after the landing's own render, where a
+  // page that moves nothing settles on its two quiet samples; and the window's end, where a landing still moving is filed
+  // as it stands. Every other sample is an event: a box resizing, another writer's move, the classifier's gesture
+  landSettle.timers.push(window.setTimeout(settleSample, SETTLE_FIRST_PAINT_MS), window.setTimeout(settleSample, SETTLE_MS + 20));
 }
 
 
@@ -13274,6 +13313,7 @@ function updateReplyChips(): void {
     const cls = classifyScroll(c.scrollTop, lastScrollWriteAfter);
     const gv = activeId ? views.get(activeId) : null;
     if (gv) gv.gestureScroll = cls === "gesture";   // read once by the edge check this event runs next (T366): a write's echo is no gesture
+    if (cls === "gesture") settleGesture();          // the reader took over, by any input (a scrollbar drag, a touch swipe, a wheel): a settling landing yields (T386 round one, medium 1)
     lastScrollWriteAfter = null;   // one-shot: the first event after a write consumes its marker, echo or not (a gesture that lands within a pixel of an older write's target is a gesture)
     if (cls !== "write-echo") scrollDiagRow("scrollgesture", { sid: activeId || "", top: c.scrollTop, gesture: true, sh: c.scrollHeight, ch: c.clientHeight });
     lastKnownSh = c.scrollHeight;   // sh/ch: a clamp reads top == sh - ch after sh dropped (T262e)

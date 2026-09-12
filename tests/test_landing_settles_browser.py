@@ -32,7 +32,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
-from test_live_paused_window_browser import DRIVER_HEAD, WindowLab, SID   # noqa: E402  the shared boot and the page's state probe
+from test_live_paused_window_browser import DRIVER_HEAD, WindowLab, SID, TURNS   # noqa: E402  the shared boot and the page's state probe
 
 LIVE_U = "33333333-4444-5555-6666-000000000001"   # the live turn appended mid-landing: synthetic uuids
 LIVE_A = "33333333-4444-5555-6666-000000000002"
@@ -42,7 +42,8 @@ const deep = cfg.deepUuid;
 const ledger = () => page.evaluate(() => window.__sent.filter((m) => m.type === "clientDiag" && m.what === "scrollwrite")
   .map((m) => ({ writer: m.data.writer, before: m.data.before, after: m.data.after })));
 const rows = () => page.evaluate(() => window.__sent.filter((m) => m.type === "locateDiag")
-  .map((m) => ({ ok: m.ok, trail: m.trail, anchorT: m.anchorT === undefined ? null : m.anchorT, dist: m.dist === undefined ? null : m.dist, settled: m.settled === undefined ? null : m.settled })));
+  .map((m) => ({ ok: m.ok, trail: m.trail, anchor: m.anchor || null, anchorT: m.anchorT === undefined ? null : m.anchorT, dist: m.dist === undefined ? null : m.dist,
+                 settled: m.settled === undefined ? null : m.settled, superseded: m.superseded === undefined ? null : m.superseded, clamp: m.clamp === undefined ? null : m.clamp })));
 // an element's box against the viewport top, and its own height (the row it must stay within)
 const boxOf = (sel) => page.evaluate((s) => {
   const c = document.getElementById("content"); const t = document.querySelector(s);
@@ -50,6 +51,22 @@ const boxOf = (sel) => page.evaluate((s) => {
 }, sel);
 const offset = () => boxOf('#content .turn[data-uuid="' + deep + '"]');
 const writesBefore = (await ledger()).length;
+const q = (k) => "11111111-2222-3333-4444-" + pad(2 * k);   // the k-th question's uuid (the boot's formula; `pad` is the driver head's)
+// ROAD 6 (round one, medium 3; run first, see below): a landing within a viewport of the tail: the scroll clamp stops the target short of the top,
+// and the row says so (settled, with the clamp) instead of a miss
+const rowsBefore6 = (await rows()).length;
+const tailQ = q(cfg.turns - 1);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: tailQ, anchorT: cfg.base + 2 * (cfg.turns - 1) });
+// run FIRST, while the page is still attached to the tail run it booted with: a landing on a turn the page holds is exact;
+// after a window road the page is detached and the same focus asks the kernel for a window instead. The exact landing's
+// row goes out when its settle ends, so wait for THAT row, bounded, not a fixed pause
+try { await page.waitForFunction((u) => window.__sent.some((m) => m.type === "locateDiag" && m.anchor === u && Array.isArray(m.trail) && m.trail[m.trail.length - 1] === "pointer-exact"), tailQ, { timeout: 15000 }); }
+catch (e) { /* rows6 says what happened */ }
+await page.waitForTimeout(200);
+const tail6 = await boxOf('#content .turn[data-uuid="' + tailQ + '"]');
+const rows6 = (await rows()).slice(rowsBefore6);
+const scroll6 = await page.evaluate(() => { const c = document.getElementById("content"); return { top: c.scrollTop, max: c.scrollHeight - c.clientHeight }; });
+const rowsBefore1 = (await rows()).length;   // road 6 ran first: its rows are not road 1's
 // ROAD 1: the reader NAVIGATES into history the page does not hold: a card's focus frame, the anchor and its time
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep, anchorT: cfg.deepT });
 try { await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), deep, { timeout: 20000 }); }
@@ -57,7 +74,7 @@ catch (e) { const st = await state(); console.error("the deep link never landed:
 const o0 = await offset();
 await page.waitForTimeout(300); const o300 = await offset();
 await page.waitForTimeout(400); const o700 = await offset();
-const rowsAtLand = await rows();
+const rowsAtLand = (await rows()).slice(rowsBefore1);
 // a LIVE turn lands in the tail while the reader is on the landed message: the transcript grows, the event the pusher
 // wakes on, exactly as a live session's does under a reader deep in its history
 const now = new Date();
@@ -74,11 +91,11 @@ await page.waitForTimeout(500);
 const oLive = await offset();
 await page.waitForTimeout(800);
 const oLate = await offset();
-const rowsAll = await rows();
+const rowsAll = (await rows()).slice(rowsBefore1);
 const writes = (await ledger()).slice(writesBefore);
 // ROAD 2 (the manager's datum, T386): a card anchored on a turn's FIRST atom, a tool call inside a collapsed group of four,
 // quoting words that sit atoms later: the landing aligns on the quoted words, not on the tool group
-const rowsBefore2 = rowsAll.length;
+const rowsBefore2 = (await rows()).length;
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: cfg.toolUuid, anchorT: cfg.toolT, anchorQuote: cfg.toolQuote });
 try { await page.waitForFunction((q) => Array.from(document.querySelectorAll("#content .turn-assistant .assistant.md p")).some((e) => (e.textContent || "").includes(q)), cfg.toolQuote, { timeout: 20000 }); }
 catch (e) { const st = await state(); console.error("the tool-turn card never landed: " + JSON.stringify(st)); process.exit(1); }
@@ -90,6 +107,40 @@ const quoted = await page.evaluate((q) => {
 }, cfg.toolQuote);
 const anchorBox = await boxOf('#content .turn[data-uuid="' + cfg.toolUuid + '"]');
 const rows2 = (await rows()).slice(rowsBefore2);
+// ROAD 3 (round one, medium 5): the same tool-anchored card with NO quote: the landing aligns on the turn's first text atom
+// below the group head, never on the group
+const rowsBefore3 = (await rows()).length;
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(10), anchorT: cfg.base + 20 });   // step away first (a resident turn)
+await page.waitForTimeout(1500);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: cfg.toolUuid, anchorT: cfg.toolT });
+await page.waitForTimeout(1500);
+const words3 = await page.evaluate((qt) => {
+  const c = document.getElementById("content");
+  const e = Array.from(document.querySelectorAll("#content .turn-assistant .assistant.md")).find((x) => (x.textContent || "").includes(qt));
+  if (!e) return null; const r = e.getBoundingClientRect(); return { top: Math.round(r.top - c.getBoundingClientRect().top), h: Math.round(r.height) };
+}, cfg.toolQuote);
+const anchor3 = await boxOf('#content .turn[data-uuid="' + cfg.toolUuid + '"]');
+const anchor3cls = await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); return t ? t.className : null; }, cfg.toolUuid);
+const rows3 = (await rows()).slice(rowsBefore3);
+// ROAD 4 (round one, medium 1): the reader takes over during the settle by a move the scroll classifier reads as a gesture
+// (a scrollbar drag or a touch swipe write no wheel event): the landing yields, the view stays where the reader put it
+const rowsBefore4 = (await rows()).length;
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(30), anchorT: cfg.base + 60 });
+try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(30), { timeout: 20000 }); }
+catch (e) { const st = await state(); console.error("the gesture road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
+await page.waitForTimeout(300);
+const moved4 = await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollTop + 900; return c.scrollTop; });
+await page.waitForTimeout(1400);
+const after4 = await page.evaluate(() => document.getElementById("content").scrollTop);
+const writes4 = (await ledger()).filter((w) => w.before === moved4 || w.after === moved4 || (Math.abs(w.before - moved4) < 4));
+const rows4 = (await rows()).slice(rowsBefore4);
+// ROAD 5 (round one, medium 2): two clicks 120 ms apart file TWO rows, the first superseded
+const rowsBefore5 = (await rows()).length;
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(50), anchorT: cfg.base + 100 });
+await page.waitForTimeout(120);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(52), anchorT: cfg.base + 104 });
+await page.waitForTimeout(2500);
+const rows5 = (await rows()).slice(rowsBefore5);
 // the anchor's place in the DOM: its ancestors up to #content and the siblings that follow it (the turn's atoms as rendered),
 // and whether the page can highlight at all; the diagnosis when the words are not at the top
 const dom2 = await page.evaluate((u) => {
@@ -103,9 +154,9 @@ const dom2 = await page.evaluate((u) => {
 }, cfg.toolUuid);
 const st = await state();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-settled.png" });
-fs.writeSync(1, "RESULT:" + JSON.stringify({ o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2, after: st }) + "\n");
 await browser.close();
-process.exit(0);
+process.stdout.write("RESULT:" + JSON.stringify({ o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2,
+  words3, anchor3, anchor3cls, rows3, moved4, after4, writes4, rows4, rows5, tail6, rows6, scroll6, after: st }) + "\n", () => process.exit(0));
 """
 
 
@@ -117,7 +168,7 @@ class ServedLandingSettles(WindowLab):
         windows already, a different road)."""
         cls = type(self)
         if cls._r is None:
-            cls._r = self._drive(DRIVER, "settles", extra={"liveU": LIVE_U, "liveA": LIVE_A})
+            cls._r = self._drive(DRIVER, "settles", extra={"liveU": LIVE_U, "liveA": LIVE_A, "turns": TURNS})
             print("RESULT:" + json.dumps(cls._r), file=sys.stderr)   # the whole measurement rides a failure's captured stderr
         return cls._r
 
@@ -155,6 +206,41 @@ class ServedLandingSettles(WindowLab):
         land = [x for x in r["rows2"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
         self.assertEqual(len(land), 1, "one exact landing row for the card: %r" % r["rows2"])
         self.assertTrue(land[0]["settled"], "…settled on the words: %r" % land[0])
+
+    def test_the_same_card_without_a_quote_lands_on_the_turns_first_text_atom_not_on_the_tool_group(self):
+        # round one, medium 5: a grouped run of tool calls renders as ONE group head carrying the first tool's uuid, and the
+        # no-quote fallback must walk from that head to the words
+        r = self._result()
+        self.assertIsNotNone(r["words3"], "the words are rendered: %r" % r["after"])
+        self.assertIn("turn-toolgroup", r["anchor3cls"] or "", "the anchor resolves to the tool group's head: %r" % r["anchor3cls"])
+        w, a = r["words3"], r["anchor3"]
+        self.assertLessEqual(abs(w["top"]), max(8, w["h"]), "the words sit at the viewport top without a quote; the group: %r, the words: %r" % (a, w))
+        self.assertLess(a["top"], w["top"], "the group stands above the words")
+
+    def test_a_reader_taking_over_during_the_settle_by_any_gesture_keeps_the_view_and_two_quick_clicks_file_two_rows(self):
+        r = self._result()
+        # medium 1: the move the classifier reads as a gesture (no wheel event) is respected: no re-land undoes it
+        self.assertLessEqual(abs(r["after4"] - r["moved4"]), 60, "the view stayed where the reader put it (moved to %s, now %s); writes near the move: %r" % (r["moved4"], r["after4"], r["writes4"]))
+        realigns = [w for w in r["writes4"] if w["writer"] == "land-realign" and w["before"] == r["moved4"]]
+        self.assertEqual(realigns, [], "no re-land wrote the reader's move back: %r" % r["writes4"])
+        # medium 2: two landings inside one settle window are two rows, the first marked superseded
+        exact = [x for x in r["rows5"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(len(exact), 2, "two exact rows for two clicks: %r" % r["rows5"])
+        self.assertTrue(exact[0]["superseded"], "the first row carries the superseded mark: %r" % exact[0])
+        self.assertFalse(exact[0]["settled"], "…and is not settled: %r" % exact[0])
+        self.assertFalse(exact[1]["superseded"], "the second is the landing that stood: %r" % exact[1])
+
+    def test_a_landing_within_a_viewport_of_the_tail_settles_against_the_spot_the_clamp_allows(self):
+        # round one, medium 3
+        r = self._result()
+        exact = [x for x in r["rows6"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(len(exact), 1, "one exact row for the tail landing: %r" % r["rows6"])
+        row = exact[0]
+        self.assertGreaterEqual(r["scroll6"]["top"], r["scroll6"]["max"] - 2, "the view is at the bottom, where the clamp stops it: %r" % r["scroll6"])
+        self.assertGreater(r["tail6"]["top"], 40, "the target sits below the viewport top, as it must near the tail: %r" % r["tail6"])
+        self.assertTrue(row["settled"], "the landing is settled against the reachable spot: %r" % row)
+        self.assertGreater(row["clamp"] or 0, 0, "…and the row names the clamp: %r" % row)
+        self.assertLessEqual(abs(row["dist"] or 0), 24, "the distance from the reachable spot is within a row: %r" % row)
 
 
 if __name__ == "__main__":

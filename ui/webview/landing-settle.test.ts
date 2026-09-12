@@ -1,11 +1,17 @@
-// The settle rule for a deep-link landing (landing-settle.ts), executed; and the render.ts wiring pins (T386 stage 1).
+// The settle rule for a deep-link landing (landing-settle.ts), executed; and the render.ts wiring pins (T386 stage 1, with the
+// verifier's round one folded in: the gesture verdict ends the settle, a superseded landing files its row, the scroll clamp is
+// accounted for, the tool-group head walks to the words, the tolerance is capped, the aligned element flashes, text atoms are
+// searched first, a hidden view is a detached one, two named backstop timers).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { SETTLE_MS, SETTLE_QUIET, settleStep, settleRowFields, withinRow } from "./landing-settle";
+import * as LS from "./landing-settle";   // the round-one exports, read by name: the file still builds against the head before them, and
+                                          // the pins on them alone go red there (a named import of a missing export fails the whole build)
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("within its own row: a row's height, never under a few pixels", () => {
   assert.equal(withinRow(0, 40), true);
@@ -31,6 +37,8 @@ test("the window's end files the landing as it stands: settled within the row, e
   assert.equal(settleStep([{ at: 0, dist: 0 }, { at: 1200, dist: 300 }], 40, false, SETTLE_MS), "unsettled", "off the row at the end: a miss, on the record");
   assert.equal(settleStep([{ at: 0, dist: 300 }], 40, false, SETTLE_MS + 50), "unsettled");
   assert.equal(SETTLE_MS, 1200, "the span landOn already re-aligned within");
+  assert.equal(LS.SETTLE_FIRST_PAINT_MS, 250, "the one early backstop: the first paint after the landing's own render");
+  assert.equal(LS.SETTLE_ROW_VIEWPORT_CAP, 0.25, "the row is at most a quarter of the viewport");
 });
 
 test("the row's fields: the last distance rounded, settled by the step; a gave-up landing within the row is not a miss", () => {
@@ -41,25 +49,57 @@ test("the row's fields: the last distance rounded, settled by the step; a gave-u
   assert.deepEqual(settleRowFields("wait", [], 40), { dist: null, settled: false }, "never measured");
 });
 
+test("the scroll clamp: how far short of the viewport top a target near the tail must stop (medium 3)", () => {
+  assert.equal(LS.reachableOffset(5000, 9000, 600), 0, "a target well inside the scroll range reaches the top");
+  assert.equal(LS.reachableOffset(8400, 9000, 600), 0, "…up to the very last reachable scroll top");
+  assert.equal(LS.reachableOffset(8493, 9000, 600), 93, "93 px short: the clamp stops the scroller at 8400");
+  assert.equal(LS.reachableOffset(100, 500, 600), 100, "a transcript shorter than the viewport: the target sits where it is");
+  assert.equal(LS.reachableOffset(8450.6, 9000, 600), 51, "rounded to the pixel");
+});
+
 test("render.ts wiring: landOn ends follow mode, feeds the rule from the page's own events, files the row at settle time, and the walk-forward waits", () => {
-  assert.match(RENDER, /import \{ SETTLE_MS, settleStep, settleRowFields, type SettleSample \} from "\.\/landing-settle";/);
+  assert.match(RENDER, /import \{ SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, type SettleSample \} from "\.\/landing-settle";/);
   assert.match(RENDER, /if \(c && v\) v\.stick = atBottom\(c\); \}/, "a landing ends follow mode unless it put the reader at the bottom (the tail-shrink snap otherwise undoes it)");
-  assert.match(RENDER, /const landSettle = \{ turn: target, at, uuid: flashKey \?\? null, quote: quote \?\? null, rowH: Math\.max\(8, at\.getBoundingClientRect\(\)\.height\), samples: \[\] as SettleSample\[\],/, "one settle in flight per landing, with what re-finds its target");
+  assert.match(RENDER, /const landSettle = \{ turn: target, at, uuid: flashKey \?\? null, quote: quote \?\? null, rowH: settleRowHeight\(at\), samples: \[\] as SettleSample\[\],/, "one settle in flight per landing, with what re-finds its target");
   assert.match(RENDER, /ro\.observe\(at\); if \(at !== target\) ro\.observe\(target\);/, "the aligned element's box, and the turn's");
   assert.match(RENDER, /for \(const sp of Array\.from\(v\.el\.querySelectorAll\("\.tx-spacer"\)\)\) ro\.observe\(sp\);/, "the view's spacers: their size from estimate to measurement");
   assert.match(RENDER, /function settleTick\(\): void \{/);
   assert.match(RENDER, /const step = settleStep\(s\.samples, s\.rowH, s\.gesture, Date\.now\(\) - s\.start\);/);
   assert.match(RENDER, /if \(step === "realign"\) \{ settleLand\(s, "land-realign"\); return; \}/, "a re-land is a write of the landing's own, attributed");
   assert.match(RENDER, /settleFinish\(s, settleRowFields\(step, s\.samples, s\.rowH\)\);/);
-  assert.match(RENDER, /if \(s\.row\) vscodeApi\?\.postMessage\(\{ \.\.\.s\.row, \.\.\.fields \}\);/, "the deferred row goes out with the measurement");
+  assert.match(RENDER, /if \(s\.row\) vscodeApi\?\.postMessage\(\{ \.\.\.s\.row, \.\.\.fields, \.\.\.\(s\.clamp \? \{ clamp: s\.clamp \} : \{\}\) \}\);/, "the deferred row goes out with the measurement and the clamp when one applied");
   assert.match(RENDER, /if \(after !== before && landSettling && !landSettling\.done && writer !== "land-on" && writer !== "land-realign"\) settleSample\(\);/, "another writer's move during the settle is a sample, so the rule re-lands");
   assert.match(RENDER, /if \(scrolled && landSettling && !landSettling\.done && landTrail\[landTrail\.length - 1\] === "pointer-exact"\) landSettling\.row = row;\s*\n\s*else vscodeApi\?\.postMessage\(row\);/, "an exact landing's row waits for the settle; every other outcome files at once");
   assert.match(RENDER, /if \(landSettling && !landSettling\.done\) \{ afterSettle\.push\(\(\) => edgeCheckAfterWindow\(sid\)\); return; \}/, "the walk-forward of a detached window that fits waits for the landing to settle");
   assert.match(RENDER, /pendingAnchorT = ask\?\.t \?\? null; pendingAnchorKind = ask\?\.kind \?\? null;/, "the click's time and kind ride through the window's adoption");
 });
 
+test("render.ts wiring, round one: the gesture verdict ends the settle by any input; a superseded landing files its row; the clamp is measured", () => {
+  // medium 1: the scroll listener's classifier verdict, not a wheel or key listener alone
+  assert.match(RENDER, /if \(cls === "gesture"\) settleGesture\(\);/, "the reader took over by any input the classifier reads as a gesture");
+  assert.doesNotMatch(RENDER, /window\.addEventListener\("wheel", settleGesture/, "no wheel-only listener: a scrollbar drag and a touch swipe count too");
+  assert.match(RENDER, /window\.addEventListener\("keydown", settleGesture\);/, "a key moves the view through a write the classifier never sees");
+  // medium 2: the superseded row
+  assert.match(RENDER, /function settleSupersede\(s: NonNullable<typeof landSettling>\): void \{\s*\n\s*settleEnd\(s\);\s*\n\s*if \(s\.row\) vscodeApi\?\.postMessage\(\{ \.\.\.s\.row, \.\.\.settleRowFields\("gave-up", s\.samples, s\.rowH\), settled: false, superseded: true,/);
+  assert.match(RENDER, /if \(landSettling\) settleSupersede\(landSettling\);/, "a newer landing files the older's row, marked");
+  // medium 3: the clamp
+  assert.match(RENDER, /const floor = reachableOffset\(r\.top - cr\.top \+ c\.scrollTop, c\.scrollHeight, c\.clientHeight\);\s*\n\s*s\.clamp = floor;\s*\n\s*s\.samples\.push\(\{ at: Date\.now\(\) - s\.start, dist: \(r\.top - cr\.top\) - floor \}\);/);
+  // low 1: the tolerance, capped and re-measured
+  assert.match(RENDER, /return Math\.max\(8, Math\.min\(at\.getBoundingClientRect\(\)\.height, \(c \? c\.clientHeight : 600\) \* SETTLE_ROW_VIEWPORT_CAP\)\);/);
+  assert.match(RENDER, /s\.rowH = settleRowHeight\(s\.at\);/, "re-measured when the settle swaps its element");
+  // low 2: the aligned element flashes
+  assert.match(RENDER, /at\.classList\.add\("anchor-flash"\);/);
+  assert.match(CSS, /^\.anchor-flash \{ animation: anchor-flash 1\.6s ease-out; border-radius: 6px; \}/m, "the flash rule matches the aligned element, a turn or the words inside it");
+  // low 4: a hidden view is a detached one
+  assert.match(RENDER, /if \(s\.at\.isConnected && s\.at\.getClientRects\(\)\.length\) return s\.at;/);
+  assert.match(RENDER, /if \(!turn \|\| !turn\.getClientRects\(\)\.length\) return null;/);
+  // low 5: two named backstops
+  assert.match(RENDER, /landSettle\.timers\.push\(window\.setTimeout\(settleSample, SETTLE_FIRST_PAINT_MS\), window\.setTimeout\(settleSample, SETTLE_MS \+ 20\)\);/);
+});
+
 test("render.ts wiring: the settle re-finds its target by uuid after a rebuild replaced the DOM, and gives up honestly when the turn is gone", () => {
-  assert.match(RENDER, /function settleResolve\(s: NonNullable<typeof landSettling>\): HTMLElement \| null \{\s*\n\s*if \(s\.at\.isConnected\) return s\.at;\s*\n\s*const turn = s\.uuid \? findTurnEl\(s\.uuid\) : null;/, "a detached box measures as zeros: re-find, never measure it");
+  assert.match(RENDER, /function settleResolve\(s: NonNullable<typeof landSettling>\): HTMLElement \| null \{/);
+  assert.match(RENDER, /const turn = s\.uuid \? findTurnEl\(s\.uuid\) : null;/, "a detached box measures as zeros: re-find, never measure it");
   assert.match(RENDER, /s\.at = \(s\.quote \? highlightCiteSpan\(turn, s\.quote\) : null\) \?\? firstTextAtomBelow\(turn\) \?\? turn;/, "the same alignment as the landing's, re-derived");
   assert.match(RENDER, /if \(!at\) \{ settleFinish\(s, \{ dist: null, settled: false \}\); return; \}/, "the turn left the view: the row says so");
   assert.match(RENDER, /function findTurnEl\(uuid: string\): HTMLElement \| null \{/);
@@ -68,9 +108,12 @@ test("render.ts wiring: the settle re-finds its target by uuid after a rebuild r
 test("render.ts wiring: a card anchored on a turn's first atom lands on the quoted words, or the turn's text atom, not the tool group", () => {
   assert.match(RENDER, /const quote = pendingAnchorQuote; pendingAnchorQuote = null;\s*\n\s*const quoteEl = quote \? highlightCiteSpan\(target, quote\) : null;\s*\n\s*landOn\(target, uuid, quoteEl \?\? firstTextAtomBelow\(target\), quote\);/);
   assert.match(RENDER, /function highlightCiteSpan\(target: HTMLElement, quote: string\): HTMLElement \| null \{/, "the highlight returns the element the sentence starts in");
-  assert.match(RENDER, /for \(const atom of turnAtomsOf\(target\)\) \{\s*\n\s*const walker = document\.createTreeWalker\(atom, NodeFilter\.SHOW_TEXT\);/, "the quote is searched across the turn's atoms");
+  // low 3: text atoms first, then tool and thinking atoms; the alignment is the top, one rule for every landing
+  assert.match(RENDER, /const ordered = \[\.\.\.atoms\.filter\(\(a\) => !isToolOrThinkingAtom\(a\)\), \.\.\.atoms\.filter\(\(a\) => isToolOrThinkingAtom\(a\)\)\];/);
   assert.match(RENDER, /return range\.startContainer\.parentElement;/);
-  assert.match(RENDER, /function firstTextAtomBelow\(target: HTMLElement\): HTMLElement \| null \{\s*\n\s*if \(!target\.classList\.contains\("turn-tool"\) && !target\.classList\.contains\("turn-thinking"\)\) return null;/);
+  // medium 5: the group head counts as a tool atom
+  assert.match(RENDER, /function isToolOrThinkingAtom\(n: Element\): boolean \{\s*\n\s*return n\.classList\.contains\("turn-tool"\) \|\| n\.classList\.contains\("turn-toolgroup"\) \|\| n\.classList\.contains\("turn-thinking"\);/);
+  assert.match(RENDER, /function firstTextAtomBelow\(target: HTMLElement\): HTMLElement \| null \{\s*\n\s*if \(!isToolOrThinkingAtom\(target\)\) return null;/);
   assert.match(RENDER, /function turnAtomsOf\(target: HTMLElement\): HTMLElement\[\] \{/);
   assert.match(RENDER, /if \(!\(n instanceof HTMLElement\) \|\| !n\.classList\.contains\("turn"\) \|\| n\.classList\.contains\("turn-user"\)\) break;/, "the turn ends at the next user turn");
   assert.match(RENDER, /function landOn\(target: HTMLElement, flashKey\?: string, alignOn\?: HTMLElement \| null, quote\?: string \| null\) \{/);
