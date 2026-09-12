@@ -73,8 +73,14 @@ test("a pick of a session another column holds is shown where it lives: the setA
   // column: no emptiness post while it stands (review find 2026-09-11: the column closed under it and the queued text died)
   assert.match(RENDER, /function staleActiveFallback\(ids: readonly string\[\], visibleIds: readonly string\[\]\): void \{\n\s*if \(colSets === null\) return;[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*if \(activeId \|\| vanishedId \|\| !tabOrderSeen \|\| provisionalId \|\| !visibleIds\.length\) return;\n\s*if \(wantActive && heldHere\(wantActive\)\) return;/,
     "the fallback yields to an active tab, a tab that left on its own, and a wanted tab this column holds (T357 keeps the pane unfocused for its return); a wanted tab held elsewhere is retired");
-  assert.match(RENDER, /function noteColumnEmptiness\(ids: readonly string\[\]\): void \{\n\s*if \(!COL \|\| !colSets \|\| !tabOrderSeen\) return;\n(?:\s*\/\/[^\n]*\n)*\s*if \(provisionalId \|\| failedProvisionals\.size\) return;[\s\S]*?window\.parent\.postMessage\(\{ romp: "colEmpty", gone: mine\.slice\(\) \}, "\*"\);/);
-  assert.match(RENDER, /tabOrderSeen = true;[^\n]*\n\s*renderTabs\(\);\n\}/, "set in applyTabOrder, ahead of its render");
+  // …a member the kernel's live set still affirms counts as present unless this page's own cross removed it (T258 on a fresh
+  // column), and the post names the crossed members, the only ones the shell holds back (the vanishing tab, 2026-09-12)
+  assert.match(RENDER, /function noteColumnEmptiness\(ids: readonly string\[\]\): void \{\n\s*if \(!COL \|\| !colSets \|\| !tabOrderSeen\) return;\n(?:\s*\/\/[^\n]*\n)*\s*if \(provisionalId \|\| failedProvisionals\.size\) return;\n\s*const mine = colSets\[COL\] \|\| \[\];\n\s*const present = \(id: string\) => ids\.includes\(id\) \|\| \(boardLive\.has\(id\) && !closingTabs\.has\(id\)\);\n\s*const empty = mine\.length > 0 && !mine\.some\(present\);[\s\S]*?const crossed = mine\.filter\(\(id\) => closingTabs\.has\(id\)\);\n\s*try \{ window\.parent\.postMessage\(\{ romp: "colEmpty", gone: mine\.slice\(\), crossed \}, "\*"\);/);
+  assert.match(RENDER, /boardLive = liveSet;/, "applyTabOrder keeps the frame's live set for the emptiness post");
+  // the flag is armed by the LOCAL kernel's own strip only (tab-order.ts localStrip): a synthetic re-emission — on a fresh
+  // page served from an EMPTY store, order [] — or another host's fresh push is never the board (the vanishing tab, 2026-09-12)
+  assert.match(RENDER, /if \(localStrip\(report\)\) tabOrderSeen = true;\n\s*renderTabs\(\);\n\}/, "set in applyTabOrder on the kernel's own strip, ahead of its render");
+  assert.match(RENDER, /import \{ localStrip, readCloseAckMs \} from "\.\/tab-order";/);
   // the shell's two questions before it moves a tab or closes a column (kernel.py moveTab / close; tests/test_chat_split.py
   // runs the refusals): an id a column can hold, and a create in flight here
   assert.match(RENDER, /\(window as any\)\.__rompMovableSession = \(sid: unknown\): boolean => typeof sid === "string" && !!sid && !isProvisionalId\(sid\) && !isSubId\(sid\);/);
@@ -84,7 +90,11 @@ test("a pick of a session another column holds is shown where it lives: the setA
   // the ids a colEmpty close sends home are held back on the first column's strip until the kernel's strip omits them
   // (the same closingTabs a ✕ uses), so no tab flashes into that strip on its way out
   assert.match(RENDER, /if \(m\.romp === "closing"\) \{ if \(Array\.isArray\(m\.ids\)\) for \(const id of m\.ids\) \{ if \(typeof id === "string" && id\) closingTabs\.set\(id, Date\.now\(\)\); \} renderTabs\(\); return; \}/);
-  assert.ok(KERNEL.includes("home.contentWindow.postMessage({romp:'closing',ids:gone},'*');"));
+  // …and the shell names ONLY the ids the page's own cross removed (colEmpty's `crossed`): the backstop behind the hold toasts
+  // "Couldn't close", right for a refused cross and wrong for anything else (the vanishing tab, 2026-09-12)
+  assert.ok(KERNEL.includes("var crossed=Array.isArray(m.crossed)?gone.filter(function(id){return m.crossed.indexOf(id)>=0;}):[];"));
+  assert.ok(KERNEL.includes("home.contentWindow.postMessage({romp:'closing',ids:crossed},'*');"));
+  assert.ok(!KERNEL.includes("{romp:'closing',ids:gone}"), "no hold over the whole gone list");
   // orphaned state (a v1 column blob's drafts for sessions the column no longer shows) is offered to the shell every
   // render while it remains, from renderTabs right after the emptiness post, and the shell hands it to the owner's page
   assert.match(RENDER, /noteColumnEmptiness\(ids\);[^\n]*\n\s*noteOrphanState\(\);/);

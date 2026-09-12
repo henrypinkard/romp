@@ -56,7 +56,9 @@ test("a pane answers another pane's drag by re-emitting, never by rewriting the 
     "inbound tabOrder is the one store-mutating moment");
   // (the signature carries provenance since T233 — fresh/host-driven vs synthetic re-emit — but every
   // caller still re-emits from the store, never rewrites it)
-  assert.match(FED, /private emitMergedOrder\(fresh = false, freshHost: string = LOCAL\): void \{\s*\n\s*const order = mergeHostOrder/,
+  // (…and holds a synthetic re-emission until the local kernel's strip is in the store — the vanishing tab, 2026-09-12;
+  // federation-order-hold.test.ts — still without a write: the shell's pending list, the hold, then the merge)
+  assert.match(FED, /private emitMergedOrder\(fresh = false, freshHost: string = LOCAL\): void \{\s*\n\s*this\.publishPending\(\);[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*if \(!fresh && !\(LOCAL in this\.perHostOrder\)\) return;\s*\n\s*const order = mergeHostOrder/,
     "every other caller — both drag paths included — re-emits without touching the stored order");
   assert.doesNotMatch(FED, /private gcView|this\.gcView/,
     "the old gc-on-emit hook is gone, folded into absorbHostReport");

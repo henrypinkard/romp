@@ -53438,10 +53438,14 @@ drag={sid:m.sid,name:typeof m.name==='string'?m.name:'',from:Number(colOf(e.sour
 if(m.romp==='colEmpty'&&Array.isArray(m.gone)){var c=Number(colOf(e.source)),en=c>=2?entry(c):null;if(!en)return;
 var gone=en.ids.filter(function(id){return m.gone.indexOf(id)>=0;});en.ids=en.ids.filter(function(id){return m.gone.indexOf(id)<0;});
 if(en.ids.length){save();return;}
-// the ids return to the first column, but the kernel may still list one closed from its own cross for a push or two: the
-// first column's page holds them back (closingTabs) until the kernel's strip omits them, so no tab flashes into its strip
-// on the way out (review find 2026-09-11; the message is queued ahead of the store write's storage event)
-var home=document.getElementById('f-chat');try{if(home&&gone.length)home.contentWindow.postMessage({romp:'closing',ids:gone},'*');}catch(e){}
+// the ids return to the first column. One the page's own CROSS removed (m.crossed) the kernel may still list for a push or
+// two: the first column's page holds those back (closingTabs, the "Couldn't close" backstop behind it) until the kernel's
+// strip omits them, so no tab flashes into its strip on the way out (review find 2026-09-11; the message is queued ahead of
+// the store write's storage event). Nothing else is held: a member gone for any other reason is simply the first column's
+// again, shown the moment its strip repaints — a hold over a session the kernel still listed hid the tab for the backstop
+// and toasted a close nobody asked for (the vanishing tab, the user 2026-09-12)
+var crossed=Array.isArray(m.crossed)?gone.filter(function(id){return m.crossed.indexOf(id)>=0;}):[];
+var home=document.getElementById('f-chat');try{if(home&&crossed.length)home.contentWindow.postMessage({romp:'closing',ids:crossed},'*');}catch(e){}
 close(en.n);return;}
 // ORPHANED STATE (review find 2026-09-11): a page holds a draft, citations, attachments or staged messages for a session
 // it does not show — a column blob written before the partition (a v1 column was a whole chat page, so its blob may name
