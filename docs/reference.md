@@ -1542,6 +1542,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `corrupt`), `dirty` (files whose folds moved since their last write),
   `readBytes` and `readByPath` (what the JSONL reader pulled off disk since
   boot, in total and per file).
+  `rewoundMemo`: the judges' incident scan used to read every dead episode
+  file of a lineage whole at every boot (`_per_file_rewound`, 542 MB on one
+  devbox boot); its verdict set per frozen file is now the fold `rewoundUuids`
+  of that file's fold document, written from the walk's own read at the
+  quiescence drop and restored at the next boot, so such a file is read whole
+  once (a live session's own files, its /clear anchor among them, stay
+  resident instead, since the chain walk reads them at every pass). The
+  counters: the memo's answers (`served`), the walks it took (`walked`), the
+  walks over a memo the file's growth or rewrite retired (`stale`; a file
+  whose entry merely left memory and came back is walked, not stale) and the
+  walks whose memo could not be read or stored (`fallback`: a document state
+  of the wrong shape, or no reader entry after the walk).
 - `stacks`: every thread's last six frames, keyed by the thread's ident and
   name, when the kernel runs with `ROMP_PERF_STACKS` set (a debugging aid for a
   served test on a runner nobody can log into); `null` otherwise.
