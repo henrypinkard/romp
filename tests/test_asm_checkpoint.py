@@ -10,6 +10,7 @@ moved session and a corrupt document each fall back loudly, counted; a body read
 the restore reads are the document, the cut's guard and the tail. Synthetic transcripts only (the golden builders)."""
 import json
 import os
+import time
 import shutil
 import tempfile
 import unittest
@@ -445,6 +446,203 @@ class WriteValves(Harness):
         self.assertEqual(em._asm_ckpt_file(path).stat().st_mtime_ns, st.st_mtime_ns, "the document was not rewritten")
         em._asm_ckpt_file(path).unlink()
         self.assertTrue(self.doc(path), "a missing document is written again from the same entry")
+
+
+class ConvergeAssembly(Harness):
+    """T376 (2026-09-12): an idle session never settles, so its leaf never had an assembly document and the parse read it whole
+    at every boot (31 of 60 leaves on the devbox, about 2.5 GB, the boot's remaining cost). The converge pass writes the
+    document for a quiescent leaf from the whole assembly entry the boot's own parse built: no read of records (a stat per
+    file and the cut's guard), charged to the cycle's byte budget, once; the next process restores it and reads the tail."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.km = kernel_module()
+
+    def setUp(self):
+        super().setUp()
+        em._ASM_CKPT_STATS["converge"] = {"writes": 0, "bytes": 0, "deferred": 0, "candidates": 0, "skipped": {}}
+        with em._CKPT_LOCK:
+            for k in em._CKPT_STATS["converge"]:                   # the fold half's counters too: the tests assert absolutes
+                em._CKPT_STATS["converge"][k] = 0
+        self.km._ASM_CONVERGE_DONE.clear(); self.km._ASM_CONVERGE_BLIP.clear(); self.km._ASM_CONVERGE_NOENTRY.clear()
+        for name, val in (("CKPT_CONVERGE_MS", 150.0), ("CKPT_CONVERGE_BYTES", em._CKPT_CYCLE_CAP_DEFAULT), ("ASM_CONVERGE", True)):
+            saved = getattr(self.km, name); setattr(self.km, name, val); self.addCleanup(setattr, self.km, name, saved)
+
+    def idle_leaf(self, name="idle", scenario="compaction_atom", age=600):
+        """A leaf idle past the reader's quiescence window, with no assembly document, parsed once by this process (the boot's
+        read: a whole entry), registered as the only session."""
+        import time
+        records, sent = G.SINGLE_FILE[scenario]
+        path = self.write(name, records(), sent=sent)
+        old = time.time() - age; os.utime(path, (old, old))
+        self.fresh(); self.parse(path)
+        rows = [{"sid": SID, "path": path}]
+        saved = self.km._sessions; self.km._sessions = lambda now, **kw: rows
+        self.addCleanup(setattr, self.km, "_sessions", saved)
+        self.assertFalse(em._asm_ckpt_file(path).exists())
+        return path
+
+    def cycle(self, now):
+        self.km._begin_checkpoint_cycle()
+        return self.km._converge_checkpoints(now)
+
+    def test_the_pass_writes_an_idle_leafs_document_from_the_boots_parse_and_the_next_boot_reads_a_tail(self):
+        path = self.idle_leaf()
+        size = os.path.getsize(path); read0 = em.read_bytes_report().get(path, 0)
+        self.cycle(NOW + 600)
+        self.assertTrue(em._asm_ckpt_file(path).exists(), "written from the entry in hand")
+        self.assertLess(em.read_bytes_report().get(path, 0) - read0, 512, "no read of records: the cut's guard alone")
+        cv = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual((cv["writes"], cv["deferred"], cv["candidates"]), (1, 0, 1), "%s" % cv); self.assertGreater(cv["bytes"], 0)
+        st = em._asm_ckpt_file(path).stat().st_mtime_ns
+        self.cycle(NOW + 601); self.cycle(NOW + 602)
+        cv = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual((cv["writes"], cv["candidates"]), (1, 1), "once: the document stands, the leaf is done: %s" % cv)
+        self.assertEqual(em._asm_ckpt_file(path).stat().st_mtime_ns, st)
+        whole = self.cold(path)
+        tree, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"]); self.assertGreater(n_lazy, 0)
+        self.assertLess(self.read_before, size, "the next boot reads the tail, not the whole leaf: %d of %d bytes" % (self.read_before, size))
+        self.assertEqual(tree, whole)
+
+    def test_the_dirty_leaf_boot_shape_writes_the_fold_document_and_the_assembly_document_in_one_pass(self):
+        """Round one, medium: the ordinary boot shape is a dirty idle leaf (the judges' pass read it whole, its fold document lacks
+        the pairing) with no assembly document. The fold half of the pass healed and primed it and its held quiescence drop
+        POPPED the record entry; the assembly step then found the assembly entry but no record entry (record_offsets None), a
+        skipped write, retried once, abandoned. The assembly write now runs while the record entry is resident, inside the same
+        hold, and the held drop is paid after it: one pop, both documents from the one read, and the next boot restores both."""
+        path = self.idle_leaf("both")
+        km = self.km; jd = km.jd
+        size = os.path.getsize(path)
+        jd._bg_scan(path)                                             # the boot's whole read by a fold: dirty, whole-resident
+        self.assertTrue(em.entry_whole_resident(path))
+        self.assertIn(path, em.checkpoint_converge_candidates(), "a fold candidate too")
+        read0 = em.read_bytes_report().get(path, 0)
+        self.cycle(NOW + 600)
+        cv = em.checkpoint_stats()["converge"]; av = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual((cv["viaDrop"], cv["dropWrites"]), (1, 1), "the fold document, written at the held drop: %s" % cv)
+        self.assertEqual((av["writes"], av["skipped"]), (1, {}), "the assembly document, written from the same read: %s" % av)
+        self.assertTrue(em._asm_ckpt_file(path).exists())
+        self.assertLess(em.read_bytes_report().get(path, 0) - read0, 1024, "no read of records for either")
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNone(em._JSONL_CACHE.get(path), "one pop, after both writes")
+        self.fresh(); em.set_checkpoint_dir(lambda: self.ck)
+        for c in list(em._FOLD_REG.values()): c.clear()
+        before = em.checkpoint_stats()["restoredFolds"].get("bgJudge", 0)
+        modes = []; self.parse(path, modes); self.assertEqual(modes, ["restore"], "the assembly document restores")
+        jd._bg_scan(path)
+        self.assertEqual(em.checkpoint_stats()["restoredFolds"].get("bgJudge", 0), before + 1, "the fold document restores")
+        self.assertLess(em.read_bytes_report().get(path, 0), size, "the next boot reads the tail")
+
+    def test_a_write_over_the_cycles_budget_is_deferred_to_the_next(self):
+        path = self.idle_leaf("budget")
+        self.km.CKPT_CONVERGE_BYTES = 1
+        self.cycle(NOW + 600)
+        self.assertFalse(em._asm_ckpt_file(path).exists())
+        self.assertEqual(em.asm_checkpoint_stats()["converge"]["deferred"], 1)
+        self.km.CKPT_CONVERGE_BYTES = em._CKPT_CYCLE_CAP_DEFAULT
+        self.cycle(NOW + 601)
+        self.assertTrue(em._asm_ckpt_file(path).exists())
+        self.assertEqual(em.asm_checkpoint_stats()["converge"]["writes"], 1)
+
+    def test_a_zero_byte_budget_turns_the_step_off_rather_than_deferring_forever(self):
+        """Round one, low 2: with ROMP_CKPT_CONVERGE_MB=0 every attempt was deferred and candidates and deferred grew each cycle."""
+        path = self.idle_leaf("zero")
+        self.km.CKPT_CONVERGE_BYTES = 0
+        for k in range(3):
+            self.cycle(NOW + 600 + k)
+        cv = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual((cv["candidates"], cv["deferred"], cv["writes"]), (0, 0, 0), "off, as the drop write is: %s" % cv)
+        self.assertFalse(em._asm_ckpt_file(path).exists())
+
+    def test_a_blip_is_tried_twice_then_done_and_the_writer_names_its_caller_once_per_leaf(self):
+        """Round two, low 3: the writer returns its reason (a blip, here the record entry gone before the offsets are read,
+        versus a property of the cut), the pass tries a blip twice for one file state and then leaves it, and the writer's blip
+        line names its caller and is said once per leaf and reason."""
+        path = self.idle_leaf("blip"); km = self.km
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.pop(path, None)                        # the record entry gone: the writer has no offsets (a blip)
+        import io
+        err = io.StringIO(); saved = sys.stderr; sys.stderr = err
+        try:
+            reasons = []
+            self.assertFalse(em.asm_checkpoint_write(path, SID, False, reason_out=reasons, who="converge pass"))
+            self.assertFalse(em.asm_checkpoint_write(path, SID, False, reason_out=reasons, who="converge pass"))
+        finally:
+            sys.stderr = saved
+        self.assertEqual(reasons, ["offsets", "offsets"], "the writer's own reason, per attempt")
+        lines = [l for l in err.getvalue().splitlines() if "not written by the converge pass" in l]
+        self.assertEqual(len(lines), 1, "the blip line names its caller and is said once per leaf: %r" % err.getvalue())
+        # the pass: the blip's two tries, then done for this file state (the record entry must be resident for a write)
+        st = km._stat_key_ns(path)
+        self.assertFalse(km._converge_assembly_leaf(path, SID, time.monotonic()))
+        self.assertEqual(km._ASM_CONVERGE_NOENTRY.get(path), st, "no record entry: nothing to write from, counted once, no try spent")
+        with em._JSONL_CACHE_LOCK:                                 # the record entry back, but the offsets torn away at the write
+            pass
+        self.fresh(); em.set_checkpoint_dir(lambda: self.ck); self.parse(path)   # a whole record entry again
+        real = em.record_offsets; em.record_offsets = lambda p, base: None
+        self.addCleanup(setattr, em, "record_offsets", real)
+        self.assertFalse(km._converge_assembly_leaf(path, SID, time.monotonic()))
+        self.assertEqual(km._ASM_CONVERGE_BLIP.get(path), st, "a blip: the first try spent, not done")
+        self.assertFalse(km._converge_assembly_leaf(path, SID, time.monotonic()))
+        self.assertEqual(km._ASM_CONVERGE_DONE.get(path), st, "the second try spent: done for this file state")
+        self.assertEqual(em.asm_checkpoint_stats()["converge"]["skipped"].get("offsets"), 2)
+
+    def test_the_done_tables_release_their_oldest_past_the_bound(self):
+        """Round two, low 3: past the bound the oldest entry is released, never the table cleared."""
+        table = {"k%d" % i: i for i in range(4100)}
+        self.km._release_oldest(table)
+        self.assertEqual(len(table), 4096); self.assertNotIn("k0", table); self.assertIn("k4099", table); self.assertNotIn("k3", table)
+
+    def test_a_leaf_without_a_boundary_is_looked_at_once(self):
+        path = self.idle_leaf("plain", scenario=next(n for n in G.SINGLE_FILE if n not in COMPACTING))
+        for k in range(3):
+            self.cycle(NOW + 600 + k)
+        cv = em.asm_checkpoint_stats()["converge"]
+        self.assertFalse(em._asm_ckpt_file(path).exists())
+        self.assertEqual((cv["candidates"], cv["skipped"].get("noBoundary"), cv["writes"]), (1, 1, 0), "no cut, no document, said once: %s" % cv)
+
+    def test_off_writes_nothing_and_a_live_leaf_is_left_to_the_settle(self):
+        path = self.idle_leaf("off")
+        self.km.ASM_CONVERGE = False
+        self.cycle(NOW + 600)
+        self.assertFalse(em._asm_ckpt_file(path).exists()); self.assertEqual(em.asm_checkpoint_stats()["converge"]["candidates"], 0)
+        self.km.ASM_CONVERGE = True
+        live = self.idle_leaf("live", age=0)                       # fresh: the settle's writer covers it
+        self.cycle(NOW + 601)
+        self.assertFalse(em._asm_ckpt_file(live).exists()); self.assertEqual(em.asm_checkpoint_stats()["converge"]["candidates"], 0)
+        self.assertIn("converge", self.km._PERF_STATS.snapshot()["asmCheckpoint"], "the counters ride /perf")
+
+
+class HydrationAttribution(Harness):
+    def test_a_shared_text_reader_is_attributed_with_its_caller(self):
+        """T377: the boot's 1.06 GB of hydration read as `_unit_text`, the judges' shared text reader, which every walker calls;
+        the bytes are attributed to the reader AND its caller, so the counter names the walker."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("attr", records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        tree, _, n_lazy = self.fresh(), None, None
+        modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+        atoms = [a for t in tree["turns"] for a in t["atoms"]]
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        def _unit_text(atoms):                                  # the reader's name, as the judges' is
+            return em.hydrate(atoms)
+        def some_walker():
+            return _unit_text(atoms)
+        some_walker()
+        by = em.asm_checkpoint_stats()["hydratedBy"]
+        self.assertEqual(list(by), ["_unit_text<-some_walker"], "%s" % by)
+        self.assertEqual(em.hydrate(atoms), 0, "hydrated already: nothing counted twice")
+        self.fresh(); tree = self.parse(path); atoms = [a for t in tree["turns"] for a in t["atoms"]]
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        def _atom_text(atoms):                                  # a reader reached through another shared reader (round one, low 3)
+            return em.hydrate(atoms)
+        def _prompt_text(atoms):
+            return _atom_text(atoms)
+        def other_walker():
+            return _prompt_text(atoms)
+        other_walker()
+        self.assertEqual(list(em.asm_checkpoint_stats()["hydratedBy"]), ["_atom_text<-other_walker"], "the first caller outside the shared readers")
 
 
 class KernelOverRestored(Harness):

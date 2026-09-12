@@ -1030,7 +1030,21 @@ The knobs: `ROMP_CKPT_CONVERGE_MS=0` turns the pass off and the drop write with
 it (the drop then pops as it did before the write existed); `ROMP_CKPT_CONVERGE_MB`
 is the cycle budget both charge, and `0` turns the drop write off the same way
 rather than deferring every drop; both are read where the drop lives, so they
-hold from the first fold, before the first pusher cycle begins. The owed table
+hold from the first fold, before the first pusher cycle begins. The pass also
+writes the ASSEMBLY document of an idle leaf that has none (the assembly
+document is otherwise written only at a settle, which an idle session never
+reaches, so the parse read those leaves whole at every boot: 31 of 60 on the
+devbox, about 2.5 GB): from the whole assembly entry the boot's own parse built,
+through the settle's writer, while the reader's whole record entry is still
+resident (the writer takes its record offsets from it), so for a leaf the fold
+half handles the assembly write runs inside the same hold, before the held drop
+pops that entry, and both documents come from the one read; no read of records,
+charged to the same cycle budget. A leaf is looked at once per file state:
+written, or refused for a property of its cut, it is done; a blip is tried
+twice (a blip inside the fold half's hold gets its second try over the entry
+the paid drop popped, so that leaf waits for the next boot's read); a leaf with
+no whole entry to write from is re-examined each cycle and counted once. `ROMP_ASM_CONVERGE=0` turns that step off, and so do the pass's
+own switch and a zero byte budget, as for the drop write. The owed table
 is bounded: over it the oldest owed drop is paid by its pop alone, and an owed
 file since deleted has its entry popped when the cycle pays. A leaf unchanged for longer than the reader keeps a quiescent
 file's whole entry (two minutes) is refused by the pass and counted under
@@ -1492,7 +1506,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
   `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
-  a cut) and `hydratedBy` (those bytes per calling function).
+  a cut), `hydratedBy` (those bytes per calling function), and `converge`: the
+  pass's writes of idle leaves' documents from the boot's own parse
+  (`candidates`, `writes`, `bytes`, `deferred`, `skipped` per the writer's
+  reason).
 - `asmIndex`: the lazy index (T323 stage 4c) a restored session's pre-cut turns
   come from: `materialized` atoms built from the document's rows since boot,
   `materializedBy` (per consumer), `resident` (the process-wide LRU, `cap`
