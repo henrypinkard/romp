@@ -99,7 +99,9 @@ body.scheme-solarized-dark {
      provisional wash and the peer-tinted ground (theme-parity.test.ts holds the contrast on all four), and
      postal-kind-ramp.test.ts holds the stops, the hue distances and the distance from the prose ink. */
   --postal-coordinate: #54b204;  --postal-delegate: #9088f0;  --postal-question: #42a9b0;
-  --peer-ink-l: l;   /* a session's name in a postal head is inked in its identity colour as it is (T390): the colours are chosen for this ground */
+  --peer-ink-l: max(l, 0.72);   /* a session's name in a postal head is inked in its identity colour, lifted to a lightness floor when the colour
+                                    is darker (T390 fold): a sweep of all sixty palette colours over the card grounds (the plain box and the
+                                    incoming card's wash at the peer's own hue) reads 4.9:1 at worst at this floor, 1.7:1 with no floor */
   --postal-wash-l: 0.263;  --postal-wash-c: 0.03;   /* the incoming card's tint: the peer's hue at the box ground's own
                                                        OKLab lightness (the page under the 3% box), a gentle chroma (T337b).
                                                        The lightness here is the shipped theme's FALLBACK: the chat measures
@@ -2524,6 +2526,7 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
    dark theme, a deepened one in cream, where a pastel identity colour would not read on the card's ground), the same
    relative-colour rule the incoming card's tint uses. The muted host prefix is the tab's (.host-prefix). */
 .notice-src-end { letter-spacing: 0.02em; text-transform: none; font-weight: 700;
+  color: var(--peer-bg, var(--fg));   /* an engine without relative colour syntax keeps the identity colour itself */
   color: oklch(from var(--peer-bg, var(--fg)) var(--peer-ink-l, l) c h); }
 .notice-src-end .host-prefix { font-weight: 400; }
 .notice-gist { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

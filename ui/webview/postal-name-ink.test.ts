@@ -1,7 +1,8 @@
 // T390 (the user 2026-09-12): a session's name in a postal card's head is the NAME ITSELF, bold, in the session's identity
 // colour, the way the awaiting fold names a peer (bg-await-peer): no chip box, no fill, in either theme. The pins over the
 // postal head's builder and the sheet; the served postal lab (tests/test_postal_cards_served.py) measures the computed colour,
-// the weight and the contrast on the card's ground in both themes, and screenshots both.
+// the weight and the contrast on the card's ground in both themes, sweeps every palette colour over every card ground in both
+// themes (the fold's high: the dark floor), and screenshots both.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -23,19 +24,20 @@ test("the postal head names both ends as bold text in the identity colour: no ch
 });
 
 test("the peer's host prefix is muted as the tab wears it; the own end's through hostNameNodes", () => {
-  assert.match(RENDER, /function peerNameNodes\(name: string, host\?: string\): Node\[\] \{\s*\n\s*if \(!host\) return \[document\.createTextNode\(name\)\];\s*\n\s*const h = el\("span", "host-prefix"\); h\.textContent = host \+ ":";/);
-  assert.match(CARD, /peer\.append\(\.\.\.peerNameNodes\(ev\.peer, ev\.peerHost\)\);/);
+  assert.doesNotMatch(RENDER, /peerNameNodes/, "one helper for a host-prefixed name: hostPartsNodes (the fold's low 3)");
+  assert.match(CARD, /peer\.append\(\.\.\.hostPartsNodes\(ev\.peerHost, ev\.peer\)\);/);
   assert.match(CARD, /nm\.append\(\.\.\.hostNameNodes\(own\.name, ownId\)\);/);
   assert.match(CSS, /\.notice-src-end \.host-prefix \{ font-weight: 400; \}/, "the prefix keeps the prose weight beside the bold name");
 });
 
 test("the sheet: bold, inked from the identity colour at the theme's lightness, no fill; the collapsed own end is the one filled dot", () => {
-  assert.match(CSS, /\.notice-src-end \{ letter-spacing: 0\.02em; text-transform: none; font-weight: 700;\s*\n\s*color: oklch\(from var\(--peer-bg, var\(--fg\)\) var\(--peer-ink-l, l\) c h\); \}/);
+  assert.match(CSS, /\.notice-src-end \{ letter-spacing: 0\.02em; text-transform: none; font-weight: 700;\s*\n\s*color: var\(--peer-bg, var\(--fg\)\);[^\n]*\n\s*color: oklch\(from var\(--peer-bg, var\(--fg\)\) var\(--peer-ink-l, l\) c h\); \}/,
+    "the identity colour itself first, for an engine without relative colour syntax; then the inked colour (the fold's low 1)");
   const rule = CSS.slice(CSS.indexOf(".notice-src-end {"), CSS.indexOf("}", CSS.indexOf(".notice-src-end {")));
   assert.doesNotMatch(rule, /background|padding|border-radius/, "no chip box: no fill, padding or radius on the name");
   const dark = CSS.slice(CSS.indexOf(":root {"), CSS.indexOf("\n}", CSS.indexOf(":root {")));
   const light = CSS.slice(CSS.indexOf("body.theme-light {"), CSS.indexOf("\n}", CSS.indexOf("body.theme-light {")));
-  assert.match(dark, /--peer-ink-l: l;/, "dark: the identity colour as it is (chosen for this ground)");
+  assert.match(dark, /--peer-ink-l: max\(l, 0\.72\);/, "dark: the colour's own lightness, lifted to the floor the palette sweep set (the fold's high)");
   assert.match(light, /--peer-ink-l: 0\.46;/, "cream: deepened on its own hue, the kind words' rule");
   assert.match(CSS, /\.turn-postal-service \.notice-src-self \{ display: inline-block; width: 10px; height: 10px; padding: 0; border-radius: 50%; align-self: center; overflow: hidden;\s*\n\s*background: var\(--peer-bg, var\(--overlay-10\)\); \}/);
 });

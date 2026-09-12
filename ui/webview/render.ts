@@ -5362,14 +5362,6 @@ function refreshPostalDots() {
   // without its muted host prefix (the working set is keyed by the bare name)
   document.querySelectorAll(".notice-src-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p as HTMLElement).dataset.name || (p.textContent || "").trim())));
 }
-/** The nodes a PEER's name renders as: the host prefix muted (a peer on another kernel, as the tab wears it), then the name.
- *  The peer is known by name and host, not by a sid (hostNameNodes reads the host off a sid), so the prefix is built here. */
-function peerNameNodes(name: string, host?: string): Node[] {
-  if (!host) return [document.createTextNode(name)];
-  const h = el("span", "host-prefix"); h.textContent = host + ":";
-  return [h, document.createTextNode(name)];
-}
-
 
 // The interaction TYPE of a postal message, parsed from its leading intent token → a small chip on the
 // card head, shown in both the compact and expanded views (the user 2026-06-16). There are THREE
@@ -5423,7 +5415,7 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   // awaiting fold names a peer (bg-await-peer): no chip box, no fill, in either theme. The identity colour rides --peer-bg
   // and the sheet inks the text from it (a relative colour: the cream theme deepens it to read on the card's ground).
   const peer = el("span", "notice-src-end notice-src-peer");
-  peer.append(...peerNameNodes(ev.peer, ev.peerHost));   // the host prefix muted, as the tab wears it
+  peer.append(...hostPartsNodes(ev.peerHost, ev.peer));   // the host prefix muted, as the tab wears it (the one helper)
   peer.dataset.name = ev.peer;                            // the bare name the working set is keyed by (refreshPostalDots)
   if (ev.color) peer.style.setProperty("--peer-bg", ev.color.bg);
   makeSessionChip(peer, ev.peer);

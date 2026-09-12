@@ -114,14 +114,15 @@ test("both ends wear their sessions' colours as bold names, no chip (T390); a na
   assert.match(CARD, /ev\.direction === "in" \? " to " : " from "/);
   // the two ends: the name itself, bold, in the identity colour; the peer's host prefix muted as the tab wears it, the own
   // end's through hostNameNodes; no chip class, no --peer-fg (nothing is filled that the fg would read on)
-  assert.match(CARD, /const peer = el\("span", "notice-src-end notice-src-peer"\);\s*\n\s*peer\.append\(\.\.\.peerNameNodes\(ev\.peer, ev\.peerHost\)\);/);
+  assert.match(CARD, /const peer = el\("span", "notice-src-end notice-src-peer"\);\s*\n\s*peer\.append\(\.\.\.hostPartsNodes\(ev\.peerHost, ev\.peer\)\);/);
   assert.match(CARD, /const self = el\("span", "notice-src-end notice-src-self"\);/);
   assert.match(CARD, /nm\.append\(\.\.\.hostNameNodes\(own\.name, ownId\)\);/, "the host label muted, as the tab wears it");
   assert.match(CARD, /if \(own\.color\) self\.style\.setProperty\("--peer-bg", own\.color\.bg\);/);
   assert.doesNotMatch(CARD, /notice-src-chip|--peer-fg/, "no chip class and no chip foreground on either end");
   assert.doesNotMatch(RENDER, /notice-src-chip/, "the chip class is gone from the file");
-  assert.match(CSS, /\.notice-src-end \{ letter-spacing: 0\.02em; text-transform: none; font-weight: 700;\s*\n\s*color: oklch\(from var\(--peer-bg, var\(--fg\)\) var\(--peer-ink-l, l\) c h\); \}/, "bold, inked from the identity colour at the theme's lightness; no background, padding or radius");
-  assert.match(CSS, /--peer-ink-l: l;/, "the dark theme inks the colour as it is");
+  assert.match(CSS, /\.notice-src-end \{ letter-spacing: 0\.02em; text-transform: none; font-weight: 700;\s*\n\s*color: var\(--peer-bg, var\(--fg\)\);[^\n]*\n\s*color: oklch\(from var\(--peer-bg, var\(--fg\)\) var\(--peer-ink-l, l\) c h\); \}/,
+    "bold, inked from the identity colour at the theme's lightness, the colour itself first for an engine without relative colours; no background, padding or radius");
+  assert.match(CSS, /--peer-ink-l: max\(l, 0\.72\);/, "the dark theme inks the colour at its own lightness, lifted to the palette sweep's floor (T390 fold)");
   assert.match(CSS, /--peer-ink-l: 0\.46;/, "the cream theme deepens it on its own hue");
   assert.match(CSS, /@container \(max-width: 520px\) \{\n  \.turn-postal-service \.notice-src-self \{ display: inline-block; width: 10px; height: 10px; padding: 0; border-radius: 50%; align-self: center; overflow: hidden;\s*\n\s*background: var\(--peer-bg, var\(--overlay-10\)\); \}/, "the collapsed own end is the one filled dot");
   assert.match(CSS, /\.turn-postal-service \.notice-src-self \.notice-src-name \{ display: none; \}/);
