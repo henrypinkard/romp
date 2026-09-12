@@ -1,14 +1,12 @@
 // The glossary's client half (T351 stage 2, the user 2026-09-11): the team's coinages, linked where they are written.
 // The kernel ships one INDEX per session (glossary-frame: the author's group file, parsed and bounded by bytes); this
 // module builds the matcher from it and links every whole-word occurrence of a term or its `also` forms (plurals
-// too) in the prose of a message, skipping code, links, headings, math, and the popover cards. The term card is
-// filled from the same index with no fetch (termContent, the file preview popover's contract). Pure: no DOM writes
-// beyond what the caller hands in through `make`. Two limits, by design: a term split across text nodes by an inline
+// too) in the prose of a message, skipping code, links, headings, math, and the popover cards. A linked term is a
+// path link to the glossary file's section (the caller's `make` sets the path, the slug and the preview kind), so the
+// ordinary file-link hover and click serve it; no card of its own (T375). Pure: no DOM writes beyond `make`. Two limits, by design: a term split across text nodes by an inline
 // element (`fo*ld*`, a link inside the words) is not matched, since each text node is scanned alone; and a term inside
 // a path-shaped or host-shaped token (docs/widget/x.md, example.com/y) is never linked, so a path a session named but
 // the kernel could not verify is not split by an underline (the review's medium).
-import type { PreviewContent } from "./file-preview";
-
 export type GlossaryLink = "all" | "first" | "off";
 export interface GlossaryEntry {
   term: string; slug: string; definition: string; plainWords: string; also: string[]; scope: string;
@@ -153,24 +151,4 @@ export function linkifyTerms(root: ParentNode, m: TermMatcher, make: (e: Glossar
     count += spans.length;
   }
   return count;
-}
-
-/** The term card, in the file preview popover's contract: the term, its status and registration as the subtitle,
- *  the definition and the plain words as the body, "Open glossary" landing the viewer on the term's heading. A
- *  retired term says so first. */
-export function termContent(e: GlossaryEntry, ix: GlossaryIndex): PreviewContent {
-  const reg = e.registered && (e.registered.date || e.registered.by)
-    ? " · registered " + [e.registered.date, e.registered.by ? "by " + e.registered.by : ""].filter(Boolean).join(" ") : "";
-  const retired = e.status === "retired";
-  const body = (retired ? "*Retired: say the plain phrase.*\n\n" : "") + (e.definition || "")
-    + (e.plainWords ? "\n\n*plain words:* " + e.plainWords : "")
-    + (e.scope ? "\n\n*scope:* " + e.scope : "");
-  // the index's cuts, each named for what cut it (the review's low: a heading-ceiling cut was blamed on the byte cap)
-  const notes: string[] = [];
-  if (ix.cutBytes) notes.push(ix.cutBytes + " entries beyond the index's byte cap are not linked");
-  if (ix.cutHeadings) notes.push(ix.cutHeadings + " sections past the heading ceiling are not linked");
-  if (!notes.length && ix.truncated) notes.push(ix.truncated + " entries are not linked (the index was cut)");   // an older kernel: the sum alone
-  return { kind: "term", title: e.term, subtitle: (e.status || "unconfirmed") + reg + " · " + ix.group,
-           body: { markdown: body }, note: notes.length ? notes.join("; ") : undefined,
-           open: { label: "Open glossary", path: ix.path, frag: e.slug } };
 }

@@ -74,7 +74,7 @@ import { viewerPathGate } from "./file-view-links";       // the viewer's code-a
 import { isMarkdownUrl } from "./md-links";
 import { openPathLink, linkifyPathTokens, selectionOpenIn, type PathLinkOptions } from "./path-links";   // the path matcher the chat's links are made from (a shared module)
 import { PREVIEW_DWELL_MS, PREVIEW_GRACE_MS, HoverIntent, parsePreviewLink, previewKindOf, sliceUrl, contentFor, textOnlyContent, stripRemoteLoads, type PreviewContent } from "./file-preview";
-import { buildMatcher, linkifyTerms, termContent, type GlossaryIndex, type GlossaryEntry, type TermMatcher } from "./glossary-links";   // the team's coinages, linked where written (T351 stage 2)   // the file preview popover's pure half (T351)
+import { buildMatcher, linkifyTerms, type GlossaryIndex, type TermMatcher } from "./glossary-links";   // the team's coinages, linked where written (T351 stage 2)   // the file preview popover's pure half (T351)
 import { initFileBrowse, openFileBrowse } from "./file-browse";   // the browser is pane-local here now (the user 2026-08-24)
 import { pastedFilePath } from "./paste-path";
 import { insertAtCaret } from "./composer-insert";
@@ -2215,10 +2215,11 @@ function absorbFragment(link: HTMLElement): void {
 // ── the GLOSSARY (T351 stage 2, the user 2026-09-11): the team's coinages, linked where they are written ──────────
 // The kernel ships one index per session (its author group's glossary file, parsed and byte-bounded) on its own frame;
 // the matcher is compiled once per index and every message's prose is linked at render time (glossary-links.ts). A
-// term wears a quiet dotted underline in the text colour (.term-link); its card rides the file preview popover with no
-// fetch (termContent), and a click opens the glossary file in the viewer at the term's heading. Surfaces: assistant and
-// user text and mail bodies in the chat; never tool heads, the composer or the timeline. The DRESS (design A, the
-// underline and hover card, or design B, a marker and click popover) is the user's pick; the mechanics are the same.
+// term is a LINK to the glossary file's section and nothing more (T375, the user 2026-09-12): it wears the ordinary link
+// dress (.term-link: the link colour, a solid underline, the pointer), its hover rides the ordinary file-link preview
+// (the glossary path with the term's slug as the section, fetched through the slice route and rendered like any file
+// section), and a click opens the glossary file in the viewer at the term's heading. Surfaces: assistant and user text
+// and mail bodies in the chat; never tool heads, the composer or the timeline.
 const glossaries = new Map<string, GlossaryIndex>();        // by session id: the frame's index
 const termMatchers = new Map<string, TermMatcher | null>();  // compiled once per index (dropped when the frame changes)
 function termMatcherFor(sid: string | null): TermMatcher | null {
@@ -2244,9 +2245,9 @@ function linkTerms(root: HTMLElement, sid: string | null = renderingSid): number
     s.textContent = text;
     s.dataset.term = e.slug; s.dataset.gsid = sid || "";
     s.dataset.path = m.index.path; s.dataset.frag = e.slug;
-    s.title = e.plainWords ? e.term + ": " + e.plainWords : e.term;
+    s.dataset.preview = "markdown";   // the kind, from the index: the kernel parsed this file as the group's glossary (T375)
     s.tabIndex = 0;
-    armFilePreview(s);   // the hover card (the popover's dwell and grace), filled from the index without a fetch
+    armFilePreview(s);   // the ordinary file-link hover: the section at the term's heading, through the slice route (no title: one mechanism)
     return s;
   });
 }
@@ -2342,12 +2343,6 @@ function renderFilePreview(p: HTMLElement, c: PreviewContent, sid: string | null
   const head = el("div", "fp-head");
   const title = el("span", "fp-title"); title.textContent = c.title; title.title = c.title; head.appendChild(title);
   if (c.subtitle) { const s = el("span", "fp-sub"); s.textContent = c.subtitle; head.appendChild(s); }
-  if (c.open) {
-    const b = el("button", "fp-open") as HTMLButtonElement; b.type = "button"; b.textContent = c.open.label; b.title = "the whole file, in the viewer";
-    const { path, frag } = c.open;
-    b.addEventListener("click", (e) => { e.stopPropagation(); filePreviewIntent.cancel(); openPath(path, sid, e, frag || null); });
-    head.appendChild(b);
-  }
   p.appendChild(head);
   if (c.note) { const n = el("div", "fp-note"); n.textContent = c.note; p.appendChild(n); }
   const body = el("div", "fp-body fp-" + c.kind);
@@ -2386,23 +2381,6 @@ function previewMdClean(src: string): HTMLElement {
 function showFilePreview(a: HTMLElement): void {
   const open = a.dataset.path || "";
   if (!open) return;
-  if (a.dataset.term) {   // a glossary term (T351 stage 2): the card is filled from the session's index, no request
-    const ix = glossaries.get(a.dataset.gsid || "");
-    const e = ix ? ix.terms.find((x) => x.slug === a.dataset.term) : undefined;
-    if (!ix || !e) return;
-    const p = ensureFilePreview();
-    placeFilePreview(p, a);
-    p.style.display = "";
-    watchFilePreviewAnchor(a);
-    ++filePreviewSeq;
-    renderFilePreview(p, termContent(e, ix), a.dataset.gsid || activeId);
-    // a term card is a few lines: it keeps the file card's width cap but sizes its height to its content (the pane
-    // fraction stays the ceiling), so it never sits mostly empty
-    p.style.maxHeight = p.style.height; p.style.height = "auto";
-    p.style.width = Math.min(parseFloat(p.style.width) || 520, 520) + "px";
-    p.dataset.renderMs = "0"; delete p.dataset.sliceHit;
-    return;
-  }
   const sid = activeId;                          // the kernel resolves a relative path against it and confines by its folder
   const parsed = parsePreviewLink(open);
   const path = parsed.path, anchor = a.dataset.frag || parsed.anchor;   // the section: the absorbed #slug, else one inside a file:// URI
