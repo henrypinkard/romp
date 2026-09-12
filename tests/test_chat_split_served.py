@@ -708,13 +708,13 @@ class ServedChatSplit(unittest.TestCase):
         self.assertTrue(o["done"], "the observer saw B's transcript painted in column 2: %r" % o)
         self.assertGreaterEqual(s["statusDelta"], BOARD - 1,
                                 "a status frame per other tab on column 2's own socket: the column was served as a skeleton client, not whole: %r" % s)
-        # the diet's fingerprint on column 2's own socket: B's full, never the board (eight per push before 2026-09-11). A
-        # SECOND full for B is not excluded: on a slow runner the page's restore of its wanted tab can run between the strip
-        # and the full of the same burst and ask for B's frame, and the kernel answers (the asks ride col2Asks in the record);
-        # wasteful, not wrong, and not a quantity the paint instant settles, so the bound is two and well under the board
-        self.assertGreaterEqual(s["fullChatDelta"], 1, "B's full reached column 2 by the paint: %r" % s)
-        self.assertLessEqual(s["fullChatDelta"], 2, "at most B's full and one re-ask, never the board: %r" % s)
-        self.assertLess(s["fullChatDelta"], BOARD - 1, "never the board: %r" % s)
+        # the diet's fingerprint on column 2's own socket: B's full, exactly once, never the board (eight per push before
+        # 2026-09-11). The second full a slow runner carried (the bound was two for a day, 2026-09-12) was never the page
+        # asking again: it was the kernel's pusher, still in the per-session loop of the cycle the handshake woke when the
+        # ready arm popped the column's set and re-armed `reconnect`, sending a full for a tab the column does not hold
+        # (reproduced at the wire: up to six per open, none of them B's, and no ask). _send_chat_or_status withholds while
+        # the flag is armed and the reset re-arms under its lock (tests/test_chat_skeleton_reconnect.py test_11_d): one again
+        self.assertEqual(s["fullChatDelta"], 1, "exactly one full per open, B's: never the board (eight per push before 2026-09-11), never another tab's from a pusher iteration in the ready arm's gap (2026-09-12), no prefetch (the column's one member is on screen): %r" % s)
         self.assertEqual(s["col2Asks"], [], "the column asked for nothing: a status delivered ahead of its strip is held for the strip, never the no-base ask that loaded the board behind the view, one ask per withheld tab (2026-09-11): %r" % s)
         # the copy between the call and the paint: the pane loader, never the create flow's words or the no-sessions copy
         self.assertEqual(o["emptyState"], 0, "no 'No session open' / no-sessions copy in a column opened on a session: %r" % o)

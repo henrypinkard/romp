@@ -571,6 +571,68 @@ class SkeletonReconnect(unittest.TestCase):
         finally:
             km._PENDING_REVEAL[0] = None
 
+    def test_11_d_a_pusher_iteration_landing_in_the_ready_arms_gap_sends_no_full(self):
+        # THE SECOND FULL ON A NEW COLUMN'S SOCKET (a slow runner, 2026-09-12; reproduced at the wire: 18 of 27 opens carried
+        # full frames for sessions the column does not hold, up to six per open, and the page asked for none). The pusher
+        # cycle the handshake woke is still in its per-session loop when the ready arm runs. The arm's reset pops the set
+        # and `reconnect`, the survivor re-arms `reconnect`, and the arm's connect push rebuilds the set only at its own
+        # _resolve_reconnect, past a liveness sweep and the tab list. In that gap the client had no set and no
+        # `skeletonOnReady`, and _send_chat_or_status read nothing else: every session the pusher's loop visited fell
+        # through to _send_chat_locked, a full for a tab the column holds as a skeleton, an echat entry, and the arm's
+        # strip dropped the sid from its skeleton list as held whole. The guard reads `reconnect` too now (a client with
+        # the flag armed has no set yet; the strip sender that pops it sends the active tab's full itself), and the reset
+        # pops the survivor and re-arms under its own lock, so no instant exists with neither flag set.
+        def in_the_gap(cl, sid):
+            """The pusher's per-session iteration for `sid`, landing on the handler thread's _push_one: the instant after
+            the arm's reset and re-arm, before its push's _resolve_reconnect."""
+            self.assertNotIn("skeleton", cl, "the reset popped the set")
+            self.assertNotIn("skeletonOnReady", cl, "…and the survivor")
+            self.assertIs(cl.get("reconnect"), True, "…and re-armed the flag for the connect push")
+            m = json.loads(json.dumps(self.SESS[sid]))
+            km._send_chat_or_status(cl, m, None, len(m["events"]), False)
+        # 1. the loop reaches a session the column does NOT hold (the wire shape: every extra full was another tab's)
+        c = self._client(active=S1, reconnect=True, skeletonOnReady=True)
+        km._push([c])                                 # the pre-ready cycle: the set, the strip, a status per other tab
+        self.assertEqual(self._sessions(c), [])
+        c["_frames"].clear()
+        h = _Self(lambda cl: (in_the_gap(cl, S2), km._push([cl], connect=True)))
+        with contextlib.redirect_stderr(io.StringIO()):
+            km.Handler._dispatch_ws(h, {"type": "ready"}, c)
+        self.assertEqual(h.calls, [c])
+        self.assertEqual(self._sessions(c), [S1, S4], "the one full (+ the transcript-less): the pusher's iteration for S2 in the gap sent none")
+        self.assertEqual(sorted(s for s, _ in self._statuses(c)), sorted([S2, S3]), "S2 is a status, as every other tab")
+        to = self._tab_orders(c)
+        self.assertEqual(len(to), 1)
+        self.assertEqual(to[0]["skeleton"], [S3, S2], "S2 is still on the strip's skeleton list: no full won a race against the set")
+        self.assertEqual(c["skeleton"], {S2, S3})
+        self.assertEqual(sorted(c["echat"]), sorted([S1, S4]), "believed held: the active tab and the transcript-less, nothing else")
+        types = [f["type"] for f in c["_frames"]]
+        self.assertLess(types.index("tabOrder"), types.index("session"), "the strip is ahead of every full: the set's invariant")
+        # 2. the loop reaches the ACTIVE session in the gap: its full crosses once, from the arm's push, behind the strip
+        c = self._client(active=S1, reconnect=True, skeletonOnReady=True)
+        km._push([c])
+        c["_frames"].clear()
+        h = _Self(lambda cl: (in_the_gap(cl, S1), km._push([cl], connect=True)))
+        with contextlib.redirect_stderr(io.StringIO()):
+            km.Handler._dispatch_ws(h, {"type": "ready"}, c)
+        self.assertEqual([f["type"] for f in c["_frames"] if f.get("id") == S1 and f["type"] in ("session", "chatTail")], ["session"],
+                         "one full for the active tab and no tail behind it: the iteration in the gap neither sent it nor left a base")
+        self.assertEqual(self._sessions(c), [S1, S4])
+        self.assertEqual(self._tab_orders(c)[0]["skeleton"], [S3, S2])
+        types = [f["type"] for f in c["_frames"]]
+        self.assertLess(types.index("tabOrder"), types.index("session"))
+        # the source: the iteration reads `reconnect` beside `skeletonOnReady`; the reset re-arms under its lock, right
+        # behind the pop, and the arm no longer pops or re-arms on its own (two statements outside the lock were the instant)
+        so = inspect.getsource(km._send_chat_or_status)
+        self.assertIn('if c.get("skeletonOnReady") or c.get("reconnect"):', so)
+        rs = inspect.getsource(km._client_reset_chat_base)
+        self.assertLess(rs.index("with _client_lock(client):"), rs.index('client.pop("reconnect", None)'))
+        self.assertLess(rs.index('client.pop("reconnect", None)'),
+                        rs.index('if client.pop("skeletonOnReady", False):\n            client["reconnect"] = True'))
+        arm = inspect.getsource(km.Handler)
+        body = arm[arm.index('msg.get("type") == "ready"'):][:3500]
+        self.assertNotIn('client.pop("skeletonOnReady"', body)
+
     def test_11_c_a_later_columns_redial_is_stamped_by_its_first_strip_and_lands_a_parked_reveal(self):
         # The shim reads skeleton=1 off the address on EVERY dial of a later column, so its redial after a kernel restart
         # or a laptop sleep carries reconnect=1 AND skeleton=1. Armed with `skeletonOnReady`, that client was never stamped:
