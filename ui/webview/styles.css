@@ -702,6 +702,14 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    flyout to 585 px, past narrow windows; the note is gone, the cap stays for a long login label), the label truncating
    inside the item instead of stretching it; the check mark sits in the item's padding, unclipped */
 .ctx-sub-billing, .ctx-sub-default { max-width: 22em; }
+/* the nested level is the flyout's size, not 0.92 of it again (the T387 review measured 11.0 px against 10.1 px: .ctx-menu's
+   0.92em compounds at every nesting, the em rule ui/CLAUDE.md names; the 22em cap follows the size, so it matches too) */
+.ctx-sub-default { font-size: 1em; }
+/* the Set default billing row opens a submenu, so its caret lines up with the Billing and Tags carets: no check-mark
+   room on its right (the .ctx-sub .ctx-item 26px is for the entries that can wear the check) */
+/* four classes: it must OUTRANK .ctx-sub .ctx-item's 26px below (equal specificity lost to the later rule: the fold's served
+   lab measured 26 against 10; the repo's cascade rule, pin the tiebreak) */
+.ctx-sub.ctx-sub-billing > .ctx-item.ctx-item-setdefault { padding-right: 10px; }
 .ctx-sub-billing .ctx-item, .ctx-sub-default .ctx-item { overflow: hidden; text-overflow: ellipsis; }
 .ctx-item-toggle { display: flex; align-items: flex-start; gap: 8px; }
 /* ON = the romp accent blue, matching the timeline lane's feed/mail icons (the user 2026-06-26); OFF = dim

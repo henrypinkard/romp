@@ -97,7 +97,12 @@ const readFly = () => page.evaluate(() => {
   const rowEl = document.querySelector(".ctx-menu .ctx-item-billing"); const rr = rowEl ? rect(rowEl) : null;
   return { lines, choices, sep: kids.some((k) => k.classList.contains("ctx-sep")), subLines: fly.querySelectorAll(".ctx-item-sub").length,
     heads: fly.querySelectorAll(".ctx-sub-head").length, radios: fly.querySelectorAll(".ctx-radio").length,
-    entry: entry ? { label: entry.querySelector(".ctx-item-label").textContent, caret: (entry.querySelector(".ctx-caret") || {}).textContent || "", rect: rect(entry) } : null,
+    entry: entry ? { label: entry.querySelector(".ctx-item-label").textContent, caret: (entry.querySelector(".ctx-caret") || {}).textContent || "", rect: rect(entry),
+                     caretInset: entry.querySelector(".ctx-caret") ? rect(entry).right - rect(entry.querySelector(".ctx-caret")).right : null } : null,
+    rowCaretInset: (rowEl && rowEl.querySelector(".ctx-caret")) ? rect(rowEl).right - rect(rowEl.querySelector(".ctx-caret")).right : null,
+    fontPx: { menu: rowEl ? parseFloat(getComputedStyle(rowEl).fontSize) : null,
+              fly: kids.filter((k) => k.classList.contains("ctx-item")).length ? parseFloat(getComputedStyle(kids.filter((k) => k.classList.contains("ctx-item"))[0]).fontSize) : null,
+              sub: (d && d.querySelector(".ctx-item")) ? parseFloat(getComputedStyle(d.querySelector(".ctx-item")).fontSize) : null },
     sub: d ? { items: readSub(d), rect: rect(d), inside: d.parentElement === fly } : null,
     rect: rect(fly), subLine: row ? row.textContent : null, rowRect: rr, viewport: window.innerWidth, viewportH: window.innerHeight };
 });
@@ -374,6 +379,17 @@ class ServedBillingFlyout(unittest.TestCase):
                         "placed beside (or below, or above) its entry, never over it" + table)
         self.assertLessEqual(abs(sr["top"] - er["top"]), 2, "beside: its top aligned to the entry's row" + table)
 
+    def test_the_nested_submenu_keeps_the_flyouts_row_size_and_its_entrys_caret_lines_up_with_the_billing_rows(self):
+        """Round one: .ctx-menu's 0.92em compounded at the third level (11.0 px against 10.1 px), and the entry's caret sat about
+        16 px further in than the Billing and Tags carets (the check-mark room). Measured, never read."""
+        f = self._run()["withSub"]
+        table = "\n  " + json.dumps(f["fontPx"]) + " " + json.dumps({"entry": f["entry"]["caretInset"], "row": f["rowCaretInset"]})
+        self.assertIsNotNone(f["sub"], "the submenu was read")
+        self.assertAlmostEqual(f["fontPx"]["sub"], f["fontPx"]["fly"], delta=0.05, msg="the nested level's rows are the flyout's size" + table)
+        self.assertLess(f["fontPx"]["fly"], f["fontPx"]["menu"], "the flyout is a menu inside a menu (0.92em once), as on main" + table)
+        self.assertIsNotNone(f["entry"]["caretInset"]); self.assertIsNotNone(f["rowCaretInset"])
+        self.assertAlmostEqual(f["entry"]["caretInset"], f["rowCaretInset"], delta=1, msg="the Set default billing caret sits where the Billing row's does" + table)
+
     def test_a_default_pick_in_the_submenu_writes_the_seed_touches_no_session_and_marks_itself_with_automatic_behind_a_rule(self):
         r = self._run()
         self.assertTrue(r["pick"]["found"] and not r["pick"]["disabled"], json.dumps(r["pick"]))
@@ -459,6 +475,9 @@ class ServedBillingFlyoutOneSide(ServedBillingFlyout):
     def test_the_entry_opens_a_nested_submenu_by_hover_holding_the_same_entries_none_marked_while_automatic(self):
         r = self._run()
         self.assertFalse(r["subOpen"]["found"], "no entry, so nothing to open: " + json.dumps(r["subOpen"]))
+
+    def test_the_nested_submenu_keeps_the_flyouts_row_size_and_its_entrys_caret_lines_up_with_the_billing_rows(self):
+        self.assertIsNone(self._run()["withSub"]["entry"], "one billing to choose from: no entry, so nothing to measure")
 
     def test_a_default_pick_in_the_submenu_writes_the_seed_touches_no_session_and_marks_itself_with_automatic_behind_a_rule(self):
         r = self._run()

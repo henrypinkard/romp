@@ -114,7 +114,7 @@ test("the Set default billing entry opens a nested submenu INSIDE the flyout hol
 });
 
 test("an explicit default is check-marked in the nested submenu, and Automatic sits at the END behind its own rule; the marked entry posts nothing, Automatic posts auto", () => {
-  const { sub, posted } = lift({ login: true, key: true, default: "login", defaultExplicit: true }, "", "");
+  const { sub, posted, dismissed } = lift({ login: true, key: true, default: "login", defaultExplicit: true }, "", "");
   sub.children[3].fire("click");
   const d = sub.querySelector(".ctx-sub-default")!;
   assert.deepEqual(lines(d), ["Login", "API key", "---", "Automatic"]);
@@ -122,6 +122,7 @@ test("an explicit default is check-marked in the nested submenu, and Automatic s
   assert.equal(subLines(d), 0, "Automatic carries no sub-line either");
   d.children[0].fire("click");
   assert.deepEqual(posted, [], "the current default posts nothing");
+  assert.equal(dismissed.length, 1, "…and dismisses the menu, as the picks list does on its current entry (review)");
   d.children[3].fire("click");
   assert.deepEqual(posted, [{ type: "setAuth", id: "11111111-2222-3333-4444-555555555555", value: "auto", scope: "machine" }], "Automatic clears the explicit default (the helper rule again)");
 });
@@ -140,13 +141,22 @@ test("an older kernel that does not say whether the default is explicit shows no
   assert.equal(sub.querySelectorAll(".ctx-item-setdefault").length, 0);
 });
 
-test("the session's own pick list is unchanged: the current pick marked, a click posts an unscoped setAuth, a disabled entry posts nothing", () => {
-  const { sub, posted } = lift({ login: false, loginWhy: "no Claude login signed in on this machine", key: true, default: "key", defaultExplicit: false }, "key", "");
+test("the session's own pick list is unchanged: the current pick marked, a disabled entry posts nothing, the current pick dismisses and posts nothing", () => {
+  const { sub, posted, dismissed } = lift({ login: false, loginWhy: "no Claude login signed in on this machine", key: true, default: "key", defaultExplicit: false }, "key", "");
   assert.deepEqual(sub.children.map((c) => has(c, "current")), [false, true]);
   sub.children[0].fire("click");
   assert.deepEqual(posted, []);
+  assert.equal(dismissed.length, 0, "a disabled entry leaves the menu up");
   sub.children[1].fire("click");
   assert.deepEqual(posted, [], "the current pick posts nothing");
+  assert.equal(dismissed.length, 1, "…and dismisses");
+});
+
+test("an available, non-current pick posts the per-session setAuth with NO scope key, and dismisses", () => {
+  const { sub, posted, dismissed } = lift(BOTH, "key", "user@example.com");
+  sub.children[0].fire("click");
+  assert.deepEqual(posted, [{ type: "setAuth", id: "11111111-2222-3333-4444-555555555555", value: "login" }], "the session switcher: id and value, no scope");
+  assert.equal(dismissed.length, 1);
 });
 
 test("source: ONE entry-list function feeds both menus, both flyouts ride wireFlyout and the shared placement rule", () => {
@@ -168,4 +178,17 @@ test("styles: the head and note rules are gone; both flyouts keep a menu's width
   assert.doesNotMatch(CSS, /\.ctx-sub-head/, "no group head any more");
   assert.match(CSS, /^\.ctx-sub-billing, \.ctx-sub-default \{ max-width: 22em; \}/m);
   assert.match(CSS, /^\.ctx-sub-billing \.ctx-item, \.ctx-sub-default \.ctx-item \{ overflow: hidden; text-overflow: ellipsis; \}/m);
+  // the review: the nested level keeps the flyout's row size (0.92em compounded once more before), and the entry's caret lines
+  // up with the Billing and Tags carets (no check-mark room on a row that opens a submenu)
+  assert.match(CSS, /^\.ctx-sub-default \{ font-size: 1em; \}/m);
+  assert.match(CSS, /^\.ctx-sub\.ctx-sub-billing > \.ctx-item\.ctx-item-setdefault \{ padding-right: 10px; \}/m);
+  // the tiebreak, computed (the lightbox bar's lesson): the caret rule must outrank the generic .ctx-sub .ctx-item padding, which
+  // comes later in the sheet and would win a tie
+  const spec = (sel: string): [number, number, number] => [(sel.match(/#[\w-]+/g) || []).length, (sel.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+(\([^)]*\))?/g) || []).length,
+    (sel.replace(/#[\w-]+|\.[\w-]+|\[[^\]]+\]|::?[\w-]+(\([^)]*\))?/g, " ").match(/(^|\s)[a-zA-Z][\w-]*/g) || []).length];
+  const wins = (a: number[], b: number[]) => a[0] !== b[0] ? a[0] > b[0] : a[1] !== b[1] ? a[1] > b[1] : a[2] > b[2];
+  const caretRule = (CSS.match(/^([^{}\n]*ctx-item-setdefault[^{}\n]*)\{ padding-right: 10px; \}/m) || [])[1];
+  const genericRule = (CSS.match(/^([^{}\n]*)\{ padding-right: 26px; position: relative; \}/m) || [])[1];
+  assert.ok(caretRule && genericRule, "both padding rules found");
+  assert.ok(wins(spec(caretRule.trim()), spec(genericRule.trim())), "the caret rule outranks the generic submenu padding: " + caretRule + " vs " + genericRule);
 });

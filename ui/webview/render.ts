@@ -7434,9 +7434,10 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
             const cur = explicit && avail.default === c.value;   // the check sits on the EXPLICIT default only; automatic marks nothing
             const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
             opt.textContent = c.label;
-            opt.dataset.scope = "machine";
+            opt.dataset.scope = "machine";   // a MARKER for the labs and the sheet, never read for the wire: post() carries the scope
             if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
-            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (c.why || cur) return; post(c.value); });
+            // the picks list one level up dismisses on its current entry too (review): the same gesture, the same answer, nothing posted
+            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (c.why) return; if (cur) { dismissTabMenu(); return; } post(c.value); });
             d.appendChild(opt);
           }
           if (explicit) {
@@ -7446,7 +7447,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
             d.appendChild(el("div", "ctx-sep"));
             const auto = el("div", "ctx-item ctx-item-auto");
             auto.textContent = "Automatic";
-            auto.dataset.scope = "machine";
+            auto.dataset.scope = "machine";   // the marker again
             auto.addEventListener("click", (ev2) => { ev2.stopPropagation(); post("auto"); });
             d.appendChild(auto);
           }
