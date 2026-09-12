@@ -3,13 +3,17 @@
 set -euo pipefail; umask 077
 VAULT="${1:?usage: $0 <1password-vault> <label> [--check]}"; LABEL="${2:?usage: $0 <1password-vault> <label> [--check]}"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
-CLAUDE_CONFIG_DIR="$work/claude" claude setup-token </dev/tty 2>/dev/tty | tee "$work/out" | awk '{ gsub(/sk-ant-oat01-[A-Za-z0-9_-]+/, "<token captured>"); print; fflush() }'
+# 1. sign in to the second account under a scratch configuration and mint the token; the token is masked on screen
+CLAUDE_CONFIG_DIR="$work/claude" claude setup-token | tee "$work/out" | awk '{ gsub(/sk-ant-oat01-[A-Za-z0-9_-]+/, "<token captured>"); print; fflush() }'
 grep -o 'sk-ant-oat01-[A-Za-z0-9_-]*' "$work/out" | head -1 > "$work/token" || true
 [ -s "$work/token" ] || { echo "no token was printed" >&2; exit 1; }
+# 2. store it in 1Password as an API Credential item named after the label
 printf '{"title":"%s","category":"API_CREDENTIAL","fields":[{"id":"credential","type":"CONCEALED","label":"credential","value":"%s"}]}' "$LABEL" "$(cat "$work/token")" > "$work/item.json"
 op item create --vault "$VAULT" --template "$work/item.json" >/dev/null
+# 3. tell romp about the login (needs the stored-logins change deployed)
 romp login add "$LABEL" --op "op://$VAULT/$LABEL/credential"
 [ "${3:-}" = "--check" ] || exit 0
+# --check: Claude Code must accept the stored token through a helper (every other credential removed) and refuse a junk helper
 printf '#!/bin/sh\nexec op read --no-newline "op://%s/%s/credential"\n' "$VAULT" "$LABEL" > "$work/helper"; printf '#!/bin/sh\necho not-a-real-credential\n' > "$work/junk"; chmod 700 "$work/helper" "$work/junk"
 ask() { printf '{"apiKeyHelper":"%s"}' "$1" > "$work/settings.json"; env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN claude -p 'Reply with the single word ok and nothing else.' --settings "$work/settings.json"; }
 ask "$work/helper" 2>/dev/null | grep -qi ok || { echo "check failed: the stored token was not accepted" >&2; exit 1; }

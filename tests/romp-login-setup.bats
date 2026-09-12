@@ -4,8 +4,8 @@
 # mints a setup-token, the token lands in 1Password through a template file, and the script registers the login
 # with romp itself. Under test with a stubbed `claude`, `op` and `romp` on PATH: the token must never appear on the
 # script's output, in any command's arguments, or in a file left behind; it must reach the store whole; each step
-# fails loudly. The script talks to the terminal (/dev/tty), which bats has none of, so every run gets a
-# pseudo-terminal from script(1); its output arrives with carriage returns, which the substring checks tolerate.
+# fails loudly. The script reads no terminal device (the CLI's stdin IS the terminal when run from one; a /dev/tty
+# redirect broke the Bun-built CLI on macOS, the user 2026-09-12), so bats runs it directly.
 #
 # Negative checks are counts, never a bare `! cmd` before another command, which bats cannot see fail (tests/test_bats_bare_negation.py).
 #
@@ -74,8 +74,8 @@ MOCK
 
 teardown() { rm -rf "$TEST_DIR"; }
 
-# a pseudo-terminal for the script's /dev/tty; script(1) hands back the child's exit status and merges its output
-run_setup() { run env SHELL=/bin/bash script -qec "$(printf '%q ' "$SCRIPT" "$@")" /dev/null </dev/null; }
+# run merges stdout and stderr into $output, so the no-token checks read everything the script said
+run_setup() { run "$SCRIPT" "$@" </dev/null; }
 
 assert_no_token_in_output() { [[ "$output" != *"$TOK"* ]] || { echo "the token reached the output"; return 1; }; }
 assert_no_token_in_args() {
