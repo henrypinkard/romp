@@ -1,4 +1,5 @@
 import { marked } from "marked";
+import { ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -9325,7 +9326,10 @@ function applyForkSpots(sid: string, v: View): void {
     row.dataset.cut = cut;
     const fk = el("button", "msg-fork") as HTMLButtonElement;
     fk.type = "button";
-    fk.textContent = "fork";
+    // the fork glyph beside the word (T381, the user 2026-09-12: a line from the left branching into two that run
+    // on to the right), the word kept, and Fork in the accessible name; a literal glyph, no sanitize
+    fk.innerHTML = ICON_FORK + '<span class="msg-fork-word">fork</span>';
+    fk.setAttribute("aria-label", "Fork");
     fk.dataset.act = "forkspot";   // delegated (click-safe): the transcript rebuilds on every push
     fk.title = cut
       ? "Fork the session from just below this response — a new parallel session carries the conversation to here; this one is untouched"

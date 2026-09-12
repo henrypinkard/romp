@@ -39,6 +39,18 @@ test("the fork button sits INLINE, right of the worked-seconds label — never i
   assert.match(CSS, /\.turn-elapsed \.fork-spot \{ margin-top: 0; \}/);
   // the OLD home is gone: the prompt's msg-acts row no longer carries a fork (the user 2026-08-19)
   assert.doesNotMatch(RENDER, /acts\.appendChild\(fk\);/);
+  // the fork GLYPH beside the word, Fork in the accessible name (T381, the user 2026-09-12): the stroke family's
+  // drawing from icons.ts, a line in from the left branching into two that run on to the right, no arrowheads
+  assert.match(RENDER, /fk\.innerHTML = ICON_FORK \+ '<span class="msg-fork-word">fork<\/span>';/, "the glyph carried on the button, the word beside it");
+  assert.match(RENDER, /fk\.setAttribute\("aria-label", "Fork"\);/);
+  assert.match(RENDER, /import \{ ICON_FORK \} from "\.\/icons";/);
+  assert.doesNotMatch(RENDER, /fk\.textContent = "fork";/, "no bare word any more");
+  const ICONS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "icons.ts"), "utf8");
+  const fork = ICONS.slice(ICONS.indexOf("export const ICON_FORK"), ICONS.indexOf(";", ICONS.indexOf("export const ICON_FORK")));
+  assert.match(fork, /<polyline points="2 12 9 12 15 7 22 7"\/>/, "the trunk from the left edge to the fork point, then up-right to the right edge");
+  assert.match(fork, /<polyline points="9 12 15 17 22 17"\/>/, "…and the second branch down-right to the right edge");
+  assert.doesNotMatch(fork, /marker|arrow|#[0-9a-fA-F]{3,6}\b/, "no arrowheads, no raw hex: currentColor strokes in the shared family");
+  assert.match(CSS, /\.msg-fork \{ display: inline-flex; align-items: center; gap: 4px; \}/);
   // click-safe: the button is DELEGATED (data-act), landing in the shared modal with the spot's own cut
   assert.match(RENDER, /fk\.dataset\.act = "forkspot";/);
   assert.match(RENDER, /forkspot: \(elx\) => \{/);

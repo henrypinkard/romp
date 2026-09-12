@@ -1923,6 +1923,8 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 /* fork lives BELOW the response it branches from (the user 2026-08-19) — .fork-spot rides the run's
    LAST assistant turn (applyForkSpots), revealed by hovering that turn, left with the response column */
 .fork-spot { display: flex; margin-top: 3px; }
+.msg-fork { display: inline-flex; align-items: center; gap: 4px; }   /* the fork glyph beside the word (T381) */
+.msg-fork svg { display: block; width: 12px; height: 12px; }
 .turn-assistant:hover .msg-fork, .msg-fork:focus-visible { opacity: 0.9; }
 .msg-fork:hover { color: var(--fg); border-color: var(--accent); }   /* non-destructive: accent, never the rewind red */
 /* armed = one click from rolling back: destructive red, holds until blur/pointerleave/re-render */
