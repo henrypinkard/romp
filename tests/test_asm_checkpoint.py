@@ -694,6 +694,30 @@ class HydrationAttribution(Harness):
         other_walker()
         self.assertEqual(list(em.asm_checkpoint_stats()["hydratedBy"]), ["_atom_text<-other_walker"], "the first caller outside the shared readers")
 
+    def test_a_walk_from_inside_a_generator_expression_or_a_comprehension_names_the_enclosing_function(self):
+        """The 1e60c712 head went red on Python 3.10 and 3.11: a list comprehension there runs in its own frame (inlined from
+        3.12 on, PEP 709), and the attribution named `<listcomp>`. A generator expression keeps its own frame on every version,
+        so the first pin is red everywhere at that head; the comprehension pin is red on 3.10 and 3.11 and green above."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("scopes", records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        def restored_atoms():
+            self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+            em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+            return [a for t in tree["turns"] for a in t["atoms"]]
+        atoms = restored_atoms()
+        def genexpr_walker():
+            return sum(em.hydrate([a]) for a in atoms)
+        genexpr_walker()
+        self.assertEqual(list(em.asm_checkpoint_stats()["hydratedBy"]), ["genexpr_walker"], "%s" % em.asm_checkpoint_stats()["hydratedBy"])
+        atoms = restored_atoms()
+        def _atom_user_texts(a):                                # a shared reader reached from a comprehension inside a walker
+            return em.hydrate([a])
+        def listcomp_walker():
+            return [_atom_user_texts(a) for a in atoms]
+        listcomp_walker()
+        self.assertEqual(list(em.asm_checkpoint_stats()["hydratedBy"]), ["_atom_user_texts<-listcomp_walker"], "%s" % em.asm_checkpoint_stats()["hydratedBy"])
+
 
 class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
     """T384 (2026-09-12): after the planner stopped hydrating every pre-cut body, the next walkers paid for the same bodies (the

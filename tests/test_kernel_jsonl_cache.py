@@ -324,6 +324,15 @@ class WholeReadsByCaller(unittest.TestCase):
         finally:
             em.set_checkpoint_dir(None)
 
+    def test_a_whole_read_from_inside_a_generator_expression_names_the_enclosing_function(self):
+        """A generator expression's own frame is no caller: the row names the function around it (the same exposure the
+        hydration attribution had to a comprehension's frame before Python 3.12)."""
+        path = os.path.join(self.dir, "leaf.jsonl"); _write_jsonl(path, 10)
+        def genexpr_reader():
+            return sum(len(em._read_jsonl_incremental(p)) for p in [path])
+        self.assertEqual(genexpr_reader(), 10)
+        self.assertEqual(list(em.record_cache_stats()["wholeReads"]), ["zero<-genexpr_reader"], "%s" % em.record_cache_stats()["wholeReads"])
+
     def test_a_from_zero_read_is_named_for_its_caller_and_an_append_is_not(self):
         path = os.path.join(self.dir, "leaf.jsonl"); _write_jsonl(path, 20)
         size = os.path.getsize(path)

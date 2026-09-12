@@ -1629,6 +1629,14 @@ _WHOLE_READ_PASSTHROUGH = set()   # the CODE objects of the parse family every w
 #                                   object, never by name (round two, low 3: a local helper named like one of them was skipped)
 
 
+def _synthetic_scope(fr):
+    """A comprehension's, generator expression's or lambda's own frame (a code name in angle brackets other than the module's):
+    the attribution walks keep going to the enclosing function. Before Python 3.12 a list, set or dict comprehension runs in
+    its own frame (PEP 709 inlines them from 3.12 on); a generator expression and a lambda keep theirs on every version."""
+    n = fr.f_code.co_name
+    return n.startswith("<") and n != "<module>"
+
+
 def register_whole_read_passthrough(*fns):
     """Register functions the whole-read attribution walks past (the parse family a walker reaches the reader through)."""
     for fn in fns:
@@ -1760,8 +1768,9 @@ def _read_jsonl_entry_unlocked(path, on_fail=None, tail_ok=False, tail_from=None
             if kind in _WHOLE_READ_KINDS:                 # a whole read: counted by kind and caller on /perf (T384), always on; the
                 try:                                      #  frame walk runs only here, on the rare whole read, never on a tail or an
                     fr = sys._getframe(1)                 #  append
-                    while fr is not None and (fr.f_code.co_filename == __file__ or fr.f_code in _WHOLE_READ_PASSTHROUGH):
-                        fr = fr.f_back                    #  past this module and past the parse family, to the walker (review, low 1)
+                    while fr is not None and (fr.f_code.co_filename == __file__ or fr.f_code in _WHOLE_READ_PASSTHROUGH
+                                              or _synthetic_scope(fr)):   #  past this module, the parse family and any comprehension's
+                        fr = fr.f_back                    #  or generator expression's own frame, to the walker (review, low 1)
                     who = fr.f_code.co_name if fr is not None else "?"
                 except Exception:
                     who = "?"
@@ -5744,12 +5753,15 @@ def hydrate(atoms, rompuuid=None, by=None):
         return 0
     if by is None:
         try:
-            f = sys._getframe(1); by = f.f_code.co_name
+            f = sys._getframe(1)
+            while f is not None and _synthetic_scope(f):  # a comprehension's or generator expression's own frame is no caller
+                f = f.f_back
+            by = f.f_code.co_name if f is not None else "?"
             if by in _HYDRATE_TEXT_READERS:               # a text reader every walker shares says nothing about WHO walked: the
                 g = f.f_back                              #  first caller outside the shared readers is recorded with it (T377:
-                while g is not None and g.f_code.co_name in _HYDRATE_TEXT_READERS:   #  naming the boot's reader; a reader reached
-                    g = g.f_back                          #  through another reader still names the walker)
-                by = "%s<-%s" % (by, g.f_code.co_name if g is not None else "?")
+                while g is not None and (g.f_code.co_name in _HYDRATE_TEXT_READERS or _synthetic_scope(g)):   #  naming the boot's
+                    g = g.f_back                          #  reader; a reader reached through another reader, or through a
+                by = "%s<-%s" % (by, g.f_code.co_name if g is not None else "?")   #  comprehension's frame, still names the walker)
         except Exception:
             by = "?"
     filled, by_file = 0, {}
