@@ -15,8 +15,11 @@
 ROMP_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 SCRIPT="$ROMP_DIR/bin/romp-login-setup"
 
-# sk-ant-oat01- followed by forty word characters, assembled so the literal never lives in a tracked file
+# sk-ant-oat01- followed by forty word characters, assembled so the literal never lives in a tracked file; the second shape
+# is the CLI's own wider one (its detector: sk-ant-(oat|ort) and two digits; its redactor: letters, digits, _ . -): an oat02
+# prefix and a dot in the body (round one, MEDIUM 4)
 synthetic_token() { printf 'sk-ant-%s01-%s%s' oat "$(printf 'AbCdEfGhIj%.0s' 1 2 3)" 0123456789; }
+synthetic_token_v2() { printf 'sk-ant-%s02-%s.%s' oat "$(printf 'AbCdEfGhIj%.0s' 1 2 3)" 0123456789; }
 
 setup() {
     TEST_DIR="$(mktemp -d)"
@@ -25,7 +28,7 @@ setup() {
     export LOG="$TEST_DIR/log"; : > "$LOG"                 # every stub appends the command line it was called with
     export RECEIVED="$TEST_DIR/received"                    # the template 1Password received
     export CLAUDE_MODE="prints-token"                       # or: no-token
-    export CLAUDE_REJECTS=0 OP_CREATE_FAILS=0 OP_ACCEPT_JUNK=0 ROMP_REFUSES=0
+    export CLAUDE_REJECTS=0 OP_CREATE_FAILS=0 OP_ACCEPT_JUNK=0 ROMP_REFUSES=0 ROMP_NO_LOGIN_ADD=0
     MOCK="$TEST_DIR/mock"; mkdir -p "$MOCK"
     # claude: setup-token prints a sign-in narration and the token on its own line, like the CLI; -p (the check) runs
     # the helper the settings file names and answers ok only when it printed the stored token
@@ -42,7 +45,7 @@ if [ "$1" = "-p" ]; then
     settings=""; while [ $# -gt 0 ]; do [ "$1" = "--settings" ] && settings="$2"; shift; done
     helper="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["apiKeyHelper"])' "$settings")"
     got="$("$helper")"
-    [ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && { echo "a credential rode the environment" >&2; exit 1; }
+    [ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}${CLAUDE_CODE_OAUTH_TOKEN:-}${CCR_OAUTH_TOKEN_FILE:-}${CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR:-}${ANTHROPIC_CUSTOM_HEADERS:-}" ] && { echo "a credential rode the environment" >&2; exit 1; }
     if [ "$CLAUDE_REJECTS" = 0 ] && { [ "$got" = "$TOK" ] || [ "$OP_ACCEPT_JUNK" = 1 ]; }; then echo "ok"; exit 0; fi
     echo "Invalid API key: $got" >&2; exit 1
 fi
@@ -60,16 +63,22 @@ case "$1 $2" in
 esac
 exit 2
 MOCK
-    # romp: records `login add` and answers as the kernel would (0) unless ROMP_REFUSES
+    # romp: a bare `login add` prints the stored-logins branch's usage line (exit 2, before any kernel check, as that branch
+    # does), or main's unknown-command line under ROMP_NO_LOGIN_ADD; `login add <label>` records itself and answers as the
+    # kernel would (0) unless ROMP_REFUSES
     cat > "$MOCK/romp" <<'MOCK'
 #!/usr/bin/env bash
 echo "romp $*" >> "$LOG"
+if [ $# -eq 2 ]; then
+    [ "${ROMP_NO_LOGIN_ADD:-0}" = 1 ] && { echo 'romp: unknown command "login". To start a session named "login": romp new login   (commands: romp help)' >&2; exit 2; }
+    echo "usage: romp login add <label> (--cmd '<shell line that prints the token>' | --op <op://vault/item/field>) | romp login list | romp login remove <label|id>" >&2; exit 2
+fi
 [ "$ROMP_REFUSES" = 1 ] && { echo "romp login: the kernel is not running" >&2; exit 1; }
 exit 0
 MOCK
     chmod +x "$MOCK"/*
     export PATH="$MOCK:$PATH"
-    export ANTHROPIC_API_KEY="not-a-real-key-either"   # the check must remove it from the CLI's environment
+    export ANTHROPIC_API_KEY="not-a-real-key-either" ANTHROPIC_CUSTOM_HEADERS="x-test: 1" CCR_OAUTH_TOKEN_FILE="$TEST_DIR/none"   # the check must remove them from the CLI's environment
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
@@ -98,8 +107,38 @@ line_of() { grep -n -- "$1" "$LOG" | head -1 | cut -d: -f1; }
     grep -q "^op item create --vault Private --template " "$LOG"          # through a template file, never an argument
     grep -q "^romp login add Claude second login --op op://Private/Claude second login/credential$" "$LOG"
     [ "$(line_of '^claude setup-token')" -lt "$(line_of '^op item create')" ]
-    [ "$(line_of '^op item create')" -lt "$(line_of '^romp login add')" ]
+    [ "$(line_of '^op item create')" -lt "$(line_of '^romp login add Claude')" ]
+    [ "$(line_of '^romp login add$')" -lt "$(line_of '^claude setup-token')" ]   # the command's presence is checked before any sign-in
     assert_nothing_left
+}
+
+@test "a romp without login add stops before any sign-in (round one, MEDIUM 1: main has no such command yet)" {
+    export ROMP_NO_LOGIN_ADD=1
+    run_setup Private Second
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"deploy the stored-logins change first"* ]]
+    [ "$(grep -c '^claude' "$LOG")" -eq 0 ]
+}
+
+@test "a label with a quote, a backslash or a slash is refused before any sign-in (round one, MEDIUM 2 and 3)" {
+    for bad in 'Work "quoted"' 'back\slash' 'a/b' ''; do
+        run_setup Private "$bad"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"letters, digits, spaces, dashes and underscores"* ]] || [[ "$output" == *"usage:"* ]]
+    done
+    [ "$(grep -c '^claude' "$LOG")" -eq 0 ]
+    run_setup Private "Work login_2 - personal"
+    [ "$status" -eq 0 ]
+}
+
+@test "the CLI's token shapes: an oat02 prefix with a dot in the body is masked whole and captured whole (round one, MEDIUM 4)" {
+    export TOK="$(synthetic_token_v2)"
+    run_setup Private Second
+    [ "$status" -eq 0 ]
+    [[ "$TOK" == sk-ant-oat02-*.* ]]                                          # the synthetic token carries both
+    assert_no_token_in_output
+    [[ "$output" != *"sk-ant-"* ]]                                            # not even a prefix survives the mask
+    grep -q "\"value\":\"$TOK\"" "$RECEIVED"                                # captured to the last character
 }
 
 @test "the sign-in runs under a scratch configuration directory that is removed afterwards" {
@@ -114,7 +153,7 @@ line_of() { grep -n -- "$1" "$LOG" | head -1 | cut -d: -f1; }
     [ "$status" -eq 1 ]
     [[ "$output" == *"no token was printed"* ]]
     [ "$(grep -c '^op item create' "$LOG")" -eq 0 ]
-    [ "$(grep -c '^romp' "$LOG")" -eq 0 ]
+    [ "$(grep -Ec '^romp login add [^-]' "$LOG")" -eq 0 ]                   # no registration (the --help preflight is not one)
     assert_nothing_left
 }
 
@@ -122,7 +161,7 @@ line_of() { grep -n -- "$1" "$LOG" | head -1 | cut -d: -f1; }
     export OP_CREATE_FAILS=1
     run_setup Private Second
     [ "$status" -ne 0 ]
-    [ "$(grep -c '^romp' "$LOG")" -eq 0 ]
+    [ "$(grep -Ec '^romp login add [^-]' "$LOG")" -eq 0 ]                   # no registration (the --help preflight is not one)
     assert_no_token_in_output
     assert_nothing_left
 }
@@ -136,7 +175,7 @@ line_of() { grep -n -- "$1" "$LOG" | head -1 | cut -d: -f1; }
     assert_no_token_in_output
 }
 
-@test "--check: a request through a helper reading the item is accepted with every other credential removed, and a junk helper is refused" {
+@test "--check: a request through a helper reading the item is accepted with the environment's credential variables removed, and a junk helper is refused" {
     run_setup Private Second --check
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     [[ "$output" == *"check passed"* ]]
@@ -161,11 +200,18 @@ line_of() { grep -n -- "$1" "$LOG" | head -1 | cut -d: -f1; }
     [[ "$output" == *"a junk helper was also accepted"* ]]
 }
 
-@test "usage: the vault and the label are required, and nothing runs without them" {
+@test "usage: the vault and the label are required, --check is accepted anywhere, an unknown flag is refused (round one, LOW 3)" {
     run_setup
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 2 ]
     [[ "$output" == *"usage:"* ]]
     run_setup Private
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 2 ]
+    run_setup Private Second --chekc
+    [ "$status" -eq 2 ]
+    run_setup Private Second extra
+    [ "$status" -eq 2 ]
     [ "$(grep -c '^claude' "$LOG")" -eq 0 ]
+    run_setup --check Private Second
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"check passed"* ]]
 }
