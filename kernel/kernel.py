@@ -9919,6 +9919,7 @@ def _converge_checkpoints(now):
     no read), so one write carries all five. For another file a tail-only cursor is dropped so the write leaves it out and
     its next run reads the small file whole once. A document already carrying every fold that ran is never a candidate,
     so an idle session's document is written once and then left alone. Returns the documents written."""
+    em.checkpoint_cycle_begin(CKPT_CONVERGE_BYTES)         # the cycle's checkpoint byte budget, shared with the quiescence drop (T362)
     if CKPT_CONVERGE_MS <= 0 or not em.checkpoint_has_work():
         _CKPT_JUST_WRITTEN.clear()
         return 0                                           # off (ROMP_CKPT_CONVERGE_MS=0), or nothing dirty and nothing cold: a quiet
@@ -9928,9 +9929,9 @@ def _converge_checkpoints(now):
         return 0
     em.converge_stat("passes")
     leaves = {str(s.get("path")) for s in _sessions(now) if s.get("path")}
-    t0 = time.monotonic(); spent = 0; n = 0
+    t0 = time.monotonic(); n = 0
     for i, p in enumerate(cands):
-        if i and (time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0 or spent > CKPT_CONVERGE_BYTES):
+        if i and (time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0 or not em.checkpoint_cycle_room(0)):
             em.converge_stat("deferred", len(cands) - i)   # gated on candidates PROCESSED, not documents written: a first
             break                                          #  candidate that writes nothing must not lift the budget (review)
         if p in leaves and em.file_quiescent(p):           # T361 (the live loop): a leaf unchanged past the reader's quiescence
@@ -9943,7 +9944,7 @@ def _converge_checkpoints(now):
             healed = _heal_cold_folds(p)                   # drops every tail-only cursor, reruns the five leaf folds
             if healed:
                 got = _read_bytes_of(p) - before
-                em.converge_stat("heals", len(healed)); em.converge_stat("healBytes", got); spent += got
+                em.converge_stat("heals", len(healed)); em.converge_stat("healBytes", got); em.checkpoint_cycle_charge(got)
             unhealed = [k for k in cold if k not in healed]
             if em.entry_whole_resident(p) and _prime_leaf_folds(p):
                 em.converge_stat("primed")
@@ -9956,21 +9957,24 @@ def _converge_checkpoints(now):
         except (OSError, AttributeError):
             pre = 0
         if pre:
-            em.converge_stat("docReadBytes", pre); spent += pre
+            em.converge_stat("docReadBytes", pre); em.checkpoint_cycle_charge(pre)
         if em.checkpoint_write(p):                         #  run reads the file whole once, and the path is no candidate for it
             n += 1
             try:
                 size = em._ckpt_file(p).stat().st_size
             except OSError:
                 size = 0
-            em.converge_stat("writes"); em.converge_stat("bytes", size); spent += size
+            em.converge_stat("writes"); em.converge_stat("bytes", size); em.checkpoint_cycle_charge(size)
         else:
             em.converge_stat("failed"); _converge_skip(p)  # nothing to write, or the write failed: not again until the file changes
     return n
 
 
-_CONVERGE_SKIP = {}                 # path -> the file's (mtime_ns, size) when the pass last refused or failed it (T361): the path is
-#                                     no candidate until that changes, so a refusal is one per file state, never one per cycle
+_CONVERGE_SKIP = {}                 # path -> [the file's (mtime_ns, size) when the pass last refused or failed it, the reader's own
+#                                     entry stamp (mtime, size) then, counted] (T361):
+#                                     the path is no candidate until that changes, so a refusal is one per file state, never one per
+#                                     cycle; `skipped` counts once per (path, file state) too (T362 low), and while the reader holds
+#                                     the file's entry the check reads that entry's stamp, no stat
 
 
 def _stat_key_ns(p):
@@ -9982,18 +9986,32 @@ def _stat_key_ns(p):
 
 
 def _converge_skip(p):
-    _CONVERGE_SKIP[p] = _stat_key_ns(p)
+    _CONVERGE_SKIP[p] = [_stat_key_ns(p), _entry_stamp(p), False]
     if len(_CONVERGE_SKIP) > 4096:
         _CONVERGE_SKIP.clear()
 
 
+def _entry_stamp(p):
+    """The file's (mtime, size) as the reader's own entry records it, when the reader holds one; None otherwise."""
+    with em._JSONL_CACHE_LOCK:
+        ent = em._JSONL_CACHE.get(p)
+    return None if ent is None else (ent[0], ent[1])
+
+
 def _converge_skipped(p):
-    """True while the file stands as it did when the pass last refused or failed it."""
-    k = _CONVERGE_SKIP.get(p)
-    if k is None:
+    """True while the file stands as it did when the pass last refused or failed it: the reader's entry says so without a stat
+    when it holds one (a stat only for a file the reader let go; an entry no fold has refreshed since an append holds the
+    skip too, and rightly: the process then holds nothing newer to write), and `skipped` counts the hold once, not every
+    cycle."""
+    row = _CONVERGE_SKIP.get(p)
+    if row is None:
         return False
-    if _stat_key_ns(p) == k:
-        em.converge_stat("skipped")
+    stamp = _entry_stamp(p)
+    held = (stamp is not None and stamp == row[1]) or _stat_key_ns(p) == row[0]
+    if held:
+        if not row[2]:
+            row[2] = True
+            em.converge_stat("skipped")
         return True
     _CONVERGE_SKIP.pop(p, None)
     return False
