@@ -23,7 +23,7 @@ export interface PreviewContent {
   subtitle?: string;                   // "#slug" for a section, the source path for a term
   body: { markdown?: string; html?: string; text?: string; url?: string; lang?: string };
   note?: string;                       // one line the card says above the body (a missing anchor, why a path is text-only)
-  open?: { label: string; path: string; frag?: string };   // the affordance to the full view
+  open?: { label: string; path: string; frag?: string };   // a control to a fuller view; the FILE cards carry none (T369: the link itself opens the file, the user 2026-09-12), the glossary's term card keeps its own
 }
 
 /** `path#slug` → the path and the anchor; a `#` inside a file name is not an anchor unless what follows reads as a
@@ -147,26 +147,26 @@ export function stripRemoteLoads(root: ParentNode, origin: string, base: string)
 /** The text-only card: the path as words and the way to the full view, nothing fetched. */
 export function textOnlyContent(path: string, anchor: string, why?: string): PreviewContent {
   return { kind: "text", title: baseName(path), subtitle: anchor ? "#" + anchor : undefined,
-           body: { text: path }, note: why, open: { label: "open", path, frag: anchor || undefined } };
+           body: { text: path }, note: why };
 }
 
 /** The card's content for a kind the kernel allowed, from the slice route's answer (text kinds) or from the path
  *  alone (an image or a PDF, whose bytes ride the plain route). */
 export function contentFor(path: string, anchor: string, kind: string, sid: string | null, answer: SliceAnswer | null): PreviewContent {
-  const open = { label: "open", path, frag: anchor || undefined };
+  // no open control on a file card (T369): clicking the link already opens the file at the section it names
   const title = (answer && answer.title) || baseName(path);
-  if (kind === "image") return { kind: "image", title, body: { url: fileUrl(path, sid) }, open };
-  if (kind === "pdf") return { kind: "pdf", title, subtitle: "first page", body: { url: fileUrl(path, sid) }, open };
+  if (kind === "image") return { kind: "image", title, body: { url: fileUrl(path, sid) } };
+  if (kind === "pdf") return { kind: "pdf", title, subtitle: "first page", body: { url: fileUrl(path, sid) } };
   if (!answer || answer.allowed === false) return textOnlyContent(path, anchor, answer && answer.why ? answer.why : undefined);
   const text = answer.text || "";
   if (kind === "code") {
-    return { kind: "code", title, body: { text, lang: langOf(path) }, note: answer.truncated ? "the head of the file; open for the rest" : undefined, open };
+    return { kind: "code", title, body: { text, lang: langOf(path) }, note: answer.truncated ? "the head of the file; the link opens the rest" : undefined };
   }
   const found = answer.found !== false;
   const note = anchor && !found ? 'no section "' + anchor + '" in this file; its head instead'
-             : answer.truncated ? (anchor ? "the head of the section; open for the rest" : "the head of the file; open for the rest") : undefined;
+             : answer.truncated ? (anchor ? "the head of the section; the link opens the rest" : "the head of the file; the link opens the rest") : undefined;
   return { kind: anchor && found ? "section" : "markdown", title, subtitle: anchor && found ? "#" + anchor : undefined,
-           body: { markdown: text }, note, open };
+           body: { markdown: text }, note };
 }
 
 /** The hover's timing, with the timers injected so the tests run it without a clock: `enter(link)` starts the dwell

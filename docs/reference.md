@@ -1742,8 +1742,9 @@ names, after a short dwell; it closes when the pointer leaves (with a grace to
 cross into the card), on Escape, on a scroll, on a click elsewhere and at every
 tab-strip rebuild. The card is the comment popover's card (its surface and its
 fractions of the pane) and is never draggable or resizable; the romp loader shows
-first and the text replaces it the moment it lands. "open" opens the full file
-viewer, scrolled to the section.
+first and the text replaces it the moment it lands. The card carries no open
+control: clicking the link itself opens the full file viewer, scrolled to the
+section the link names.
 
 **What a hover may fetch.** A hover is a gesture the user did not choose, so the
 popover is stricter than the viewer (whose own rule, that any path the agent
@@ -1755,8 +1756,8 @@ and a link whose own name claims another kind than its target is refused; a hard
 link is another name for the same bytes and no path check can see its other
 names, so a `notes.md` hard-linked onto a `.env` passes the name rules and is
 caught only by the content belt below). A
-link absent from the map gets the text-only card (the path as words plus "open")
-and **no request**: a path outside the session's folder and the user's home, one
+link absent from the map gets the text-only card (the path as words, the link
+still opening the file) and **no request**: a path outside the session's folder and the user's home, one
 the kernel could not verify, a secrets-shaped name (the `.env` family, `.netrc`,
 `.npmrc`, `.pypirc`, any name carrying `credential`, `token`, `secret` or
 `password`, `id_*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, key stores, and any file
