@@ -5771,13 +5771,17 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // branch row wears the ⎇ glyph in its label slot for the same consistency. Branch is the top-level
   // session field, resident even when the head system event is windowed out of the wire tail (the user
   // 2026-06-30), and the worktree row shows where the work actually lands when that differs.
-  const rows: Array<[string, string]> = [];
+  // a row's optional third member is the VALUE's colour (T372, the user 2026-09-12): a value that wears a colour on
+  // the chat footer's chips wears the SAME colour here, from the one helper the footer calls (metaColor), so the
+  // association learned on the footer is reproduced and the two cannot drift. Model and effort carry the colormap
+  // rank; the permission mode is untinted on the footer too, and the backend carries no tone, so they stay plain.
+  const rows: Array<[string, string, string?]> = [];
   if (s.cwd) rows.push(["📁", s.cwd]);
   if (s.gitBranch) rows.push(["⎇", s.gitBranch]);
   if (s.workTree) rows.push(["Worktree", s.workTree.dir + (s.workTree.branch ? "  ⎇ " + s.workTree.branch : "")]);
   if (s.status.mode) rows.push(["Mode", prettyMode(s.status.mode)]);
-  if (s.status.model) rows.push(["Model", s.status.model]);
-  if (s.status.effort) rows.push(["Effort", s.status.effort]);
+  if (s.status.model) rows.push(["Model", s.status.model, metaColor("model", s.status)]);
+  if (s.status.effort) rows.push(["Effort", s.status.effort, metaColor("effort", s.status)]);
   // Backend is a plain labelled FIELD now, under the others (the user 2026-07-08 — no longer a coloured
   // "SDK backend" badge at the top of the tooltip; it reads as one of the session's config fields).
   if (be) rows.push(["Backend", backendLabel(be)]);
@@ -5811,10 +5815,11 @@ function showTabTip(tab: HTMLElement, s: Session): void {
           + `${s.status.authLive === "key" ? "the API key" : "the login"} — this session bills that`
         : s.status.auth === "key" ? "API key"
           : (s.status.authAcct ? `Login (${s.status.authAcct})` : "Login")]);
-  for (const [k, v] of rows) {
+  for (const [k, v, color] of rows) {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
     const ve = el("span", "tab-tip-v"); ve.textContent = v;
+    if (color) ve.style.color = color;   // the footer chip's colour, the label stays dim (T372)
     r.appendChild(ke); r.appendChild(ve); tip.appendChild(r);
   }
   // context BATTERY (the same widget as the bottom bar), not a text %
