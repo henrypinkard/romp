@@ -10,6 +10,7 @@ moved session and a corrupt document each fall back loudly, counted; a body read
 the restore reads are the document, the cut's guard and the tail. Synthetic transcripts only (the golden builders)."""
 import json
 import os
+import time
 import shutil
 import tempfile
 import unittest
@@ -460,7 +461,10 @@ class ConvergeAssembly(Harness):
     def setUp(self):
         super().setUp()
         em._ASM_CKPT_STATS["converge"] = {"writes": 0, "bytes": 0, "deferred": 0, "candidates": 0, "skipped": {}}
-        self.km._ASM_CONVERGE_DONE.clear()
+        with em._CKPT_LOCK:
+            for k in em._CKPT_STATS["converge"]:                   # the fold half's counters too: the tests assert absolutes
+                em._CKPT_STATS["converge"][k] = 0
+        self.km._ASM_CONVERGE_DONE.clear(); self.km._ASM_CONVERGE_BLIP.clear(); self.km._ASM_CONVERGE_NOENTRY.clear()
         for name, val in (("CKPT_CONVERGE_MS", 150.0), ("CKPT_CONVERGE_BYTES", em._CKPT_CYCLE_CAP_DEFAULT), ("ASM_CONVERGE", True)):
             saved = getattr(self.km, name); setattr(self.km, name, val); self.addCleanup(setattr, self.km, name, saved)
 
@@ -550,6 +554,45 @@ class ConvergeAssembly(Harness):
         cv = em.asm_checkpoint_stats()["converge"]
         self.assertEqual((cv["candidates"], cv["deferred"], cv["writes"]), (0, 0, 0), "off, as the drop write is: %s" % cv)
         self.assertFalse(em._asm_ckpt_file(path).exists())
+
+    def test_a_blip_is_tried_twice_then_done_and_the_writer_names_its_caller_once_per_leaf(self):
+        """Round two, low 3: the writer returns its reason (a blip, here the record entry gone before the offsets are read,
+        versus a property of the cut), the pass tries a blip twice for one file state and then leaves it, and the writer's blip
+        line names its caller and is said once per leaf and reason."""
+        path = self.idle_leaf("blip"); km = self.km
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.pop(path, None)                        # the record entry gone: the writer has no offsets (a blip)
+        import io
+        err = io.StringIO(); saved = sys.stderr; sys.stderr = err
+        try:
+            reasons = []
+            self.assertFalse(em.asm_checkpoint_write(path, SID, False, reason_out=reasons, who="converge pass"))
+            self.assertFalse(em.asm_checkpoint_write(path, SID, False, reason_out=reasons, who="converge pass"))
+        finally:
+            sys.stderr = saved
+        self.assertEqual(reasons, ["offsets", "offsets"], "the writer's own reason, per attempt")
+        lines = [l for l in err.getvalue().splitlines() if "not written by the converge pass" in l]
+        self.assertEqual(len(lines), 1, "the blip line names its caller and is said once per leaf: %r" % err.getvalue())
+        # the pass: the blip's two tries, then done for this file state (the record entry must be resident for a write)
+        st = km._stat_key_ns(path)
+        self.assertFalse(km._converge_assembly_leaf(path, SID, time.monotonic()))
+        self.assertEqual(km._ASM_CONVERGE_NOENTRY.get(path), st, "no record entry: nothing to write from, counted once, no try spent")
+        with em._JSONL_CACHE_LOCK:                                 # the record entry back, but the offsets torn away at the write
+            pass
+        self.fresh(); em.set_checkpoint_dir(lambda: self.ck); self.parse(path)   # a whole record entry again
+        real = em.record_offsets; em.record_offsets = lambda p, base: None
+        self.addCleanup(setattr, em, "record_offsets", real)
+        self.assertFalse(km._converge_assembly_leaf(path, SID, time.monotonic()))
+        self.assertEqual(km._ASM_CONVERGE_BLIP.get(path), st, "a blip: the first try spent, not done")
+        self.assertFalse(km._converge_assembly_leaf(path, SID, time.monotonic()))
+        self.assertEqual(km._ASM_CONVERGE_DONE.get(path), st, "the second try spent: done for this file state")
+        self.assertEqual(em.asm_checkpoint_stats()["converge"]["skipped"].get("offsets"), 2)
+
+    def test_the_done_tables_release_their_oldest_past_the_bound(self):
+        """Round two, low 3: past the bound the oldest entry is released, never the table cleared."""
+        table = {"k%d" % i: i for i in range(4100)}
+        self.km._release_oldest(table)
+        self.assertEqual(len(table), 4096); self.assertNotIn("k0", table); self.assertIn("k4099", table); self.assertNotIn("k3", table)
 
     def test_a_leaf_without_a_boundary_is_looked_at_once(self):
         path = self.idle_leaf("plain", scenario=next(n for n in G.SINGLE_FILE if n not in COMPACTING))

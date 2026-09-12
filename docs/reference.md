@@ -1041,8 +1041,9 @@ half handles the assembly write runs inside the same hold, before the held drop
 pops that entry, and both documents come from the one read; no read of records,
 charged to the same cycle budget. A leaf is looked at once per file state:
 written, or refused for a property of its cut, it is done; a blip is tried
-twice; a leaf with no whole entry to write from is re-examined each cycle and
-counted once. `ROMP_ASM_CONVERGE=0` turns that step off, and so do the pass's
+twice (a blip inside the fold half's hold gets its second try over the entry
+the paid drop popped, so that leaf waits for the next boot's read); a leaf with
+no whole entry to write from is re-examined each cycle and counted once. `ROMP_ASM_CONVERGE=0` turns that step off, and so do the pass's
 own switch and a zero byte budget, as for the drop write. The owed table
 is bounded: over it the oldest owed drop is paid by its pop alone, and an owed
 file since deleted has its entry popped when the cycle pays. A leaf unchanged for longer than the reader keeps a quiescent

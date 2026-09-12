@@ -9982,8 +9982,10 @@ def _converge_checkpoints(now):
             else:
                 unhealed = em.drop_cold_cursors(p)
             if quiescent:                                  # the ASSEMBLY document from the same resident read, BEFORE the held drop
-                _converge_assembly_leaf(p, leaf_sid.get(p), t0)   #  pops the record entry (T376 round one, medium: the pop came first
-        #                                                    and the assembly writer found no record entry for its offsets)
+                try:                                       #  pops the record entry (T376 round one, medium: the pop came first and
+                    _converge_assembly_leaf(p, leaf_sid.get(p), t0)   #  the assembly writer found no record entry for its offsets); a
+                except Exception:                          #  raise here must not discard the held drop or abort the cycle (round two)
+                    sys.stderr.write("assembly converge: %s\n" % traceback.format_exc())
         if unhealed:                                       # a fold the heal cannot rerun here (not one of the leaf's five): its
             em.converge_stat("unhealed", len(unhealed))    #  cursor and cold mark are dropped, the write leaves it out, its next
         if em.pay_held_drops().get(p) and quiescent:       # the held drop wrote the document from the boot's read (converge.dropWrites,
@@ -10023,10 +10025,12 @@ def _converge_assembly(now, t0):
     per file and the cut's guard. Charged to the cycle's byte budget (an estimate from the leaf's size, trued up), deferred
     over it; bounded by the pass's wall; off with the drop write (a zero budget). A leaf is looked at once per file state:
     written, or refused by the writer for a property of its cut (no boundary, an unsplittable cut, an oversize document), it
-    enters the done table; a blip (a stat, the offsets) is tried twice; a leaf with no entry to write from is re-examined each
-    cycle (counted once), never parsed or read by the pass. Live leaves are the settle's. The fold half of the pass writes a
-    candidate leaf's assembly document itself, inside its hold, before the held drop pops the record entry
-    (`_converge_assembly_leaf`); this step covers the leaves the fold half did not touch. Returns the documents written."""
+    enters the done table; a blip (a stat, the offsets) is tried twice, the second time on a later cycle (a blip inside the
+    fold half's hold gets its second try from this step in the same cycle, over the entry the paid drop popped, so that leaf
+    waits for the next boot's read; round two, low 1); a leaf with no entry to write from is re-examined each cycle (counted
+    once), never parsed or read by the pass. Live leaves are the settle's. The fold half of the pass writes a candidate leaf's
+    assembly document itself, inside its hold, before the held drop pops the record entry (`_converge_assembly_leaf`); this
+    step covers the leaves the fold half did not touch. Returns the documents written."""
     if not ASM_CONVERGE or not em.checkpoint_drop_writes_on():
         return 0
     n = 0
@@ -10036,7 +10040,10 @@ def _converge_assembly(now, t0):
             continue
         if time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0:
             break                                          # the cycle's wall: the rest wait for the next one
-        r = _converge_assembly_leaf(str(leaf), sid, t0)
+        try:
+            r = _converge_assembly_leaf(str(leaf), sid, t0)
+        except Exception:                                  # one leaf's raise (a stat, a backend hook) leaves the rest their turn
+            sys.stderr.write("assembly converge: %s\n" % traceback.format_exc()); continue
         if r is None:
             break                                          # the budget: the rest wait for the next cycle
         n += 1 if r else 0
