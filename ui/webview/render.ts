@@ -311,7 +311,7 @@ interface TodoTask { id: string; subject: string; activeForm?: string; status: s
 type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: string; fg: string } | null };   // a named peer behind a peer-kind wait (kernel _peer_identity, 2026-08-26)
 // which billing sides this box can bill, and why not for the other (kernel _auth_avail, 2026-09-08): the
 // Billing submenu lists both and greys the unavailable one with the reason in its hover
-interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string }
+interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
 interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
@@ -6921,6 +6921,46 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
   return span;
 }
 
+// The tab menu's ONE flyout gesture (T163 for Tags, the user 2026-08-28; T380 for Billing, the user
+// 2026-09-12): a hover of HOVER_INTENT_MS over the row opens the flyout (the feed's intent debounce:
+// enough to skip a graze, never a wait), a click opens it at once (byClick: a click may focus an input,
+// a hover-open must not steal the keyboard), a second click folds it, leaving the row and the flyout
+// for the same span closes it (native menus' gap tolerance: entering either surface cancels the pending
+// close), and `open` removes any other flyout first so one is up at a time. Timers here are gesture
+// DEFINITIONS (hover intent), not state proxies. No window listener: the timers and the row's own.
+const HOVER_INTENT_MS = 120;
+function wireFlyout(menu: HTMLElement, item: HTMLElement, sel: string, open: (byClick: boolean) => HTMLElement | null): void {
+  let openT: number | null = null;
+  let closeT: number | null = null;
+  const cancel = () => {
+    if (openT != null) { clearTimeout(openT); openT = null; }
+    if (closeT != null) { clearTimeout(closeT); closeT = null; }
+  };
+  const armClose = () => { cancel(); closeT = window.setTimeout(() => { closeT = null; menu.querySelector(sel)?.remove(); }, HOVER_INTENT_MS); };
+  const openNow = (byClick: boolean) => {
+    const fly = open(byClick);
+    if (fly && !fly.dataset.flyWired) {   // leave-tolerance on the flyout itself, wired once per flyout node
+      fly.dataset.flyWired = "1";
+      fly.addEventListener("pointerenter", cancel);
+      fly.addEventListener("pointerleave", armClose);
+    }
+    return fly;
+  };
+  item.addEventListener("pointerenter", () => {
+    cancel();
+    if (menu.querySelector(sel)) return;                         // already open — nothing to intend
+    openT = window.setTimeout(() => { openT = null; openNow(false); }, HOVER_INTENT_MS);
+  });
+  item.addEventListener("pointerleave", armClose);
+  item.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    cancel();
+    const fly = menu.querySelector(sel);
+    if (fly) { fly.remove(); return; }                           // second click folds the flyout
+    openNow(true);
+  });
+}
+
 function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: the group the right-clicked copy sits in (T264b), a plain string so the menu stays id-keyed
   dismissTabMenu();
   const menu = el("div", "ctx-menu");
@@ -7075,18 +7115,9 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       else postUnionEdits(nv, a, r);
     };
     // HOVER-INTENT open (T163, the user 2026-08-28: hovering down to Tags should open the submenu
-    // without another click): the feed's 120ms intent debounce — enough to skip a graze, never a
-    // wait. Click still opens instantly (and focuses the input; a hover-open must NOT steal the
-    // keyboard). Leaving is tolerant the way native menus are: the same 120ms lets the pointer
-    // cross the gap into the submenu; entering either surface cancels the close, leaving BOTH
-    // closes. Timers here are gesture DEFINITIONS (hover intent), not state proxies.
-    const HOVER_INTENT_MS = 120;
-    let hoverOpenT: number | null = null;
-    let hoverCloseT: number | null = null;
-    const cancelHoverTimers = () => {
-      if (hoverOpenT != null) { clearTimeout(hoverOpenT); hoverOpenT = null; }
-      if (hoverCloseT != null) { clearTimeout(hoverCloseT); hoverCloseT = null; }
-    };
+    // without another click), the one flyout gesture every tab-menu flyout wears since T380 (Billing
+    // too): wireFlyout below the menu builder holds the definition. Click still opens instantly (and
+    // focuses the input; a hover-open must NOT steal the keyboard).
     const openTagsFly = (focusInput: boolean) => {
       const openFly = menu.querySelector(".ctx-sub-tags");
       if (openFly) return openFly as HTMLElement;
@@ -7232,31 +7263,9 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       else sub.style.left = Math.max(8, Math.round(ir.left) - sr.width - 2) + "px";
       sub.style.top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4)) + "px";
       if (focusInput) (sub.querySelector(".ctx-tag-input") as HTMLInputElement | null)?.focus();
-      // leave-tolerance: entering either surface cancels the pending close; leaving both arms it
-      sub.addEventListener("pointerenter", cancelHoverTimers);
-      sub.addEventListener("pointerleave", armHoverClose);
       return sub;
     };
-    const armHoverClose = () => {
-      cancelHoverTimers();
-      hoverCloseT = window.setTimeout(() => {
-        hoverCloseT = null;
-        menu.querySelector(".ctx-sub-tags")?.remove();
-      }, HOVER_INTENT_MS);
-    };
-    tagsItem.addEventListener("pointerenter", () => {
-      cancelHoverTimers();
-      if (menu.querySelector(".ctx-sub-tags")) return;           // already open — nothing to intend
-      hoverOpenT = window.setTimeout(() => { hoverOpenT = null; openTagsFly(false); }, HOVER_INTENT_MS);
-    });
-    tagsItem.addEventListener("pointerleave", armHoverClose);
-    tagsItem.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      cancelHoverTimers();
-      const openFly = menu.querySelector(".ctx-sub-tags");
-      if (openFly) { openFly.remove(); return; }                 // second click folds the flyout
-      openTagsFly(true);
-    });
+    wireFlyout(menu, tagsItem, ".ctx-sub-tags", openTagsFly);
     menu.appendChild(tagsItem);
   }
   // Move to folder… sits beside Tags (the user 2026-09-01: a subproject became its own repo and the
@@ -7322,7 +7331,13 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // kernel's honest record) and the sub-line says so. The key stays labelled plainly 'API key', no
   // fragment of it anywhere. A pick posts the same setAuth the badge used (the session reconnects to
   // apply, so the sub-line says "applying…" while st.authPending rides the status). An older kernel
-  // sends no authAvail: its authBoth keeps the old both-or-nothing gate.
+  // sends no authAvail: its authBoth keeps the old both-or-nothing gate. The flyout opens on HOVER as
+  // the Tags flyout does, and on click (T380, the user 2026-09-12: one gesture, wireFlyout), and below
+  // the session's choices carries "Default for <machine>": the same choices as a radio group, the
+  // current default marked (authAvail.default, the owning kernel's seed, so a remote session's flyout
+  // shows ITS host's default), a pick posting setAuth with scope "machine", which writes the seed every
+  // NEW session and every session with no pick of its own launches on and touches no session that
+  // carries its own pick; the group's note says exactly that.
   const st = s ? s.status : null;
   if (st && st.auth && (st.authAvail || st.authBoth)) {
     const avail: AuthAvail = st.authAvail || { login: true, key: true };
@@ -7344,13 +7359,14 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     bodyEl.appendChild(sb);
     item.appendChild(bodyEl);
     const caret = el("span", "ctx-caret"); caret.textContent = "▸"; item.appendChild(caret);
-    item.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      const open = menu.querySelector(".ctx-sub");
-      if (open) { open.remove(); return; }                       // second click folds the flyout
-      const sub = el("div", "ctx-menu ctx-sub");
-      for (const c of [{ label: st.authAcct ? `Login (${st.authAcct})` : "Login", value: "login", why: avail.login ? "" : (avail.loginWhy || "no Claude login signed in on this machine") },
-                       { label: "API key", value: "key", why: avail.key ? "" : (avail.keyWhy || "no apiKeyHelper configured") }]) {
+    const openBillingFly = (): HTMLElement | null => {
+      const already = menu.querySelector(".ctx-sub-billing");
+      if (already) return already as HTMLElement;
+      menu.querySelector(".ctx-sub")?.remove();                    // one flyout at a time
+      const sub = el("div", "ctx-menu ctx-sub ctx-sub-billing");
+      const choices = [{ label: st.authAcct ? `Login (${st.authAcct})` : "Login", value: "login", why: avail.login ? "" : (avail.loginWhy || "no Claude login signed in on this machine") },
+                       { label: "API key", value: "key", why: avail.key ? "" : (avail.keyWhy || "no apiKeyHelper configured") }];
+      for (const c of choices) {
         const opt = el("div", "ctx-item" + (st.auth === c.value ? " current" : "") + (c.why ? " disabled" : ""));
         opt.textContent = c.label;
         if (c.why) {   // unavailable here: greyed, the reason on hover, inert (the user 2026-09-08)
@@ -7365,14 +7381,69 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
         });
         sub.appendChild(opt);
       }
+      // ── Default for this machine (T380) ── the owning kernel's seed (authAvail.default): what a NEW
+      // session, and a session with no pick of its own, launches on. The same choices as radios, the
+      // current one marked; a pick posts setAuth with scope "machine" and changes no session that carries
+      // its own pick. A remote session's flyout names ITS host, whose kernel holds the seed.
+      if (avail.default) {
+        sub.appendChild(el("div", "ctx-sep"));
+        const explicit = !!avail.defaultExplicit;
+        const head = el("div", "ctx-item ctx-item-toggle ctx-sub-head");
+        const hb = el("span", "ctx-item-body");
+        const hl = el("span", "ctx-item-label"); hl.textContent = "Default for " + (hostOf(id) || "this machine"); hb.appendChild(hl);
+        const hs = el("span", "ctx-item-sub");
+        // the sub-line says which rule holds (review): set here, or automatic (the helper rule) as before
+        hs.textContent = explicit
+          ? "set here: new and unpicked sessions follow it; a session's own pick stays"
+          : "automatic: the API key when a helper is configured, else the login; new and unpicked sessions follow it";
+        hb.appendChild(hs);
+        head.appendChild(hb); sub.appendChild(head);
+        // the same choices as radios, then Automatic (the helper rule), which clears the explicit default (review: the flag
+        // was one-way and invisible); the current mark sits on the explicit side, else on Automatic
+        const autoWord = avail.key ? "API key" : "Login";
+        // an older kernel sends no defaultExplicit and takes no "auto": its flyout marks the side it computed and offers no
+        // Automatic radio (review: the click would be swallowed there)
+        const olderKernel = avail.defaultExplicit === undefined;
+        const radios = [...choices.map((c) => ({ ...c, cur: olderKernel ? avail.default === c.value : (explicit && avail.default === c.value) })),
+                        ...(olderKernel ? [] : [{ label: `Automatic (${autoWord})`, value: "auto", why: "", cur: !explicit }])];
+        for (const c of radios) {
+          const opt = el("div", "ctx-item ctx-radio" + (c.cur ? " current" : "") + (c.why ? " disabled" : ""));
+          opt.textContent = c.label;
+          opt.dataset.scope = "machine";
+          if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
+          opt.addEventListener("click", (ev2) => {
+            ev2.stopPropagation();
+            if (c.why) return;
+            dismissTabMenu();
+            if (!c.cur && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value, scope: "machine" });
+          });
+          sub.appendChild(opt);
+        }
+      }
       // INSIDE the menu node (so dismissTabMenu and the outside-mousedown check cover it), placed
       // beside the item — .ctx-menu is position:fixed, so the coords are viewport-space, clamped
       menu.appendChild(sub);
       const ir = item.getBoundingClientRect();
       const sr = sub.getBoundingClientRect();
-      sub.style.left = Math.max(0, Math.min(ir.right + 2, window.innerWidth - sr.width - 4)) + "px";
-      sub.style.top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4)) + "px";
-    });
+      // the side rule (Tags, the model-version submenus): PREFER right; fall LEFT when the right edge would clip and
+      // the left has room; with room on neither side (a narrow window) the flyout drops BELOW the row when it fits
+      // there, else ABOVE the row's top, and only when neither fits is it clamped inside the viewport — never over
+      // the row while a place beside or beyond it exists (review: at 560 px it covered its menu and ran 33 px out;
+      // at 560 by 420 the clamp pulled the drop-below back over the row)
+      let left: number, top: number = ir.top;
+      if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
+      else if (ir.left - 2 - sr.width >= 8) left = Math.round(ir.left) - sr.width - 2;
+      else {
+        left = Math.max(8, Math.min(Math.round(ir.left), window.innerWidth - sr.width - 8));
+        if (ir.bottom + 2 + sr.height <= window.innerHeight - 4) top = ir.bottom + 2;
+        else if (ir.top - 2 - sr.height >= 0) top = ir.top - 2 - sr.height;
+        else top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4));
+      }
+      sub.style.left = left + "px";
+      sub.style.top = Math.max(0, Math.min(top, window.innerHeight - sr.height - 4)) + "px";
+      return sub;
+    };
+    wireFlyout(menu, item, ".ctx-sub-billing", () => openBillingFly());
     menu.appendChild(item);
   }
   // ── 4. FILES: Browse files (web only). A different kind of thing, it opens another surface; last and

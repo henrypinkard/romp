@@ -4603,6 +4603,8 @@ def read_sdk_defaults(state_dir: Path) -> dict:
         return {}
 
 
+# the explicit machine default per state root, cached on sdk-defaults.json's (mtime, size): explicit_default_auth (T380)
+_EXPLICIT_DEFAULT_CACHE: dict = {}
 _defaults_lock = threading.Lock()   # serializes the read-modify-writes below: the kernel thread (set_model, the
 #                                     parked-op replay) and the SDK loop thread (_revert_model) both write the file
 
@@ -6166,6 +6168,14 @@ class SdkSession:
             return "login"
         if self.auth == "key":
             return "key"
+        # no pick of its own: the machine's EXPLICIT default when one is set and billable (T380: the Billing
+        # flyout's Default group; an unpicked session follows it, at once in the status and at its next launch),
+        # else the helper rule
+        explicit = getattr(self.backend, "explicit_default_auth", None)   # getattr: test doubles
+        if explicit:
+            side = explicit()
+            if side and not self.backend.auth_unavailable_why(side):
+                return side
         if key is None:
             key = self.backend.key_available
         return "key" if key else "login"
@@ -11805,13 +11815,20 @@ class SdkBackend:
         # pick the box cannot bill with NOTHING to fall to (a key pick on a box with neither) launches
         # plain and the CLI decides, as before.
         side = self.pick_fall(sess.auth) or sess.auth   # the ONE decision, shared with the status rows (authPickFell)
+        if sess.auth not in ("login", "key"):
+            # NO pick of its own (T380 review): the launch follows the machine's EXPLICIT default when one is set and
+            # this box can bill it, the rule the status already uses (effective_auth / fallback_auth), so the readout
+            # and the launch agree (before, an unpicked session read Login in its status and billed the key at launch,
+            # the helper unsuppressed); without one the launch stays plain and the CLI decides, as ever
+            _exp = self.explicit_default_auth()
+            side = _exp if (_exp and not self.auth_unavailable_why(_exp)) else ""
         if side == sess.auth and sess.auth in ("login", "key") and sess._pick_unknown_said != sess.auth:
             why = self.pick_unknown(sess.auth)          # cannot tell just now: the pick stands, said once per session
             if why:
                 sess._pick_unknown_said = sess.auth
                 self._log("auth (%s): cannot tell whether this box can bill '%s' (%s); launching with the pick as is"
                           % (sess.name, sess.auth, why), problem=True)
-        if side != sess.auth and sess._pick_fell_said != sess.auth:
+        if sess.auth in ("login", "key") and side != sess.auth and sess._pick_fell_said != sess.auth:   # a PICK fell; a default followed is no fall
             sess._pick_fell_said = sess.auth
             self._log("auth (%s): billing pick '%s' cannot apply: %s; billing the %s"
                       % (sess.name, sess.auth, self.auth_unavailable_why(sess.auth),
@@ -13915,7 +13932,11 @@ class SdkBackend:
         # so a restart must restore "no init has landed yet", never the old side (both readers guard
         # with isinstance(..., bool), so None reads as absent).
         self._update_reg(sid, auth=value, authPending=True, apiKeyAuth=None)
-        write_sdk_default(self.state_dir, auth=value)   # the seed for the NEXT new session, like model/effort
+        # the seed for the NEXT new session, like model/effort — until the user sets the machine's default
+        # EXPLICITLY (set_auth_default, the Billing flyout's Default group, T380): from then on a per-session
+        # pick is about that session and moves no default
+        if not read_sdk_defaults(self.state_dir).get("authExplicit"):
+            write_sdk_default(self.state_dir, auth=value)
         s = self.sessions.get(sid)
         if s:
             s.auth = value
@@ -13929,6 +13950,31 @@ class SdkBackend:
             self._ack_cmd_chip(sid, "/auth", "/auth " + value, s.resume_sid)
         return True
 
+    def set_auth_default(self, value: str) -> bool:
+        """Set the machine's DEFAULT billing (T380, the user 2026-09-12): the seed every new session and every
+        session with no pick of its own launches on (sdk-defaults.json `auth`, what spawn seeds a reg from and
+        default_auth and effective_auth fall to). Refuses a side this box cannot bill with the same reason a
+        per-session pick gets (auth_unavailable_why). Marks the default explicit (`authExplicit`), so a later
+        per-session pick no longer moves it; "auto" clears the flag and the seed (the helper rule again).
+        Touches no session's own pick: a session that follows the default shows the new side in its status at
+        once and launches on it next time."""
+        if value == "auto":
+            # back to the helper rule (the key when an apiKeyHelper is configured, else the login): the flag
+            # clears and the seed empties, so a per-session pick seeds the default again as it did before
+            write_sdk_default(self.state_dir, auth="", authExplicit=False)
+            self._log("auth: the machine's default billing is automatic again (the helper rule)")
+            return True
+        if value not in ("login", "key"):
+            return False
+        why = self.auth_unavailable_why(value)
+        if why:
+            self.last_auth_refusal = why
+            self._log("auth: the machine default cannot be %s on this box: %s" % (value, why), problem=True)
+            return False
+        write_sdk_default(self.state_dir, auth=value, authExplicit=True)
+        self._log("auth: the machine's default billing is now %s (new sessions, and sessions with no pick of their own)" % value)
+        return True
+
     def default_auth(self, reg: dict | None = None) -> str:
         """The auth a session with no live SdkSession object would launch with — the dormant twin of
         SdkSession.effective_auth(), reading the same registry field with the same fallback. An explicit
@@ -13940,11 +13986,36 @@ class SdkBackend:
         return self.fallback_auth()
 
     def fallback_auth(self) -> str:
-        """What an UNPICKED session bills on this box: the key when an apiKeyHelper is configured, else the
-        login. Falls to whichever side exists, in BOTH directions (the user 2026-09-08: no login on the box
-        means everything bills the key, never a dead login) — a box with neither still reads login, the
-        CLI's own resolution, and the launch's auth check rings on what lands."""
+        """What an UNPICKED session bills on this box. The machine's EXPLICIT default when one is set (T380: the
+        Billing flyout's Default group wrote sdk-defaults.json `auth` with `authExplicit`; a session with no pick
+        of its own FOLLOWS it, the review found only new sessions did) and this box can bill that side; else the
+        helper rule as before: the key when an apiKeyHelper is configured, else the login. Falls to whichever
+        side exists, in BOTH directions (the user 2026-09-08: no login on the box means everything bills the key,
+        never a dead login) — a box with neither still reads login, the CLI's own resolution, and the launch's
+        auth check rings on what lands."""
+        side = self.explicit_default_auth()
+        if side and not self.auth_unavailable_why(side):
+            return side
         return "key" if self.key_available else "login"
+
+    def explicit_default_auth(self) -> str:
+        """The machine default the user set explicitly (sdk-defaults.json `auth` with `authExplicit` true), else
+        "". Read per status snapshot, so cached on the file's mtime and size: one stat per call. The cache is
+        module-level, keyed by the state root, not an attribute on the backend: the perf bench's stand-in backend
+        refuses any attribute it did not anticipate (CI, 2026-09-12)."""
+        p = _defaults_path(self.state_dir)
+        try:
+            st = p.stat()
+            key = (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)   # ino and ctime too: a same-size rewrite whose mtime did not advance (review)
+        except OSError:
+            key = None
+        cache = _EXPLICIT_DEFAULT_CACHE.get(str(self.state_dir))
+        if cache is not None and cache[0] == key:
+            return cache[1]
+        d = read_sdk_defaults(self.state_dir) if key is not None else {}
+        side = d.get("auth") if (d.get("authExplicit") and d.get("auth") in ("login", "key")) else ""
+        _EXPLICIT_DEFAULT_CACHE[str(self.state_dir)] = (key, side)
+        return side
 
     def auth_unavailable_why(self, side: str) -> str:
         """Why this box cannot bill `side` ("login" | "key"), as ONE plain sentence for the refusal toast,

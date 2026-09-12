@@ -305,9 +305,32 @@ used to exist only when both were real): the choice this machine cannot bill
 is greyed and inert, with the reason in its hover, `no Claude login signed in
 on this machine`, `no apiKeyHelper configured`, or `the apiKeyHelper is set in
 managed settings, login cannot apply`. The status payload carries the same
-availability as `authAvail` (`authBoth` rides beside it for older clients).
-Switching reconnects the session to apply, with the same switching-dots the
-effort badge wears.
+availability as `authAvail` (`authBoth` rides beside it for older clients),
+and the machine's default beside it. The flyout opens on hover over the
+Billing row, as the Tags flyout does (one gesture: a short hover opens, a
+click opens at once, leaving both the row and the flyout closes it), and on
+click. Switching reconnects the session to apply, with the same switching-dots
+the effort badge wears.
+
+Below the session's choices the flyout carries **Default for this machine**:
+the same choices as a radio group, the current default marked. That default is
+the seed every new session, and every session with no pick of its own, launches
+on; it lives in the state root's `sdk-defaults.json` as `auth` (never a token),
+and a pick there changes no session that carries its own pick; a session
+with no pick of its own follows it, in its status at once and at its next
+launch. A third choice, Automatic, is the rule that held before: the API key
+when a helper is configured, else the login; it clears the explicit default,
+and the group's sub-line says which rule holds. Until the default is set here,
+the last per-session pick seeds it (as a model or effort pick does); once set
+here, a per-session pick is about that session alone and moves no default. A
+remote session's flyout names its host, and the pick sets that host's default
+(the op routes to the session's owning kernel). The judges follow the same
+resolution: a judge on a session with no pick of its own bills the machine's
+default when the machine can bill it, else the helper rule, exactly as the
+launch does. The flyout places itself to the right of its row, to the left
+when the right would clip and the left has room, below the row when neither
+side has room, above it when below does not fit, and only then clamped inside
+the window; it never covers its row while a place beside or beyond it exists.
 
 On a one-auth box the picker never chooses the missing side. The remembered
 default falls to the side that exists, in both directions: a remembered login
