@@ -45274,6 +45274,11 @@ def _repo_index_stood_down(cwd, why):
     a bare filename that stays plain text is diagnosable from the kernel log (T364, the laptop report)."""
     if cwd in _REPO_INDEX_STOOD_DOWN:
         return
+    # a .git pointer file that cannot be followed is already named, once per fault episode, by _git_file_fault (its
+    # stderr line and bell row carry the path): the index standing down there is the same finding, not a second line
+    with _git_file_faults_lock:
+        if os.path.join(_tree_of(cwd)[0] or cwd, ".git") in _git_file_faults:
+            return
     if len(_REPO_INDEX_STOOD_DOWN) >= 256:
         _REPO_INDEX_STOOD_DOWN.clear()
     _REPO_INDEX_STOOD_DOWN.add(cwd)
