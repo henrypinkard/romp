@@ -109,6 +109,7 @@ import { dragSlotIndex } from "./dragslot";
 import { acceptDragEnter } from "./drag-accept";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, senderPrRepo, postalSenderHost } from "./pr-links";
+import { SETTLE_MS, settleStep, settleRowFields, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
 import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey } from "./frame-listener";
 import { highlightHtml } from "./highlight-cache";
 import { wrapCodeLines, addCopyBtn } from "./code-block";   // a fence's per-line rows and Copy button, shared with the file viewer
@@ -11048,6 +11049,8 @@ function writeScroll(content: HTMLElement, top: number, writer: string, stick = 
   if (after !== before) lastScrollWriteAfter = after;   // a write that moved the view owes exactly one scroll event, its echo; one that did not move owes none, and must not eat a later gesture landing near its target (verifier low, round two)
   lastKnownSh = content.scrollHeight;
   if (after !== before) scrollDiagRow("scrollwrite", scrollWriteRow(activeId || "", writer, before, after, stick, content.scrollHeight, content.clientHeight));
+  // another writer moving the view while a landing settles is a sample for the settle rule, which re-lands (T386)
+  if (after !== before && landSettling && !landSettling.done && writer !== "land-on" && writer !== "land-realign") settleSample();
 }
 // EVERY mover of #content goes through writeScroll (T262j, the user 2026-09-08: an unwritten move the journal could
 // not name). scrollBy and scrollIntoView are scrollTop writes expressed differently, so they are expressed as such:
@@ -11190,9 +11193,31 @@ function scrollToAnchor(uuid: string): boolean {
     return true;
   }
   landTrail.push("pointer-exact");
-  landOn(target, uuid);
-  if (pendingAnchorQuote) { highlightCiteSpan(target, pendingAnchorQuote); pendingAnchorQuote = null; }
+  // T386 (the user 2026-09-12): a card's anchor is the FIRST atom of its transcript turn, often a tool call inside a collapsed
+  // group, while the text the card quotes sits atoms later; a landing on the anchor's own top put the reader on the group
+  // with the words far below. The landing aligns on the quoted span when the frame carries one and it is found in the
+  // turn's atoms (the anchor's element and the atoms after it up to the next user turn), else on the turn's first text
+  // atom below a tool or thinking atom, else on the anchor's element as before. The anchor's element is what flashes.
+  const quote = pendingAnchorQuote; pendingAnchorQuote = null;
+  const quoteEl = quote ? highlightCiteSpan(target, quote) : null;
+  landOn(target, uuid, quoteEl ?? firstTextAtomBelow(target), quote);
   return true;
+}
+/** The atoms of the transcript turn the anchor's element opens: itself and the following event elements up to (not
+ *  including) the next user turn. */
+function turnAtomsOf(target: HTMLElement): HTMLElement[] {
+  const out = [target];
+  for (let n = target.nextElementSibling; n; n = n.nextElementSibling) {
+    if (!(n instanceof HTMLElement) || !n.classList.contains("turn") || n.classList.contains("turn-user")) break;
+    out.push(n);
+  }
+  return out;
+}
+/** The first text atom below a tool or thinking anchor within its turn (the element the words live in), else null. */
+function firstTextAtomBelow(target: HTMLElement): HTMLElement | null {
+  if (!target.classList.contains("turn-tool") && !target.classList.contains("turn-thinking")) return null;
+  for (const n of turnAtomsOf(target).slice(1)) { const md = n.querySelector(".assistant.md"); if (md) return md as HTMLElement; }
+  return null;
 }
 
 /** The time-only landing (see landActive): the event whose epoch sits nearest `t` among the
@@ -11245,19 +11270,25 @@ function landNearestMoment(t: number): boolean {
 // never mutated (the click-safety family); a browser without it, or an unfindable quote, keeps
 // today's whole-message landing exactly (the honest-fallback rule).
 let pendingAnchorQuote: string | null = null;
-function highlightCiteSpan(target: HTMLElement, quote: string): void {
+/** Highlight the quoted sentence within the anchor's TURN (its element and the atoms after it, turnAtomsOf: a card's anchor is
+ *  the turn's first atom, the words it quotes may be a later one, T386) and return the element the sentence starts in, for
+ *  the landing to align on; null when the quote is not in the rendered text (no highlight, no guess) or the browser has no
+ *  highlight API. The landing itself is landOn's (one write, settled), no longer a second write from here. */
+function highlightCiteSpan(target: HTMLElement, quote: string): HTMLElement | null {
   try {
     const H = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
-    if (!H || typeof Highlight === "undefined") return;
-    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+    if (!H || typeof Highlight === "undefined") return null;
     const nodes: Text[] = []; let full = "";
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) { nodes.push(n as Text); full += (n as Text).data; }
+    for (const atom of turnAtomsOf(target)) {
+      const walker = document.createTreeWalker(atom, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) { nodes.push(n as Text); full += (n as Text).data; }
+    }
     let at = full.indexOf(quote);
     let len = quote.length;
     if (at < 0) {
       const pat = new RegExp(quote.trim().split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "i");
       const m = pat.exec(full);
-      if (!m) return;                                    // unfindable in the rendered text → no highlight, no guess
+      if (!m) return null;                               // unfindable in the rendered text → no highlight, no guess
       at = m.index; len = m[0].length;
     }
     const range = document.createRange();
@@ -11268,36 +11299,111 @@ function highlightCiteSpan(target: HTMLElement, quote: string): void {
       if (started && at + len <= end) { range.setEnd(tn, at + len - pos); break; }
       pos = end;
     }
-    if (!started) return;
+    if (!started) return null;
     H.set("cite-span", new (Highlight as unknown as { new(...r: Range[]): unknown })(range));
     window.setTimeout(() => { try { H.delete("cite-span"); } catch { /* gone with a nav */ } }, 6000);
-    const el0 = range.startContainer.parentElement;
-    const content0 = document.getElementById("content");
-    if (el0 && content0) scrollElInto(content0, el0, "center", "land-on");   // land ON the sentence, not the message top (attributed, T262j)
-  } catch { /* highlight is chrome, never load-bearing */ }
+    return range.startContainer.parentElement;
+  } catch { return null; /* highlight is chrome, never load-bearing */ }
 }
 
-function landOn(target: HTMLElement, flashKey?: string) {
+// ── a landing SETTLES before it is called good (T386 stage 1, the user 2026-09-12) ──────────────────────────────────
+// The landing audit had filed a card click's landing as exact while the reader saw the view elsewhere: the landing write
+// put the target at the viewport top, and a write of the page's own then moved it. The served lab named the writer
+// (tests/test_landing_settles_browser.py): the run's REPLACE by the window shrank the transcript, and the follow-mode
+// snap (tail-shrink) wrote the reader back to the bottom, because the landing had left `stick` on; the 250 ms re-align
+// rescued the lab, and the reader's first wheel cancels that re-align. Two things follow. A landing ENDS follow mode
+// unless it put the reader at the bottom (below). And the landing keeps the target aligned until the transcript stops
+// moving under it (landing-settle.ts, the rule): every event that can move the target is a sample (the target's or a
+// spacer's box resizing, the boxes above the transcript resizing, ANY other writer moving #content, two bounded
+// timers); a sample off the row re-lands ("land-realign"); the landing row is filed when the settle ends, with the
+// measured distance and whether it settled, so `ok` alone is never again the whole verdict. One settle in flight: a
+// newer landing supersedes the older's. The walk-forward of a detached window that fits the viewport waits for it.
+let landSettling: { turn: HTMLElement; at: HTMLElement; uuid: string | null; quote: string | null; rowH: number; samples: SettleSample[]; start: number;
+                    gesture: boolean; row: Record<string, unknown> | null; ro: ResizeObserver | null; timers: number[]; done: boolean } | null = null;
+const afterSettle: (() => void)[] = [];   // what waits for the landing to settle (the window's edge check)
+function settleEnd(s: NonNullable<typeof landSettling>): void {
+  s.done = true; s.ro?.disconnect(); s.ro = null;
+  for (const t of s.timers) clearTimeout(t);
+  window.removeEventListener("wheel", settleGesture); window.removeEventListener("keydown", settleGesture);
+  if (landSettling === s) landSettling = null;
+}
+function settleGesture(): void { const s = landSettling; if (s && !s.done) { s.gesture = true; settleTick(); } }
+/** The anchor's element by uuid in the active view: the selectors scrollToAnchor lands by. */
+function findTurnEl(uuid: string): HTMLElement | null {
+  const v = activeId ? views.get(activeId) : null; if (!v) return null;
+  const u = cssEscape(uuid);
+  return (v.el.querySelector(`.turn[data-uuid="${u}"]`) || v.el.querySelector(`.turn[data-orphan-of="${u}"]`) || v.el.querySelector(`.turn[data-mid="${u}"]`)
+          || v.el.querySelector(`.turn[data-mids~="${u}"]`) || v.el.querySelector(`.turn[data-uuids~="${u}"]`)) as HTMLElement | null;
+}
+/** The element a settling landing aligns on, re-resolved by uuid when a rebuild replaced the DOM under it (the virtualiser's
+ *  rewindow after a far landing detaches the old nodes; a detached box measures as zeros, which read as a constant miss and
+ *  walked the view up one tab bar's height per re-land in the lab). null when the anchor's turn is gone from the view. */
+function settleResolve(s: NonNullable<typeof landSettling>): HTMLElement | null {
+  if (s.at.isConnected) return s.at;
+  const turn = s.uuid ? findTurnEl(s.uuid) : null;
+  if (!turn) return null;
+  s.turn = turn;
+  s.at = (s.quote ? highlightCiteSpan(turn, s.quote) : null) ?? firstTextAtomBelow(turn) ?? turn;
+  s.ro?.observe(s.at); if (s.at !== turn) s.ro?.observe(turn);
+  return s.at;
+}
+function settleLand(s: NonNullable<typeof landSettling>, writer: string): void {
+  const c = document.getElementById("content"); const at = settleResolve(s);
+  if (c && at) scrollElInto(c, at, "start", writer);
+}
+function settleFinish(s: NonNullable<typeof landSettling>, fields: { dist: number | null; settled: boolean }): void {
+  settleEnd(s);
+  if (s.row) vscodeApi?.postMessage({ ...s.row, ...fields });
+  const q = afterSettle.splice(0);
+  for (const f of q) f();
+}
+/** One measurement of the target against the viewport top, then the rule's step. */
+function settleSample(): void {
+  const s = landSettling; if (!s || s.done) return;
+  const c = document.getElementById("content"); if (!c) return;
+  const at = settleResolve(s);
+  if (!at) { settleFinish(s, { dist: null, settled: false }); return; }   // the turn left the view: nothing to align, the row says so
+  s.samples.push({ at: Date.now() - s.start, dist: at.getBoundingClientRect().top - c.getBoundingClientRect().top });
+  settleTick();
+}
+function settleTick(): void {
+  const s = landSettling; if (!s || s.done) return;
+  const step = settleStep(s.samples, s.rowH, s.gesture, Date.now() - s.start);
+  if (step === "wait") return;
+  if (step === "realign") { settleLand(s, "land-realign"); return; }
+  settleFinish(s, settleRowFields(step, s.samples, s.rowH));
+}
+function landOn(target: HTMLElement, flashKey?: string, alignOn?: HTMLElement | null, quote?: string | null) {
   // the land and its re-alignments are writes of #content like any other, attributed (T262j): "land-on" for the
-  // landing itself, "land-realign" for each re-land while the boxes above size in
-  const land = (writer: string) => { const c = document.getElementById("content"); if (c) scrollElInto(c, target, "start", writer); };
-  const realign = () => land("land-realign");
+  // landing itself, "land-realign" for each re-land while the transcript settles under it. `alignOn` (T386): the element
+  // whose top goes to the viewport top when it is not the turn's own (the quoted span, or a turn's text below a tool
+  // group); `quote` re-finds that span after a rebuild; the turn is still what flashes
+  const at = alignOn ?? target;
+  const land = (writer: string) => { const c = document.getElementById("content"); if (c) scrollElInto(c, at, "start", writer); };
   land("land-on");
+  // a landing is the reader's intent to be AT this message: follow mode ends unless the landing put them at the bottom
+  // (the follow-mode snap otherwise writes them back to the bottom on the next shrink, the T386 double click)
+  { const c = document.getElementById("content"); const v = activeId ? views.get(activeId) : null; if (c && v) v.stick = atBottom(c); }
   if (flashKey == null || flashKey !== flashedAnchor) {   // one flash per navigation (see flashedAnchor)
     if (flashKey != null) flashedAnchor = flashKey;
     target.classList.add("anchor-flash");
     setTimeout(() => target.classList.remove("anchor-flash"), 1700);
   }
-  const until = Date.now() + 1200;
-  let ro: ResizeObserver | null = null;
-  const stop = () => { ro?.disconnect(); ro = null; window.removeEventListener("wheel", stop); };
+  if (landSettling) settleEnd(landSettling);   // a newer landing supersedes the older's settle (its row was filed or never armed)
+  const landSettle = { turn: target, at, uuid: flashKey ?? null, quote: quote ?? null, rowH: Math.max(8, at.getBoundingClientRect().height), samples: [] as SettleSample[],
+                       start: Date.now(), gesture: false, row: null as Record<string, unknown> | null, ro: null as ResizeObserver | null, timers: [] as number[], done: false };
+  landSettling = landSettle;
   if (typeof ResizeObserver === "function") {
-    ro = new ResizeObserver(() => { if (Date.now() < until) realign(); else stop(); });
+    const ro = new ResizeObserver(() => settleSample());
+    ro.observe(at); if (at !== target) ro.observe(target);
     for (const id of ["tabbar", "ledger"]) { const c = document.getElementById(id); if (c) ro.observe(c); }
+    const v = activeId ? views.get(activeId) : null;
+    if (v) for (const sp of Array.from(v.el.querySelectorAll(".tx-spacer"))) ro.observe(sp);
+    landSettle.ro = ro;
   }
-  window.addEventListener("wheel", stop, { passive: true });
-  setTimeout(() => { if (ro && Date.now() < until + 100) realign(); }, 250);
-  setTimeout(() => { if (ro) realign(); stop(); }, 1200);
+  window.addEventListener("wheel", settleGesture, { passive: true });
+  window.addEventListener("keydown", settleGesture);
+  landSettle.timers.push(window.setTimeout(settleSample, 250), window.setTimeout(settleSample, 700), window.setTimeout(settleSample, SETTLE_MS + 20));
 }
 
 
@@ -12756,11 +12862,15 @@ function landActive(content: HTMLElement | null, v: View): void {
   // Diagnostics: log every landing attempt; a deep-link that couldn't resolve announces itself loudly
   // instead of impersonating a successful jump.
   if (att.anchor || att.t != null) {
-    vscodeApi?.postMessage({
+    const row: Record<string, unknown> = {
       type: "locateDiag", id: activeId, ok: scrolled, trail: landTrail.slice(),
       anchor: att.anchor ?? undefined, anchorT: att.t ?? undefined, kind: att.kind ?? undefined,
       keep: att.keep || undefined,
-    });
+    };
+    // an exact landing's row waits for the landing to SETTLE and goes out with the measured distance (T386); every
+    // other outcome (a miss, a fetch in flight, a keep-offset restore) files at once, as before
+    if (scrolled && landSettling && !landSettling.done && landTrail[landTrail.length - 1] === "pointer-exact") landSettling.row = row;
+    else vscodeApi?.postMessage(row);
     // A keep-offset restore is NOT a user navigation — nobody asked to locate anything, so a failed one must
     // not raise "couldn't locate this in the transcript" at a reader who only scrolled. It still gets its
     // audit row above (trail + keep), which is where a lost position is diagnosed from.
@@ -16976,13 +17086,13 @@ function olderOnServer(s: Session): boolean {
 // CLICK of the reader's (a card, a lane, a deep link, a notch, a reply chip, a comment tick: any anchor landing with no keep
 // offset), which the strip names as the message they opened, with its time when the frame carried one; the reload restore
 // of their own saved place arms a keep offset and keeps the plain sentence (verifier low, round two)
-const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null }>();
+const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null; kind: string | null }>();
 function requestAround(sid: string, uuid: string): boolean {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || loadingOlder.has(sid)) return false;
   const nav = !relandAsk;
   const kind = pendingAnchorKind ?? pendingAnchorIntent ?? null;
-  pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null });
+  pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null, kind: nav ? kind : null });   // t and kind ride to the adoption (T386)
   // every window ask leaves a diagnostic row (T366: the rows of the report had the reply's landing but nothing said
   // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked;
   // under the same per-minute budget as the other scroll rows (verifier low 5)
@@ -17053,7 +17163,9 @@ function chatWindow(msg: any) {
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) return;
   const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
-  if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
+  // the same landing re-armed, so the click's time and kind ride through (T386: the adoption used to reset them, and the
+  // landing row lost the datum that ties it to the click); a window with no navigation behind it carries none
+  if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = ask?.t ?? null; pendingAnchorKind = ask?.kind ?? null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
   showActive();
   updateLivePaused();
   window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));
@@ -17063,6 +17175,7 @@ function chatWindow(msg: any) {
 // (it returns on "everything rendered", or asks for older first), so its next page is asked for directly (round 2, item 7;
 // round 3: chatMore too, so a short page appended to a short run keeps walking).
 function edgeCheckAfterWindow(sid: string): void {
+  if (landSettling && !landSettling.done) { afterSettle.push(() => edgeCheckAfterWindow(sid)); return; }   // a fresh landing settles first (T386): the walk never moves the reader off it
   const c = document.getElementById("content");
   const cur = sessions.get(sid);
   if (cur && cur.detached && c && c.scrollHeight <= c.clientHeight + 1) { requestNewer(sid); return; }
