@@ -73,7 +73,7 @@ test("the delegated qx handler cancels click-safely: kernel op for commands and 
   // a MESSAGE returns to the composer (the ✎, toComposer): its words, its quote citations and its attachments as chips
   assert.match(RENDER, /if \(restoreHere && qmd\) \{/);
   assert.match(RENDER, /const back = rescindedComposerState\(qmd, known\);/, "the send's composition is undone (queued-rescind.ts)");
-  assert.match(RENDER, /for \(const f of back\.files\) \{ addComposerFile\(sidQ, f\); armed = true; \}\s*\n\s*restoreToComposer\(back\.text\);/, "the attachments as chips, then the words");
+  assert.match(RENDER, /for \(const f of back\.files\) \{ addComposerFile\(sidQ, f\); armedFiles\.push\(f\); \}\s*\n\s*restoreToComposer\(back\.text\);/, "the attachments as chips, then the words");
   assert.match(RENDER, /const bub = el\.closest\("\.queued-bubble"\) as HTMLElement \| null;[\s\S]*?bub\?\.remove\(\);/,
     "optimistic removal before the next push");
   // restoreToComposer fills the composer textarea, fires input (autosize/enable), focuses, caret to end
@@ -110,13 +110,17 @@ test("a queued bubble with no ✕ says where the message actually is", () => {
 });
 
 test("the qx click stashes the composer before/after so a failed cancel can undo the restore", () => {
-  assert.match(RENDER, /const pendingCancelRestores = new Map<string, \{ before: string; after: string; cites: Citation\[\]; files: string\[\]; armed: boolean \}>\(\);/);
+  assert.match(RENDER, /const pendingCancelRestores = new Map<string, \{ before: string; after: string; cites: Citation\[\]; files: string\[\]; armedCites: string\[\]; armedFiles: string\[\] \}>\(\);/);
   // the refusal looks the stash up under the very key the rescind stored: one separator, spelled the same on both sides
   // (a literal NUL byte sat in the handler's key from 2026-07-20 to the T373 fold, invisible in every text view, so no
   // refusal ever found its stash; the served lab caught it, and the file is held free of control bytes here)
   assert.match(RENDER, /const key = m\.id \+ " " \+ \(typeof m\.md === "string" \? m\.md : ""\);/, "the handler's key is the store's key");
+  // the refusal takes back only what the press armed and was not there before; the user's additions since stay (round two, low 1)
+  assert.match(RENDER, /const cites = \(composerCitations\.get\(m\.id\) \|\| \[\]\)\.filter\(\(c\) => !\(armedC\.has\(citeKey\(c\)\) && !beforeC\.has\(citeKey\(c\)\)\)\);/);
+  assert.match(RENDER, /const files = \(composerFiles\.get\(m\.id\) \|\| \[\]\)\.filter\(\(f\) => !\(armedF\.has\(f\) && !beforeF\.has\(f\)\)\);/);
+  assert.match(RENDER, /for \(const f of stash\.files\) if \(!files\.includes\(f\)\) files\.push\(f\);/, "what stood before and went comes back");
   assert.doesNotMatch(RENDER, /[\x00-\x08\x0b\x0c\x0e-\x1f]/, "no control byte in render.ts: a separator is spelled as an escape");
-  assert.match(RENDER, /pendingCancelRestores\.set\(activeId \+ " " \+ qmd, \{ before, after: ta \? ta\.value : "", cites: citesBefore, files: filesBefore, armed \}\);/);
+  assert.match(RENDER, /pendingCancelRestores\.set\(activeId \+ " " \+ qmd, \{ before, after: ta \? ta\.value : "", cites: citesBefore, files: filesBefore, armedCites, armedFiles \}\);/);
 });
 
 test("cancelResult ok:false toasts the kernel's 'too late' and reverts an untouched composer restore", () => {

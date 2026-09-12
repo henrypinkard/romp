@@ -389,7 +389,7 @@ class SendPathsPark(unittest.TestCase):
     def test_ws_drive_paths_use_the_parks(self):
         with open(os.path.join(BIN, "romp-kernel")) as f:
             src = f.read()
-        self.assertIn('_send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_paths or None)', src,
+        self.assertIn('_send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_wire_paths(msg))', src,
                       "the composer send parks mid-compaction, and speaks as the user (T315)")
         self.assertIn("_send_or_park(be, sid, body,", src, "the follow-up/nudge send parks mid-compaction")
         self.assertIn("_send_or_park(be, sid, cmd, user=True)", src, "the timeline sendCommand parks mid-compaction; the user typed it")
@@ -422,8 +422,11 @@ class QueuedBubble(unittest.TestCase):
         self.assertIn('m["paths"] = _op_paths(op)', src, "the parked copy")
         self.assertEqual(src.count('m["goalId"] = _gid.group(1)'), 2, "both branches ship the goal id")
         drive = inspect.getsource(km._drive)
-        self.assertIn('_paths = [p for p in (msg.get("paths") or []) if isinstance(p, str) and p][:64]', drive, "the intake reads the list off the frame, bounded")
-        self.assertIn("user=True, paths=_paths or None)", drive)
+        self.assertIn('return [p for p in raw if isinstance(p, str) and p][:64] or None', inspect.getsource(km._wire_paths), "one reader of the frame's list, bounded")
+        self.assertIn("user=True, paths=_wire_paths(msg))", drive, "the composer send")
+        self.assertIn('user=not msg.get("nudge"), paths=_wire_paths(msg)) is None', drive, "the follow-up arm reads the same list (round two's medium)")
+        self.assertIsNone(km._wire_paths({"text": "x"})); self.assertIsNone(km._wire_paths({"paths": []})); self.assertIsNone(km._wire_paths({"paths": "a.png"}))
+        self.assertEqual(km._wire_paths({"paths": ["a.png", 3, "", "b.pdf"]}), ["a.png", "b.pdf"])
         park = inspect.getsource(km._send_or_park)
         self.assertIn("op = op + (None,) * (5 - len(op)) + (list(paths),)", park, "the sixth slot")
         self.assertEqual(km._op_paths(("send", "hi", "human", "echo:1", True, ["plots/a.png", "docs/r.pdf"])), ["plots/a.png", "docs/r.pdf"])

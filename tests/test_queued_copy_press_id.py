@@ -221,6 +221,23 @@ class TheNoIdRouteTakesTheTextAlone(_PlainRouteFixture):
         self.assertEqual(len(self.plain.calls), 1)
         self.assertIn("and the fix?", self.plain.calls[0])
 
+    def test_a_parked_follow_up_keeps_its_attachment_list_as_a_parked_send_does(self):
+        # T373 fold round two (the verifier's medium): the follow-up arm read no paths off its frame, so a follow-up sent from a
+        # goal chip with an attachment parked without its list, and a rescind on any client without the page's own record
+        # (another window, the same page after a reload) gave back a raw paths line and no chip. Both arms read one list.
+        client = {"send": lambda s: None}
+        pdf = "/tmp/lab/docs/report.pdf"
+        km._pending_ops[SID] = [("command", "/compact", "human", C)]     # a command ahead: every send behind it parks
+        km._save_pending_ops()
+        try:
+            self.assertTrue(km._drive({"type": "sendMessage", "id": SID, "text": "plain\n" + pdf, "qid": A, "paths": [pdf]}, client))
+            self.assertTrue(km._drive({"type": "askFollowUp", "itemId": SID + ":g4", "text": "and the fix?\n" + pdf, "qid": B, "paths": [pdf]}, client))
+            ops = km._pending_ops[SID]
+            self.assertEqual([o[0] for o in ops], ["command", "send", "send"], "both parked behind the command")
+            self.assertEqual([km._op_paths(o) for o in ops[1:]], [[pdf], [pdf]], "the send and the follow-up park with the same list")
+        finally:
+            km._pending_ops.pop(SID, None); km._save_pending_ops()
+
     def test_a_parked_command_fires_as_the_text_and_the_queue_behind_it_stays(self):
         km._pending_ops[SID] = [("command", "/compact", "human", C), ("send", "after it", "human", A)]
         km._save_pending_ops()

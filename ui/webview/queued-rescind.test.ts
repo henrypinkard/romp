@@ -54,9 +54,9 @@ test("the queued message's one control is the ✎, which rescinds it to the comp
   assert.match(RENDER, /qedit: \(el\) => rescindQueued\(el, true\),/);
   assert.match(RENDER, /qx: \(el\) => rescindQueued\(el, false\),/);
   assert.match(RESCIND, /const msg: Record<string, unknown> = \{ type: "cancelQueued", id: sidQ, md: qmd \};/, "the rescind IS the cancel: the same kernel route clears every other client's bubble");
-  assert.match(RESCIND, /if \(goal && goal\.itemId\) \{ setCitation\(sidQ, \{ itemId: goal\.itemId, title: goal\.title \}\); armed = true; \}/, "a follow-up comes back on its goal");
+  assert.match(RESCIND, /if \(goal && goal\.itemId\) \{ setCitation\(sidQ, \{ itemId: goal\.itemId, title: goal\.title \}\); armedCites\.push\("g:" \+ goal\.itemId\); \}/, "a follow-up comes back on its goal");
   assert.match(RESCIND, /else if \(back\.cites\.length\) \{ composerCitations\.set\(sidQ,/, "quote citations come back as chips");
-  assert.match(RESCIND, /if \(!provisional\) pendingCancelRestores\.set\(activeId \+ " " \+ qmd, \{ before, after: ta \? ta\.value : "", cites: citesBefore, files: filesBefore, armed \}\);/, "a refused cancel can undo the restore, as before");
+  assert.match(RESCIND, /if \(!provisional\) pendingCancelRestores\.set\(activeId \+ " " \+ qmd, \{ before, after: ta \? ta\.value : "", cites: citesBefore, files: filesBefore, armedCites, armedFiles \}\);/, "a refused cancel can undo the restore, as before");
   assert.match(CSS, /\.queued-edit \{\s*\n\s*position: absolute; top: 3px; right: 4px;/, "the pencil sits in the cross's corner");
   assert.match(CSS, /\.queued-bubble\.editable \{ padding-right: 28px; \}/, "room for the one control");
 });

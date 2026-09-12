@@ -81,43 +81,70 @@ const composer = () => page.evaluate(() => ({
   crosses: document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-x").length,
 }));
 const sentOf = (type) => page.evaluate((t) => window.__sent.filter((m) => m.type === t), type);
-// ROAD 1: a quote citation and two attachments (an image and a document) ride the send; the ✎ gives them all back
+const clearBox = async () => {
+  await page.evaluate(() => { const ta = document.getElementById("composer-input"); ta.value = ""; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+  // one control at a time, re-queried: each removal re-renders its strip, so the buttons gathered before it are detached
+  await page.evaluate(() => { for (let i = 0; i < 16; i++) { const b = document.querySelector("#composer-chips .composer-chip-x, #composer-files button"); if (!b) break; b.click(); } });
+  await page.waitForTimeout(300);
+  return composer();
+};
+const bubbleWith = (t) => page.waitForFunction((x) => Array.from(document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-bubble")).some((b) => (b.textContent || "").includes(x)), t, { timeout: 20000 });
+const pressPencilOf = (t) => page.evaluate((x) => { const eds = Array.from(document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-edit")); const ed = eds.find((e) => (e.closest(".queued-bubble").textContent || "").includes(x)); if (!ed) return null; const md = ed._qmd; ed.click(); return md; }, t);
+// ROAD A (the refusal, on the fresh page): one attachment rides the send; the pencil pulls the message back and the user adds a
+// file meanwhile; the kernel's refusal, staged in its own shape with the page's own cancel frame's id and body (the cancel
+// itself dropped at the socket), takes back exactly what the pencil armed and leaves the user's addition
+await page.evaluate((s) => window.postMessage({ romp: "adopt", sid: s.sid, state: { draft: "", citations: [], files: [s.pdf], staged: [] } }, "*"), cfg);
+await page.waitForTimeout(300);
+const seededA = await composer();
+await page.fill("#composer-input", cfg.text2);
+await page.press("#composer-input", "Enter");
+await bubbleWith(cfg.text2); await page.waitForTimeout(400);
+const parkedA = await composer();
+const mdA = await pressPencilOf(cfg.text2);
+await page.waitForTimeout(500);
+const armedA = await composer();
+await page.evaluate((s) => window.postMessage({ romp: "adopt", sid: s.sid, state: { draft: "", citations: [], files: [s.extra], staged: [] } }, "*"), cfg);
+await page.waitForTimeout(300);
+const addedA = await composer();
+const lastCancel = await page.evaluate(() => { const c = window.__sent.filter((m) => m.type === "cancelQueued"); const l = c[c.length - 1]; return l ? { id: l.id, md: l.md } : null; });
+await page.evaluate((f) => window.postMessage(f, "*"), { type: "cancelResult", ok: false, id: lastCancel ? lastCancel.id : cfg.sid, md: lastCancel ? lastCancel.md : mdA, text: "too late to cancel: the session already took this message" });
+await page.waitForTimeout(600);
+const afterA = await composer();
+const missRows = await page.evaluate(() => window.__sent.filter((m) => m.type === "clientDiag" && m.what === "cancel-miss").map((m) => m.data));
+const toast = await page.evaluate(() => Array.from(document.querySelectorAll(".warn-toast")).map((n) => (n.textContent || "").slice(0, 80)));
+const clearedA = await clearBox();
+// ROAD B: a quote citation and two attachments (an image and a document) ride the send; the pencil gives them all back
 await page.evaluate((s) => window.postMessage({ romp: "adopt", sid: s.sid, state: { draft: "", citations: [{ title: "the retry curve", quote: "the retry curve" }], files: [s.png, s.pdf], staged: [] } }, "*"), cfg);
 await page.waitForTimeout(300);
 const seeded = await composer();
 await page.fill("#composer-input", cfg.text1);
 await page.press("#composer-input", "Enter");
-await page.waitForFunction(() => document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-edit").length >= 1, null, { timeout: 15000 });
-await page.waitForTimeout(400);
+await bubbleWith(cfg.text1); await page.waitForTimeout(400);
 const queued1 = await composer();
-const sent1 = await sentOf("sendMessage");
-await page.evaluate(() => { const ed = document.querySelector(".turn-queued:not(.turn-queued-hidden) .queued-edit"); ed.click(); });
+const sent1 = (await sentOf("sendMessage")).filter((m) => (m.text || "").includes(cfg.text1));
+const cancelsBefore1 = (await sentOf("cancelQueued")).length;
+await pressPencilOf(cfg.text1);
 await page.waitForTimeout(600);
 const back1 = await composer();
-const cancels1 = await sentOf("cancelQueued");
-// the composer is cleared for road 2 (the discard: a cleared box)
-await page.evaluate(() => { const ta = document.getElementById("composer-input"); ta.value = ""; ta.dispatchEvent(new Event("input", { bubbles: true })); });
-await page.evaluate(() => Array.from(document.querySelectorAll("#composer-chips .composer-chip-x, #composer-files button")).forEach((b) => b.click()));
+const cancels1 = (await sentOf("cancelQueued")).length - cancelsBefore1;
+const clearedB = await clearBox();
+// ROAD C (round two's medium): a follow-up sent from a goal chip with an attachment parks; the page RELOADS, so the page's own
+// record of the send is gone and the pencil has only the kernel's copy; the words, the goal chip and the attachment chip come back
+await page.evaluate((s) => window.postMessage({ romp: "adopt", sid: s.sid, state: { draft: "", citations: [{ itemId: s.goalId, title: s.goalTitle }], files: [s.pdf], staged: [] } }, "*"), cfg);
 await page.waitForTimeout(300);
-await page.waitForFunction(() => document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-edit").length === 0, null, { timeout: 15000 }).catch(() => null);
-// ROAD 2: a message with an attachment parks; the ✎ is pressed, its cancel frame dropped at the socket, and the kernel's
-// refusal (the copy fed already) arrives in the kernel's shape: the composer goes back to what it was
-await page.fill("#composer-input", cfg.text2);
+const seededC = await composer();
+await page.fill("#composer-input", cfg.text3);
 await page.press("#composer-input", "Enter");
-await page.waitForFunction((t2) => Array.from(document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-bubble")).some((b) => (b.textContent || "").includes(t2)), cfg.text2, { timeout: 15000 });
-await page.waitForTimeout(400);
-const before2 = await composer();
-const md2 = await page.evaluate((t2) => { const eds = Array.from(document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-edit")); const ed = eds.find((e) => (e.closest(".queued-bubble").textContent || "").includes(t2)) || eds[0]; const md = ed._qmd; ed.click(); return md; }, cfg.text2);
-await page.waitForTimeout(500);
-const armed2 = await composer();
-const lastCancel = await page.evaluate(() => { const c = window.__sent.filter((m) => m.type === "cancelQueued"); const l = c[c.length - 1]; return l ? { id: l.id, md: l.md } : null; });
-await page.evaluate((f) => window.postMessage(f, "*"), { type: "cancelResult", ok: false, id: lastCancel ? lastCancel.id : cfg.sid, md: lastCancel ? lastCancel.md : md2, text: "too late to cancel: the session already took this message" });
+await bubbleWith(cfg.text3); await page.waitForTimeout(400);
+const sentC = (await sentOf("askFollowUp")).map((m) => ({ itemId: m.itemId, text: m.text, paths: m.paths }));
+await page.reload({ waitUntil: "load" });
+await page.waitForSelector("#composer-input", { timeout: 20000 });
+await bubbleWith(cfg.text3); await page.waitForTimeout(600);
+const reloadedC = await composer();
+const mdC = await pressPencilOf(cfg.text3);
 await page.waitForTimeout(600);
-const after2 = await composer();
-// evidence the refusal reached the page: its own miss row goes out and the refusal toast shows
-const missRows = await page.evaluate(() => window.__sent.filter((m) => m.type === "clientDiag" && m.what === "cancel-miss").map((m) => m.data));
-const toast = await page.evaluate(() => Array.from(document.querySelectorAll(".warn-toast")).map((n) => (n.textContent || "").slice(0, 80)));
-fs.writeSync(1, "RESULT:" + JSON.stringify({ seeded, queued1, sent1: sent1.map((m) => ({ text: m.text, paths: m.paths })), back1, cancels1: cancels1.length, before2, md2, armed2, after2, missRows, toast }) + "\n");
+const backC = await composer();
+fs.writeSync(1, "RESULT:" + JSON.stringify({ seededA, parkedA, mdA, armedA, addedA, afterA, missRows, toast, clearedA, seeded, queued1, sent1: sent1.map((m) => ({ text: m.text, paths: m.paths })), back1, cancels1, clearedB, seededC, sentC, reloadedC, mdC, backC }) + "\n");
 await browser.close();
 process.exit(0);
 """
@@ -140,6 +167,7 @@ class ServedQueuedRescind(unittest.TestCase):
         cwd = os.path.join(cls.lab, "proj")
         for d in ("names", "sdk", "states"):
             os.makedirs(os.path.join(cls.state, d), exist_ok=True)
+        Path(cls.state, "session-hosts").write_text("off")     # a state root of our own: no real host for the session (the Testing rule)
         os.makedirs(cwd, exist_ok=True)
         Path(cls.state, "names", SID).write_text("web\t%s\t\t\n" % cwd)
         Path(cls.state, "sdk", SID + ".json").write_text(json.dumps(
@@ -214,10 +242,13 @@ class ServedQueuedRescind(unittest.TestCase):
 
 
     _r = None
-    TEXT1, TEXT2 = "plot it again with the new bound", "and the report needs the new table"
+    TEXT1, TEXT2, TEXT3 = "plot it again with the new bound", "and the report needs the new table", "and attach the report to that goal"
 
     def _paths(self):
         return os.path.join(self.lab, "proj", "plots", "retry.png"), os.path.join(self.lab, "proj", "docs", "report.pdf")
+
+    def _extra(self):
+        return os.path.join(self.lab, "proj", "notes", "todo.txt")
 
     def _result(self):
         """One driver run per class (both roads ride one page); each test reads its own road's measurements, so a
@@ -225,13 +256,15 @@ class ServedQueuedRescind(unittest.TestCase):
         cls = type(self)
         if cls._r is not None:
             return cls._r
-        png, pdf = self._paths()
-        text1, text2 = self.TEXT1, self.TEXT2
+        png, pdf = self._paths(); extra = self._extra()
+        text1, text2, text3 = self.TEXT1, self.TEXT2, self.TEXT3
+        os.makedirs(os.path.dirname(extra), exist_ok=True); Path(extra).write_text("- add the table\n")
         cfg = os.path.join(self.lab, "cfg.json")
         os.makedirs(os.path.dirname(png), exist_ok=True); os.makedirs(os.path.dirname(pdf), exist_ok=True)
         Path(png).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16); Path(pdf).write_bytes(b"%PDF-1.4\n%%EOF\n")
         with open(cfg, "w") as f:
-            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID, "png": png, "pdf": pdf, "text1": text1, "text2": text2}, f)
+            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID, "png": png, "pdf": pdf, "extra": extra, "text1": text1, "text2": text2, "text3": text3,
+                       "goalId": SID + ":g1", "goalTitle": "tighten the notes-api search"}, f)
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
@@ -249,10 +282,11 @@ class ServedQueuedRescind(unittest.TestCase):
 
     def test_the_pencil_gives_back_the_words_the_quote_chip_and_both_attachment_chips(self):
         r = self._result(); png, pdf = self._paths(); text1 = self.TEXT1
+        self.assertEqual((r["clearedA"]["text"], r["clearedA"]["chips"], r["clearedA"]["files"]), ("", [], []), "the box was cleared before this road: %r" % r["clearedA"])
         # the seed took: a quote chip and two attachment chips before the send
         self.assertEqual(r["seeded"]["chips"], ["the retry curve"]); self.assertEqual(len(r["seeded"]["files"]), 2, "two attachments seeded: %r" % r["seeded"])
         # the send carried the quote body, the trailing line of BOTH paths, and the attachment list on the frame
-        self.assertEqual(len(r["sent1"]), 1, "one send: %r" % r["sent1"])
+        self.assertEqual(len(r["sent1"]), 1, "one send with these words: %r" % r["sent1"])
         self.assertTrue(r["sent1"][0]["text"].startswith("Replying to this part of the conversation:"), "the quote rode ahead of the words: %r" % r["sent1"][0]["text"])
         self.assertTrue(r["sent1"][0]["text"].rstrip().endswith(png + " " + pdf), "the trailing line names both attachments: %r" % r["sent1"][0]["text"])
         self.assertEqual(r["sent1"][0].get("paths"), [png, pdf], "the frame carries the attachment list (medium 1)")
@@ -264,13 +298,31 @@ class ServedQueuedRescind(unittest.TestCase):
         self.assertEqual(len(r["back1"]["files"]), 2, "the image AND the document are chips again (medium 1): %r" % r["back1"])
         self.assertEqual(r["cancels1"], 1, "the rescind is the cancel: one frame")
 
-    def test_a_refused_rescind_leaves_the_composer_exactly_as_it_was_chips_included(self):
+    def test_a_refused_rescind_takes_back_only_what_the_pencil_armed_and_keeps_what_the_user_added_since(self):
         r = self._result(); text2 = self.TEXT2
-        # the refused rescind: the composer is exactly as it was before the pencil (medium 2)
-        self.assertEqual(r["before2"]["text"], ""); self.assertEqual(r["before2"]["files"], [], "the box was empty before the second pencil: %r" % r["before2"])
-        self.assertEqual(r["armed2"]["text"], text2, "the pencil armed the words: %r" % r["armed2"]); self.assertEqual(len(r["armed2"]["files"]), 1, "…and the attachment chip")
-        self.assertEqual((r["after2"]["text"], r["after2"]["chips"], r["after2"]["files"]), ("", [], []), "the refusal put the composer back as it was, chips included: %r" % r["after2"])
+        self.assertEqual(len(r["seededA"]["files"]), 1, "one attachment seeded: %r" % r["seededA"])
+        self.assertEqual((r["parkedA"]["text"], r["parkedA"]["files"]), ("", []), "the box emptied on send: %r" % r["parkedA"])
+        self.assertEqual(r["armedA"]["text"], text2, "the pencil armed the words: %r" % r["armedA"]); self.assertEqual(len(r["armedA"]["files"]), 1, "…and the attachment chip: %r" % r["armedA"])
+        self.assertEqual(len(r["addedA"]["files"]), 2, "the user added a file after the pencil: %r" % r["addedA"])
+        # the refusal: the words and the armed chip go; the file added since stays (round two, low 1)
+        self.assertEqual((r["afterA"]["text"], r["afterA"]["chips"]), ("", []), "the refusal put the words back and took the armed chips: %r" % r["afterA"])
+        self.assertEqual(len(r["afterA"]["files"]), 1, "exactly the user's own addition stays: %r" % r["afterA"]); self.assertIn("todo.txt", r["afterA"]["files"][0])
+        self.assertEqual(len(r["missRows"]), 1, "the refusal reached the handler once: %r" % r["missRows"]); self.assertTrue(r["missRows"][0]["hadRestore"], "…and found the stash it stored (the NUL-byte key, fixed): %r" % r["missRows"])
+        self.assertTrue(any("too late" in x for x in r["toast"]), "the refusal toasts: %r" % r["toast"])
 
+    def test_a_follow_up_with_an_attachment_rescinds_after_a_reload_with_its_goal_chip_and_its_attachment_chip(self):
+        # round two's medium: with the page's own record gone (a reload; another window is the same), the pencil has only the
+        # kernel's copy, so the copy must carry the follow-up's attachment list exactly as a plain send's does
+        r = self._result(); png, pdf = self._paths(); text3 = self.TEXT3
+        self.assertEqual((r["clearedB"]["text"], r["clearedB"]["chips"], r["clearedB"]["files"]), ("", [], []), "the box was cleared before this road: %r" % r["clearedB"])
+        self.assertEqual(r["seededC"]["chips"], ["tighten the notes-api search"], "the goal chip seeded: %r" % r["seededC"]); self.assertEqual(len(r["seededC"]["files"]), 1)
+        self.assertEqual(len(r["sentC"]), 1, "one follow-up frame: %r" % r["sentC"])
+        self.assertEqual(r["sentC"][0]["itemId"], SID + ":g1"); self.assertEqual(r["sentC"][0]["paths"], [pdf], "the follow-up frame carries the list")
+        self.assertTrue(r["sentC"][0]["text"].rstrip().endswith(pdf), "…and the trailing line names it: %r" % r["sentC"][0]["text"])
+        self.assertEqual((r["reloadedC"]["text"], r["reloadedC"]["files"]), ("", []), "after the reload the box is empty and the bubble is the kernel's: %r" % r["reloadedC"])
+        self.assertEqual(r["backC"]["text"], text3, "the typed words alone, no raw paths line: %r" % r["backC"])
+        self.assertEqual(len(r["backC"]["chips"]), 1, "the goal chip is back: %r" % r["backC"])
+        self.assertEqual(len(r["backC"]["files"]), 1, "the attachment chip is back from the kernel's copy (the medium): %r" % r["backC"]); self.assertIn("report.pdf", r["backC"]["files"][0])
 
 if __name__ == "__main__":
     unittest.main()

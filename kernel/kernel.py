@@ -16928,8 +16928,7 @@ def _drive(msg, client):
         if _route_meta_command(be, sid, str(msg["text"]), client):
             _push_soon()
         else:
-            _paths = [p for p in (msg.get("paths") or []) if isinstance(p, str) and p][:64] if isinstance(msg.get("paths"), list) else []
-            if _send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_paths or None) is None:
+            if _send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_wire_paths(msg)) is None:
                 client["send"](json.dumps({"type": "warn", "text": "the message was not delivered: no running backend owns this session"}))
             _push_soon()  # idle → instant echo; SDK busy → queued bubble forwarded mid-turn + folded (but a SLASH COMMAND parks to fire alone at turn end — mid-turn it would land as text, not execute); a backend that cannot forward, busy → held + merged at turn end
     elif t == "rewindSend" and msg.get("uuid") and msg.get("text"):
@@ -17013,7 +17012,7 @@ def _drive(msg, client):
         # Mid-compaction the whole send is PARKED (queued bubble; delivered when compaction ends — _send_or_park);
         # the backend echoes the send for itself.
         if _send_or_park(be, sid, body, qid=_client_qid(msg, sid, be),
-                         user=not msg.get("nudge")) is None:   # a follow-up is the user's; a nudge is romp's
+                         user=not msg.get("nudge"), paths=_wire_paths(msg)) is None:   # a follow-up is the user's; a nudge is romp's; its attachments ride as a send's do (T373 fold round two)
             # the feed predicted the move on the click; the err frame carrying op + itemId is what it reverts
             # on (_refuse_drive's shape), so the card comes back at once with the reason, not on the backstop
             _refuse_drive(client, t, sid, msg, why="No running backend owns this session")
@@ -30969,6 +30968,18 @@ def _send_with_id(be, sid, text, qid=None, user=False, paths=None):
     if paths and _takes_kw(be.send, "paths"):
         kw["paths"] = list(paths)                          # the attachment list, beside the copy's id (T373 fold)
     return be.send(sid, text, **kw)
+
+
+def _wire_paths(msg):
+    """The attachment list a drive frame carries (the composer names every path its trailing line wrote, T373 fold):
+    strings only, bounded, None when the frame names none. One reader for every arm that parks or sends a user's
+    message (sendMessage, askFollowUp), so a follow-up from a goal chip keeps its attachments exactly as a plain send
+    does (the fold's round-two medium: the follow-up arm read none, and a rescind on another client, or after a
+    reload, gave back a raw paths line with no chip)."""
+    raw = msg.get("paths")
+    if not isinstance(raw, list):
+        return None
+    return [p for p in raw if isinstance(p, str) and p][:64] or None
 
 
 def _op_paths(op):

@@ -4981,13 +4981,13 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
     const known = ownPaths || ((el as any)._qpaths as string[] | undefined) || ((el as any)._qimgs as string[] | undefined) || null;
     const back = rescindedComposerState(qmd, known);
     const goal = (el as any)._qgoal as { itemId: string; title: string } | null | undefined;
-    let armed = false;
-    if (goal && goal.itemId) { setCitation(sidQ, { itemId: goal.itemId, title: goal.title }); armed = true; }
-    else if (back.cites.length) { composerCitations.set(sidQ, back.cites.map((c) => ({ title: c.quote.split("\n")[0].slice(0, 80), quote: c.quote, src: c.src }))); persistDrafts(); renderComposerChips(sidQ); armed = true; }
-    for (const f of back.files) { addComposerFile(sidQ, f); armed = true; }
+    const armedCites: string[] = [], armedFiles: string[] = [];   // what THIS press puts into the box, by identity: the refusal takes exactly these back
+    if (goal && goal.itemId) { setCitation(sidQ, { itemId: goal.itemId, title: goal.title }); armedCites.push("g:" + goal.itemId); }
+    else if (back.cites.length) { composerCitations.set(sidQ, back.cites.map((c) => ({ title: c.quote.split("\n")[0].slice(0, 80), quote: c.quote, src: c.src }))); persistDrafts(); renderComposerChips(sidQ); for (const c of back.cites) armedCites.push("q:" + c.quote + "\n" + (c.src || "")); }
+    for (const f of back.files) { addComposerFile(sidQ, f); armedFiles.push(f); }
     restoreToComposer(back.text);
     // a provisional rescind gets no cancelResult (nothing was posted) — no stash to consume, none kept
-    if (!provisional) pendingCancelRestores.set(activeId + " " + qmd, { before, after: ta ? ta.value : "", cites: citesBefore, files: filesBefore, armed });
+    if (!provisional) pendingCancelRestores.set(activeId + " " + qmd, { before, after: ta ? ta.value : "", cites: citesBefore, files: filesBefore, armedCites, armedFiles });
   }
   // Optimistic; the next push rebuilds the queue without it. The GROUP is reflowed in the same breath —
   // the bubble alone leaves its "1 queued message" header behind, still counting what just went.
@@ -5007,7 +5007,9 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
 // composer back exactly as it was IF the user hasn't touched it since (the user 2026-07-20: the
 // restored copy of an un-recallable message is a double-send waiting to happen). An edited draft is
 // never touched — the toast alone covers it.
-const pendingCancelRestores = new Map<string, { before: string; after: string; cites: Citation[]; files: string[]; armed: boolean }>();   // + the chips as they stood and whether the rescind armed any (T373 fold, medium 2)
+const pendingCancelRestores = new Map<string, { before: string; after: string; cites: Citation[]; files: string[]; armedCites: string[]; armedFiles: string[] }>();   // + the chips as they stood and what the press armed, by identity (T373 fold, medium 2; round two, low 1)
+/** A citation's identity for the refusal's bookkeeping: a goal by its item, a quote by its words and source. */
+function citeKey(c: Citation): string { return c.itemId ? "g:" + c.itemId : "q:" + (c.quote || "") + "\n" + (c.src || ""); }
 
 // The refusal card's remedy line, ONE string: renderApiError's initial write and apiRetryTick's
 // per-second re-assert both read it, so the card and the tick can never drift into different words.
@@ -17482,11 +17484,19 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
           ta.value = stash.before;
           ta.dispatchEvent(new Event("input", { bubbles: true }));
         }
-        // the chips the rescind armed go back to what stood before, typed or not: a goal, quote chips or attachments the
-        // user never asked for must not ride their next message (the T373 fold's medium 2); persisted with the draft
-        if (stash.armed) {
-          if (stash.cites.length) composerCitations.set(m.id, stash.cites); else composerCitations.delete(m.id);
-          if (stash.files.length) composerFiles.set(m.id, stash.files); else composerFiles.delete(m.id);
+        // the chips the rescind armed go, typed or not: a goal, quote chips or attachments the user never asked for must not
+        // ride their next message (the T373 fold's medium 2). Only what the PRESS put in, and only if it was not already there
+        // before it: a file or chip the user added since the pencil stays, as their typed words do (round two's low 1); a
+        // chip the press displaced (a goal chip replaces the strip) comes back. Persisted with the draft.
+        if (stash.armedCites.length || stash.armedFiles.length) {
+          const beforeC = new Set(stash.cites.map(citeKey)), armedC = new Set(stash.armedCites);
+          const cites = (composerCitations.get(m.id) || []).filter((c) => !(armedC.has(citeKey(c)) && !beforeC.has(citeKey(c))));
+          for (const c of stash.cites) if (!cites.some((x) => citeKey(x) === citeKey(c))) cites.push(c);
+          if (cites.length) composerCitations.set(m.id, cites); else composerCitations.delete(m.id);
+          const beforeF = new Set(stash.files), armedF = new Set(stash.armedFiles);
+          const files = (composerFiles.get(m.id) || []).filter((f) => !(armedF.has(f) && !beforeF.has(f)));
+          for (const f of stash.files) if (!files.includes(f)) files.push(f);
+          if (files.length) composerFiles.set(m.id, files); else composerFiles.delete(m.id);
           persistDrafts(); renderComposerChips(m.id); renderComposerFiles(m.id);
         }
       }

@@ -162,7 +162,7 @@ test("EVERY ✕ stops our re-injection first; the optimistic one cancels by body
   // cancelResult, and the composer restore reverts (pendingCancelRestores).
   assert.match(RENDER, /if \(qmd\) \{/);
   // …by the bubble's OWN identity when it has one (data-qts) — send-pending.test.ts runs the lookup
-  assert.match(RENDER, /const qts = el\.dataset\.qts !== undefined \? Number\(el\.dataset\.qts\) : undefined;\s*\n\s*const qid = el\.dataset\.qid \|\| undefined;\s*\n(?:.*\n){0,3}\s*if \(dropPending\(list, qmd, qts, qid\)\)/);
+  assert.match(RENDER, /const qts = el\.dataset\.qts !== undefined \? Number\(el\.dataset\.qts\) : undefined;\s*\n\s*const qid = el\.dataset\.qid \|\| undefined;\s*\n\s*const own = list\.find\(\(p\) => \(qid && p\.qid === qid\) \|\| \(qts !== undefined && p\.ts === qts && p\.text === qmd\) \|\| \(!qid && qts === undefined && p\.text === qmd\)\);\s*\n\s*const rec = own \? \(own\.paths && own\.paths\.length \? own\.paths : own\.imgPaths\) : null;[^\n]*\n\s*if \(rec && rec\.length\) ownPaths = rec\.slice\(\);\s*\n\s*if \(dropPending\(list, qmd, qts, qid\)\)/);
   // …and the kernel's copies carry their own enqueue stamp under `qts` now (T252c): only OUR bubble's stamp is its identity
   // for the ✕, while a kernel copy's ✕ names the copy's id, so it drops the send that owns it (third review)
   assert.match(RENDER, /if \(t\.optimistic && t\.qts !== undefined\) x\.dataset\.qts = String\(t\.qts\);/);
