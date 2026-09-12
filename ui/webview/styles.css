@@ -3430,10 +3430,16 @@ body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: 
    with the file group and the close cross alone at the end; .fileview-btn.fileview-icon glyph buttons; file-view.ts,
    T367), one set of rules for both surfaces, so a control added to one wears the same dress in the other. The
    lightbox's own classes stay as hooks: the placement here and the stage's tap rule (pinch.ts, closest(".romp-lightbox-bar")).
-   No side padding: the picture's edges are the column's. The title never forces the column wider than the picture (the
-   viewer's 12em floor is for a card that owns its width; here the directory truncates instead). */
-.romp-lightbox-bar { padding: 0 2px 6px; }
-.romp-lightbox-bar .fileview-name { min-width: 0; }
+   The bar's OWN placement rules are scoped under the lightbox id: an id outranks the viewer's later rules of equal
+   specificity, which a plain .romp-lightbox-bar rule tied with and lost to (round one measured the served bar at the
+   viewer's 7px 10px and the title at 12em; the repo's cascade rule: pin the tiebreak). No side padding: the picture's
+   edges are the column's. contain: inline-size makes the bar contribute NO intrinsic width, so the PICTURE sets the
+   column (a 120px thumbnail is a 120px column, not a bar-wide one) and the bar stretches to it; inside, the title
+   truncates, the basename too (the viewer's card owns its width and keeps its basename whole; the lightbox's column is
+   the picture's), and the actions wrap beneath the title when the picture is narrower than they are. */
+#romp-lightbox .romp-lightbox-bar { padding: 0 2px 6px; contain: inline-size; }
+#romp-lightbox .romp-lightbox-bar .fileview-name { min-width: 0; overflow: hidden; }
+#romp-lightbox .romp-lightbox-bar .fileview-base { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* the backdrop is 72% black in BOTH themes, so inside the lightbox the bar's tokens are the dark theme's whatever the
    page wears: the light theme's near-black prose, hairline and clay accent would sit on a dark field otherwise */
 #romp-lightbox { --fg: #e8e8e8; --dim: #b8b8b8; --accent: #9cd2ff; --accent-fg: #0c1a2e; --accent-wash: rgba(156, 210, 255, 0.12);

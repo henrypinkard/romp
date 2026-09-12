@@ -73,7 +73,7 @@ const ctx = await browser.newContext({ viewport: { width: 1100, height: 640 } })
 const page = await ctx.newPage();
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
-await page.waitForFunction(() => { const i = document.querySelector(".path-full-img"); return !!(i && i.complete && i.naturalWidth > 0); }, null, { timeout: 30000 });
+await page.waitForFunction(() => { const is = Array.from(document.querySelectorAll(".path-full-img")); return is.length >= 2 && is.every((i) => i.complete && i.naturalWidth > 0); }, null, { timeout: 30000 });
 await page.waitForTimeout(200);
 const r1 = (v) => Math.round(v * 10) / 10;
 const rectOf = "(e) => { const b = e.getBoundingClientRect(); const r = (v) => Math.round(v * 10) / 10; return { top: r(b.top), bottom: r(b.bottom), left: r(b.left), right: r(b.right), w: r(b.width), h: r(b.height) }; }";
@@ -86,12 +86,12 @@ const viewer = await page.evaluate((src) => {
   const dress = eval(src);
   const bar = document.querySelector("#romp-fileview .fileview-bar");
   const btn = (aria) => Array.from(bar.querySelectorAll("button, a")).find((e) => e.getAttribute("aria-label") === aria);
-  return { download: dress(btn("Download")), close: dress(btn("Close the file viewer")), barPadding: getComputedStyle(bar).padding };
+  return { download: dress(btn("Download")), close: dress(btn("Close the file viewer")), barPadding: getComputedStyle(bar).padding, nameMinWidth: getComputedStyle(bar.querySelector(".fileview-name")).minWidth };
 }, dressOf);
 await page.evaluate(() => document.getElementById("romp-fileview")?.remove());
 await page.waitForTimeout(100);
 // the lightbox: a click on the inline figure
-await page.click(".path-full-img");
+await page.click(".path-full-img >> nth=0");
 await page.waitForSelector("#romp-lightbox .romp-lightbox-bar", { timeout: 15000 });
 await page.waitForFunction(() => { const i = document.querySelector("#romp-lightbox .romp-lightbox-img"); return !!(i && i.complete && i.naturalWidth > 0); }, null, { timeout: 15000 });
 await page.waitForTimeout(150);
@@ -108,6 +108,8 @@ const measure = (label) => page.evaluate(([label, rectSrc, dressSrc]) => {
   const base = bar.querySelector(".fileview-base"), dir = bar.querySelector(".fileview-dir");
   return { label, order: Array.from(inner.children).map((c) => c.className), bar: rect(bar), img: rect(img), inner: rect(inner),
     barClasses: bar.className, barBorderBottom: getComputedStyle(bar).borderBottomColor, barPadding: getComputedStyle(bar).padding,
+    nameMinWidth: (bar.querySelector(".fileview-name") ? getComputedStyle(bar.querySelector(".fileview-name")).minWidth : ""), barContain: getComputedStyle(bar).contain,
+    baseOverflow: base ? getComputedStyle(base).overflow : "", imgNatural: img.naturalWidth,
     title: { dir: dir && dir.textContent, base: base && base.textContent, full: (bar.querySelector(".fileview-name") || bar.querySelector(".romp-lightbox-name") || {}).title || "", baseColor: base && getComputedStyle(base).color, dirColor: dir && getComputedStyle(dir).color },
     controls, actsChildren: acts ? Array.from(acts.children).map((c) => c.className) : [], bodyLight: document.body.classList.contains("theme-light") };
 }, [label, rectOf, dressOf]);
@@ -126,6 +128,17 @@ await page.evaluate(() => document.body.classList.remove("theme-light")); await 
 await page.keyboard.press("Escape");
 await page.waitForTimeout(120);
 out.afterEscape = await page.evaluate(() => ({ gone: !document.getElementById("romp-lightbox") }));
+// the NARROW picture: 120px wide, narrower than the bar's three controls; the picture sets the column and the bar wraps inside it
+await page.click(".path-full-img >> nth=1");
+await page.waitForSelector("#romp-lightbox .romp-lightbox-bar", { timeout: 15000 });
+await page.waitForFunction(() => { const i = document.querySelector("#romp-lightbox .romp-lightbox-img"); return !!(i && i.complete && i.naturalWidth > 0); }, null, { timeout: 15000 });
+await page.waitForTimeout(150);
+out.narrow = await measure("narrow");
+if (cfg.shots) {
+  const clip = await page.evaluate(() => { const b = document.querySelector("#romp-lightbox .romp-lightbox-inner").getBoundingClientRect(); return { x: Math.max(0, b.left - 24), y: Math.max(0, b.top - 24), width: Math.min(window.innerWidth, b.width + 48), height: Math.min(window.innerHeight, b.height + 48) }; });
+  await page.screenshot({ path: cfg.shots + "-narrow-dark.png", clip });
+}
+await page.keyboard.press("Escape");
 fs.writeFileSync(cfg.out, JSON.stringify(out));
 await browser.close();
 console.log("RESULT: ok");
@@ -172,6 +185,7 @@ class ServedLightboxBar(unittest.TestCase):
         os.makedirs(os.path.join(cwd, "docs"), exist_ok=True)
         cls.figure = os.path.join(cwd, "docs", "figure.png")
         Path(cls.figure).write_bytes(_png())
+        Path(cwd, "docs", "narrow.png").write_bytes(_png(120, 80, (4, 120, 178)))   # narrower than the bar's controls: the picture must still set the column
         proj = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cwd)))
         os.makedirs(proj, exist_ok=True)
         t0 = int(time.time()) - 900
@@ -183,7 +197,7 @@ class ServedLightboxBar(unittest.TestCase):
                  "message": {"role": "user", "content": "where is the figure for the notes-api guide?"}},
                 {"type": "assistant", "timestamp": iso(t0 + 5), "uuid": "a1", "parentUuid": "u1", "sessionId": SID,
                  "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn",
-                             "content": [{"type": "text", "text": "The guide's figure is at docs/figure.png."}]}}]
+                             "content": [{"type": "text", "text": "The guide's figure is at docs/figure.png and its thumbnail at docs/narrow.png."}]}}]
         Path(proj, SID + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
         cls.port, cls.token = _free_port(), "testtok-lightbox"
@@ -293,6 +307,28 @@ class ServedLightboxBar(unittest.TestCase):
         self.assertEqual(l["barBorderBottom"], "rgba(255, 255, 255, 0.18)", "the hairline beneath the bar is the lightbox's light seam in both themes")
         self.assertEqual(d["barBorderBottom"], l["barBorderBottom"])
         self.assertEqual(l["bar"], d["bar"], "the theme moves no geometry")
+
+    def test_the_bars_own_placement_rules_win_the_cascade_on_the_served_page(self):
+        """Round one: the two rules tied with the viewer's later rules and lost (7px 10px, 12em on the served bar). Measured, not read."""
+        r = self._run()
+        m = r["dark"]
+        self.assertEqual(m["barPadding"], "0px 2px 6px", "the lightbox bar's own padding (the viewer's is %s)" % r["viewer"]["barPadding"])
+        self.assertEqual(r["viewer"]["barPadding"], "7px 10px", "…and the viewer keeps its own")
+        self.assertEqual(m["nameMinWidth"], "0px", "the title's 12em floor is lifted in the lightbox (the viewer's: %s)" % r["viewer"]["nameMinWidth"])
+        self.assertNotEqual(r["viewer"]["nameMinWidth"], "0px", "the viewer keeps its floor")
+        self.assertEqual(m["barContain"], "inline-size", "the bar contributes no intrinsic width: the picture sets the column")
+        self.assertEqual(m["baseOverflow"], "hidden", "the basename truncates under a narrow picture")
+
+    def test_a_narrow_picture_sets_the_column_width_and_the_bar_wraps_inside_it(self):
+        m = self._run()["narrow"]
+        self.assertEqual(m["imgNatural"], 120)
+        self.assertAlmostEqual(m["img"]["w"], 120, delta=0.5, msg="the narrow picture at its own size")
+        self.assertAlmostEqual(m["inner"]["w"], m["img"]["w"], delta=1, msg="the column is the picture's width, not the bar's: " + json.dumps({"inner": m["inner"], "img": m["img"], "bar": m["bar"]}))
+        self.assertAlmostEqual(m["bar"]["w"], m["inner"]["w"], delta=1, msg="the bar fills the column and no more")
+        self.assertLessEqual(m["bar"]["bottom"], m["img"]["top"], "the bar still sits above the picture")
+        for c in m["controls"]:
+            self.assertGreaterEqual(c["rect"]["left"], m["inner"]["left"] - 0.5, "every control stays inside the column: " + json.dumps(c["rect"]))
+            self.assertLessEqual(c["rect"]["right"], m["inner"]["right"] + 0.5, "every control stays inside the column: " + json.dumps(c["rect"]))
 
     def test_escape_closes_the_lightbox(self):
         self.assertTrue(self._run()["afterEscape"]["gone"])

@@ -41,9 +41,13 @@ test("a png source writes directly; anything else re-encodes to png through a ca
 
 test("the click acknowledges immediately and failures state why — both self-restore", () => {
   // the file viewer's glyph swap (T367, shared since T385): a check and "Copied", a cross whose words carry the reason
-  assert.match(PREVIEW, /say\(ICON_CHECK, "Copied", "ok"\);/);
-  assert.match(PREVIEW, /say\(ICON_CROSS, "Copy failed: " \+ \(\(e && \(e as Error\)\.message\) \|\| String\(e\)\), "err"\);/);
-  assert.match(PREVIEW, /const say = \(icon: string, word: string, cls: string\) => \{\s*\n\s*btn\.innerHTML = icon; btn\.title = word; btn\.setAttribute\("aria-label", word\);/);
+  assert.match(PREVIEW, /\(\) => say\(ICON_CHECK, "Copied", "ok", 1400\),/);
+  assert.match(PREVIEW, /\(e\) => say\(ICON_CROSS, "Copy failed: " \+ \(\(e && \(e as Error\)\.message\) \|\| String\(e\)\), "err", 3000\)\);/);
+  assert.match(PREVIEW, /const say = \(icon: string, word: string, cls: string, ms: number \| null\) => \{\s*\n\s*btn\.innerHTML = icon; btn\.title = word; btn\.setAttribute\("aria-label", word\);/);
+  // the viewer's click-safety (T385 review): the press dims in its own tick, and ONE restore timer is cleared on every swap
+  assert.match(PREVIEW, /ev\.stopPropagation\(\);\s*\/\/ copying must not also dismiss\s*\n\s*btn\.classList\.add\("fileview-busy"\);/, "the same-tick acknowledgement");
+  assert.match(PREVIEW, /btn\.classList\.remove\("ok", "err", "fileview-busy"\); if \(cls\) btn\.classList\.add\(cls\);/);
+  assert.match(PREVIEW, /if \(copyTimer\) \{ window\.clearTimeout\(copyTimer\); copyTimer = null; \}\s*\n\s*if \(ms !== null\) copyTimer = window\.setTimeout\(\(\) => say\(COPY_SVG, "Copy image", "", null\), ms\);/, "one timer, cleared on every swap");
   assert.match(PREVIEW, /ev\.stopPropagation\(\);\s*\/\/ copying must not also dismiss/);
 });
 

@@ -377,8 +377,11 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
   // control). Clipboards take image/png; any other source re-encodes through a canvas. The
   // ClipboardItem takes the PROMISE form so write() runs synchronously inside the click gesture
   // (Safari refuses a write that awaits first — the tailnet phone case). Success and failure both
-  // speak in place, the file viewer's glyph swap (T367): a check and "Copied", or a cross whose words
-  // name the reason, and the button restores itself either way.
+  // speak in place, the file viewer's glyph swap (T367): the press dims the button in the same tick
+  // (click-safe: every press acknowledges, ui/CLAUDE.md; a large jpeg's decode is not instant), then a
+  // check and "Copied", or a cross whose words name the reason, and the button restores itself either
+  // way on ONE timer that every swap clears (two presses inside the pulse never let the first wipe the
+  // second's check early; the viewer's copyTimer rule).
   const COPY_SVG = ICON_COPY;   // icons.ts: the one two-sheets drawing, shared with the file viewer's bar (T367)
   let cp: HTMLButtonElement | null = null;
   if (curImg && typeof ClipboardItem !== "undefined" && navigator.clipboard && navigator.clipboard.write) {
@@ -386,14 +389,17 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
     cp = btn;
     btn.type = "button";
     btn.className = "fileview-btn fileview-icon romp-lightbox-copy";
-    const say = (icon: string, word: string, cls: string) => {
+    let copyTimer: number | null = null;                 // window.setTimeout's handle (a number in the page)
+    const say = (icon: string, word: string, cls: string, ms: number | null) => {
       btn.innerHTML = icon; btn.title = word; btn.setAttribute("aria-label", word);
-      btn.classList.remove("ok", "err"); if (cls) btn.classList.add(cls);
+      btn.classList.remove("ok", "err", "fileview-busy"); if (cls) btn.classList.add(cls);
+      if (copyTimer) { window.clearTimeout(copyTimer); copyTimer = null; }
+      if (ms !== null) copyTimer = window.setTimeout(() => say(COPY_SVG, "Copy image", "", null), ms);
     };
-    say(COPY_SVG, "Copy image", "");
-    const restore = () => say(COPY_SVG, "Copy image", "");
+    say(COPY_SVG, "Copy image", "", null);
     btn.onclick = (ev) => {
       ev.stopPropagation();                                // copying must not also dismiss
+      btn.classList.add("fileview-busy");                  // the same-tick acknowledgement
       const src = curImg!().src;
       const png = (async () => {
         const blob = await (await fetch(src)).blob();
@@ -405,13 +411,9 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
         return await new Promise<Blob>((res, rej) =>
           cv.toBlob((b) => (b ? res(b) : rej(new Error("png encode failed"))), "image/png"));
       })();
-      navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(() => {
-        say(ICON_CHECK, "Copied", "ok");
-        window.setTimeout(restore, 1400);                  // the ack pulse, then back to a button
-      }, (e) => {
-        say(ICON_CROSS, "Copy failed: " + ((e && (e as Error).message) || String(e)), "err");   // loud: the reason, never a silent no-op
-        window.setTimeout(restore, 3000);
-      });
+      navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(
+        () => say(ICON_CHECK, "Copied", "ok", 1400),        // the ack pulse, then back to a button
+        (e) => say(ICON_CROSS, "Copy failed: " + ((e && (e as Error).message) || String(e)), "err", 3000));   // loud: the reason, never a silent no-op
     };
   }
   const close = document.createElement("button");

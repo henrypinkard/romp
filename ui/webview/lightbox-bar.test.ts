@@ -39,6 +39,17 @@ function mkEl(tag: string): El {
   return e;
 }
 function classes(e: El): string[] { return e.className.split(/\s+/).filter(Boolean); }
+// selector specificity (ids, classes + attributes + pseudo-classes, elements) and the cascade's tiebreak between two rules:
+// a strictly higher specificity wins whatever the order; a tie goes to the later rule, which is the trap
+function spec(sel: string): [number, number, number] {
+  const ids = (sel.match(/#[\w-]+/g) || []).length;
+  const cls = (sel.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+(\([^)]*\))?/g) || []).length;
+  const els = (sel.replace(/#[\w-]+|\.[\w-]+|\[[^\]]+\]|::?[\w-]+(\([^)]*\))?/g, " ").match(/(^|\s)[a-zA-Z][\w-]*/g) || []).length;
+  return [ids, cls, els];
+}
+function wins(a: [number, number, number], b: [number, number, number]): boolean {
+  return a[0] !== b[0] ? a[0] > b[0] : a[1] !== b[1] ? a[1] > b[1] : a[2] > b[2];
+}
 
 type Nav = Array<{ path: string; sid?: string | null; pin?: string }>;
 function lift(kind: "img" | "pdf", nav: Nav = [], clipboard = false): { body: El; open: (p: string, sid?: string | null, pin?: string) => void; keys: Array<(ev: { key: string; stopPropagation: () => void; preventDefault: () => void }) => void> } {
@@ -58,7 +69,7 @@ function lift(kind: "img" | "pdf", nav: Nav = [], clipboard = false): { body: El
     const ICON_DOWNLOAD = '<svg data-icon="download"/>', ICON_COPY = '<svg data-icon="copy"/>', ICON_CHECK = '<svg data-icon="check"/>', ICON_CROSS = '<svg data-icon="cross"/>';
     const navigator = H.clipboard ? { clipboard: { write: () => Promise.resolve() } } : {};
     const ClipboardItem = H.clipboard ? function ClipboardItem() {} : undefined;
-    const window = { setTimeout: () => 0 };
+    const window = { setTimeout: () => 1, clearTimeout: () => {} };
   `;
   const open = (new Function("H", "document", prelude + code + "\nreturn openLightbox;") as (h: unknown, d: unknown) => (p: string, sid?: string | null, pin?: string) => void)(H, document);
   return { body, open, keys };
@@ -151,8 +162,19 @@ test("styles: the lightbox's own chip rules are gone, the shared bar rules stand
   assert.doesNotMatch(CSS, /\.romp-lightbox-close \{/, "the close wears .fileview-btn.fileview-close now");
   assert.doesNotMatch(CSS, /\.romp-lightbox-dl, \.romp-lightbox-copy \{/, "download and copy wear .fileview-btn.fileview-icon now");
   assert.doesNotMatch(CSS, /\.romp-lightbox-name \{/, "the title wears .fileview-name (directory + basename) now");
-  assert.match(CSS, /\.romp-lightbox-bar \{ padding: 0 2px 6px; \}/, "the bar's own placement over the backdrop: no side padding, the picture's edges are the column's");
-  assert.match(CSS, /\.romp-lightbox-bar \.fileview-name \{ min-width: 0; \}/, "the title never forces the column wider than the picture; the directory truncates");
+  // the bar's own placement rules must WIN the cascade over the viewer's (round one: two rules of equal specificity
+  // sat 420 lines before .fileview-bar's and lost, so the served bar measured 7px 10px and the title 12em): the
+  // tiebreak is pinned by computed specificity, never by the rule's text alone
+  const rule = (re: RegExp, what: string): string => { const m = CSS.match(re); assert.ok(m, what + ": rule not found"); return m![1].trim(); };
+  const lbBar = rule(/^([^{}\n]*romp-lightbox-bar[^{}\n]*)\{[^}]*padding: 0 2px 6px;/m, "the lightbox bar's padding rule");
+  const vwBar = rule(/^([^{}\n]*\.fileview-bar)\s*\{[^}]*padding: 7px 10px;/m, "the viewer bar's padding rule");
+  assert.ok(wins(spec(lbBar), spec(vwBar)), "the bar's padding rule outranks the viewer's: " + lbBar + " vs " + vwBar);
+  const lbName = rule(/^([^{}\n]*romp-lightbox-bar \.fileview-name[^{}\n]*)\{[^}]*min-width: 0;/m, "the lightbox title's min-width rule");
+  const vwName = rule(/^([^{}\n]*\.fileview-bar \.fileview-name)\s*\{[^}]*min-width: 12em;/m, "the viewer title's min-width rule");
+  assert.ok(wins(spec(lbName), spec(vwName)), "the title's floor is lifted by a rule that outranks the viewer's: " + lbName + " vs " + vwName);
+  assert.match(CSS, /^#romp-lightbox \.romp-lightbox-bar \{ padding: 0 2px 6px; contain: inline-size; \}/m, "the bar contributes no intrinsic width: the PICTURE sets the column");
+  assert.match(CSS, /^#romp-lightbox \.romp-lightbox-bar \.fileview-name \{ min-width: 0; overflow: hidden; \}/m);
+  assert.match(CSS, /^#romp-lightbox \.romp-lightbox-bar \.fileview-base \{ flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; \}/m, "under a narrow picture the basename truncates too (the viewer's card owns its width; the lightbox's column is the picture's)");
   assert.match(CSS, /\.romp-lightbox-img \{ [^}]*align-self: center;/, "a bar wider than a small picture never stretches it");
   assert.match(CSS, /#romp-lightbox \{ --fg: #e8e8e8; --dim: #b8b8b8; --accent: #9cd2ff; --accent-fg: #0c1a2e; --accent-wash: rgba\(156, 210, 255, 0\.12\);\s*\n\s*--err: #f48771; --card-border: rgba\(255, 255, 255, 0\.18\); --box-border: rgba\(255, 255, 255, 0\.18\); \}/);
   assert.match(CSS, /\.romp-lightbox-cue \{ flex: 0 0 auto; font-size: 0\.82em; color: var\(--dim\); font-variant-numeric: tabular-nums; \}/, "the cue keeps the house sub scale");
