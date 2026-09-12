@@ -106,6 +106,7 @@ HELPERS = {
     "_seg_jump": ("sig", ("transcript",)),
     "_seg_key": ("sig", ("transcript",)),
     "_seg_last_text": ("sig", ("transcript",)),
+    "_summary_text_anchor": ("sig", ("transcript",)),   # T388: the brief line's text-atom landing, read from the parse's atoms
     "_segs_seam": ("sig", ("transcript",)),
     "em.turn_scalar": ("sig", ("transcript",)),
     "jd._prompt_anchor_uuid": ("sig", ("transcript",)),
