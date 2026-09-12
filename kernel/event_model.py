@@ -4916,14 +4916,15 @@ def asm_whole_entries():
 
 
 def asm_whole_entry_for(leaf_path):
-    """The (rompuuid, sdk_human) of this process's whole assembly entry over `leaf_path`, or None: how the pass names the session
-    of a leaf the discover window no longer lists (T382)."""
-    real = os.path.realpath(str(leaf_path))
+    """This process's whole assembly entries over `leaf_path` as {rompuuid: set of sdk_human flags}: how the pass names the
+    session of a leaf the discover window no longer lists, and sees which flags it was parsed under (T382; a process can hold
+    two whole entries for one leaf, the judges' flag and the display's)."""
+    real = os.path.realpath(str(leaf_path)); out = {}
     with _ASM_LOCK:
         for k, e in _ASM_CACHE.items():
             if k[0] == real and e is not None and not e.get("prefix") and not e.get("preTurns"):
-                return (k[1], bool(k[2]))
-    return None
+                out.setdefault(k[1], set()).add(bool(k[2]))
+    return out
 
 
 def asm_entry_whole(leaf_path, rompuuid, sdk_human=False):

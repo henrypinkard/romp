@@ -9898,6 +9898,17 @@ def _heal_cold_folds(leaf):
     return healed
 
 
+def _stored_tree_under(path, sid, human):
+    """The parse store's tree for the leaf under exactly the flag `human`, or None: the assembly document written under one
+    flag must not pair its atoms with the other flag's per-segment human marks in a turns section (T382 review, low 1); with no
+    tree under that flag the document is written without a turns section (the writer's memo rewrites it once one is given)."""
+    try:
+        hit = jd._parse_slot(sid, jd._pending_cut(sid), path, bool(human))
+    except Exception:
+        return None
+    return hit[1] if hit else None
+
+
 def _stored_tree(path, sid):
     """The parse store's tree for a session's leaf when it holds one (the kernel's display parse under its own human flag,
     else the judges'), never a parse of its own: the assembly writer takes it for the document's turns section (T323
@@ -9983,10 +9994,11 @@ def _converge_checkpoints(now):
                 unhealed = em.drop_cold_cursors(p)
             if quiescent:                                  # the ASSEMBLY document from the same resident read, BEFORE the held drop
                 try:                                       #  pops the record entry (T376 round one, medium: the pop came first and
-                    ent = em.asm_whole_entry_for(p)        #  the assembly writer found no record entry for its offsets); the session
-                    if ent is not None:                    #  named by the parse in the cache (T382), else by the window's row; a
-                        _converge_assembly_leaf(p, ent[0], t0, human=ent[1])
-                    else:                                  #  raise here must not discard the held drop or abort the cycle (round two)
+                    ents = em.asm_whole_entry_for(p)       #  the assembly writer found no record entry for its offsets); the session
+                    if ents:                               #  named by the parses in the cache (T382), else by the window's row; a
+                        for sid_, flags in ents.items():   #  raise here must not discard the held drop or abort the cycle (round two)
+                            _converge_assembly_leaf(p, sid_, t0, flags=flags)
+                    else:
                         _converge_assembly_leaf(p, leaf_sid.get(p), t0)
                 except Exception:
                     sys.stderr.write("assembly converge: %s\n" % traceback.format_exc())
@@ -10040,13 +10052,15 @@ def _converge_assembly(now, t0):
     if not ASM_CONVERGE or not em.checkpoint_drop_writes_on():
         return 0
     n = 0
-    for leaf, sid, human in em.asm_whole_entries():        # the parses the boot actually did, each with its sid and flag (T382: the
-        if not leaf or not sid:                            #  discover window's rows, 48 hours, left every older idle leaf out: 19 of
-            continue                                       #  the 25 boundary leaves without a document on the devbox)
-        if time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0:
-            break                                          # the cycle's wall: the rest wait for the next one
+    by_leaf = {}                                           # (leaf, sid) -> the flags the boot parsed it under (T382 review, medium: two
+    for leaf, sid, human in em.asm_whole_entries():        #  whole entries for one leaf, the judges' flag and the display's, and the
+        if leaf and sid:                                   #  document must carry the one the display's next boot reads with)
+            by_leaf.setdefault((str(leaf), sid), set()).add(human)
+    for (leaf, sid), flags in by_leaf.items():             # the parses the boot actually did (T382: the discover window's rows, 48
+        if time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0:   #  hours, left every older idle leaf out: 19 of the 25 boundary leaves
+            break                                          #  without a document on the devbox); the cycle's wall: the rest wait
         try:
-            r = _converge_assembly_leaf(str(leaf), sid, t0, human=human)
+            r = _converge_assembly_leaf(leaf, sid, t0, flags=flags)
         except Exception:                                  # one leaf's raise (a stat, a backend hook) leaves the rest their turn
             sys.stderr.write("assembly converge: %s\n" % traceback.format_exc()); continue
         if r is None:
@@ -10060,13 +10074,19 @@ def _release_oldest(table, cap=4096):
         table.pop(next(iter(table)))                       #  the table cleared (round one, low 6)
 
 
-def _converge_assembly_leaf(key, sid, t0, human=None):
+_ASM_CONVERGE_FLAG = {}             # leaf -> the file state under which a flag mismatch was counted (once, not per cycle)
+
+
+def _converge_assembly_leaf(key, sid, t0, flags=None):
     """One leaf's assembly write for the pass (see _converge_assembly): True written, False not (done, refused, nothing to
-    write from), None when the budget refused it (the caller defers the rest). `human` is the flag of the parse in the cache
-    when the caller knows it (T382); else the display parse's answer."""
+    write from), None when the budget refused it (the caller defers the rest). `flags`, when the caller knows them, are the
+    sdk_human flags the boot parsed the leaf under; the document is written under the DISPLAY parse's flag (the one the next
+    boot's display parse reads with; the judges' flag differs until the owner provider is wired, and a document under it would
+    take a session fallback at the display's restore and be deleted), and a leaf parsed only under the other flag is skipped,
+    counted `flagMismatch` (T382 review, medium)."""
     if not ASM_CONVERGE or not sid or not em.checkpoint_drop_writes_on():
         return False
-    for table in (_ASM_CONVERGE_DONE, _ASM_CONVERGE_BLIP, _ASM_CONVERGE_NOENTRY):
+    for table in (_ASM_CONVERGE_DONE, _ASM_CONVERGE_BLIP, _ASM_CONVERGE_NOENTRY, _ASM_CONVERGE_FLAG):
         _release_oldest(table)
     st = _stat_key_ns(key)
     if st is None or _ASM_CONVERGE_DONE.get(key) == st:
@@ -10079,7 +10099,11 @@ def _converge_assembly_leaf(key, sid, t0, human=None):
         return False
     if not em.file_quiescent(key):
         return False                                       # a live leaf: its settle writes the document
-    human = _display_sdk_human(sid) if human is None else bool(human)
+    human = bool(_display_sdk_human(sid))
+    if flags is not None and human not in flags:
+        if _ASM_CONVERGE_FLAG.get(key) != st:               # parsed only under the other flag: no document the reader would unlink
+            _ASM_CONVERGE_FLAG[key] = st; em.asm_converge_skip("flagMismatch")
+        return False
     if not em.asm_entry_whole(key, sid, human) or not em.entry_whole_resident(key):
         if _ASM_CONVERGE_NOENTRY.get(key) != st:           # no whole assembly entry, or the reader's record entry gone (the writer
             _ASM_CONVERGE_NOENTRY[key] = st; em.asm_converge_skip("noEntry")   #  needs both): nothing to write from, never a read
@@ -10091,7 +10115,7 @@ def _converge_assembly_leaf(key, sid, t0, human=None):
         return None
     reasons = []
     try:
-        wrote = em.asm_checkpoint_write(key, sid, human, tree=_stored_tree(key, sid), reason_out=reasons, who="converge pass")
+        wrote = em.asm_checkpoint_write(key, sid, human, tree=_stored_tree_under(key, sid, human), reason_out=reasons, who="converge pass")
     except Exception:
         sys.stderr.write("assembly converge: %s\n" % traceback.format_exc()); wrote = False
     if wrote:
