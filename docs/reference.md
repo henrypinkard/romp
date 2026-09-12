@@ -1765,7 +1765,22 @@ under `.ssh`, `.gnupg`, `.aws`, `.docker`, `.kube`, `.azure`, `.gcloud`,
 kind the card cannot show, or a file over the caps (2 MB of text, 50 MB of
 media). Under the name rules sits a content belt: a text shaped like a
 credential (a private-key block, a key or token assignment, a provider token, a
-JWT) is refused with "looks like a secret". The belt reads the file's first
+JWT) is refused with "looks like a secret". For every verified link the kernel
+does **not** allow, it ships the exact condition beside the kinds, as
+`pathPreviewWhy` (token to why), and the text card says it: "shown as text: a
+secrets-shaped name", "shown as text: looks like a secret", "shown as text:
+outside the session's folder and your home", and so on; a link the kernel
+shipped no verdict for at all says that instead. `pathPreview` rides every
+message with verified links (empty when none previews), so a message sealed
+before the kernel judged previews is rebuilt once and gains its verdicts.
+
+**A session on another host.** A remote session's files live on that
+machine's disk, so the card's fetches (the text slice and the image or PDF
+bytes) ride this kernel's `/remote/<host>/file` relay with the bare session id,
+exactly as the inline images do; the remote kernel builds that session's
+messages and judges its own files, and the relay is available only while the
+host is attached (a host reached through a relay alone shows the text card
+until it attaches). The belt reads the file's first
 64 KB at load (so at warm time): a hit there means the file is never cached and
 the link ships without a preview kind. It reads the served slice again on the
 route: a secret past the first 64 KB passes the load-time read, so that file's

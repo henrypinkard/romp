@@ -2,7 +2,7 @@
 // what a link may preview, the routes' URLs, the one content shape per kind, and the hover's timing run on fake timers.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { PREVIEW_DWELL_MS, PREVIEW_GRACE_MS, HoverIntent, parsePreviewLink, previewKindOf, sliceUrl, fileUrl, langOf, baseName,
+import { PREVIEW_DWELL_MS, PREVIEW_GRACE_MS, HoverIntent, parsePreviewLink, previewKindOf, sliceUrl, fileUrl, previewRoute, langOf, baseName,
          contentFor, textOnlyContent, remoteLoad, stripRemoteLoads } from "./file-preview";
 
 test("parsePreviewLink: path#slug splits on a slug, a # that is not a slug stays in the path", () => {
@@ -166,3 +166,19 @@ test("stripRemoteLoads on the inert tree: an img becomes its alt text, every oth
     "the remote img is its alt text (empty alt: nothing), the poster'd video and its source are gone, the remote track is gone from the local video, the svg keeps its local image, a link is not a load");
 });
 
+
+test("a remote session's preview fetches ride the host relay with the bare sid, as the inline images do (T364)", () => {
+  // the popover asked the LOCAL origin for a remote session's file and got the wrong kernel's answer; the route is the
+  // one preview.ts builds for an inline image: /remote/<host>/file with the sid the remote kernel knows
+  const rsid = "TESTHOST:11111111-2222-3333-4444-555555555555";
+  assert.deepEqual(previewRoute(rsid), { base: "/remote/TESTHOST/file", sid: "11111111-2222-3333-4444-555555555555" });
+  assert.deepEqual(previewRoute("11111111-2222-3333-4444-555555555555"), { base: "/file", sid: "11111111-2222-3333-4444-555555555555" });
+  assert.deepEqual(previewRoute(null), { base: "/file", sid: "" });
+  assert.equal(sliceUrl("docs/a.md", rsid, "top"), "/remote/TESTHOST/file?path=docs%2Fa.md&slice=1&sid=11111111-2222-3333-4444-555555555555&anchor=top");
+  assert.equal(fileUrl("plots/a.png", rsid), "/remote/TESTHOST/file?path=plots%2Fa.png&sid=11111111-2222-3333-4444-555555555555");
+  assert.equal(fileUrl("plots/a.png", "s"), "/file?path=plots%2Fa.png&sid=s", "a local session: the local route, unchanged");
+  const fs = require("node:fs"), path = require("node:path");
+  const PREVIEW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "preview.ts"), "utf8");
+  const FP = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "file-preview.ts"), "utf8");
+  for (const src of [PREVIEW, FP]) assert.match(src, /"\/remote\/" \+ encodeURIComponent\(host\) \+ "\/file" : "\/file"/, "the two builders share the relay's shape");
+});

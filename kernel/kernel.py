@@ -33376,6 +33376,16 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                     if _chat_stat_key(_of) != _key:
                         _fold_why = "task-output"
                         break
+            if _fold_why is None:
+                # an event sealed with path links but NO preview verdict (built by a kernel before the previews, or
+                # restored from a document that predates them, T364): one refold gives it the key, and the clause is
+                # quiet from then on (every build attaches pathPreview beside a non-empty pathLinks). A restored entry
+                # may lack the field itself; then the events are scanned once here
+                _pvm = _fe.get("pv_missing")
+                if _pvm is None:
+                    _pvm = [_i for _i, _e in enumerate(_fe["events"]) if _e.get("pathLinks") and "pathPreview" not in _e]
+                if _pvm:
+                    _fold_why = "path-preview"
             if _fold_why is None and _fe["pl_pending"]:
                 # unresolved path tokens are retried on every build BY DESIGN (a mention precedes the file):
                 # retry exactly those, and rebuild if one now resolves
@@ -33649,9 +33659,11 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                             pl = _path_links(prompt, sid, a.get("uuid"), _pl_memo)
                             if pl is not None:
                                 ev["pathLinks"] = pl    # path-shaped tokens, filesystem-verified/fixed → the client's link gate
-                                pv = _path_previews(pl, sid)
-                                if pv:
-                                    ev["pathPreview"] = pv   # the links a hover may preview, by kind; the markdown ones warmed (T351)
+                                pv, pw = _path_preview_verdicts(pl, sid)
+                                if pl:
+                                    ev["pathPreview"] = pv   # the links a hover may preview, by kind; the markdown ones warmed (T351). The key rides EVERY event with links (empty when none previews): its presence is the verdict, and the fold refolds an event built without one (T364)
+                                if pw:
+                                    ev["pathPreviewWhy"] = pw   # …and for each link it may not, the exact refusal, the text card's words (T364)
                             pp = _path_pins(sid, a.get("uuid"))
                             if pp:
                                 ev["pathPins"] = pp     # mention-time snapshots: this message's embeds keep these bytes
@@ -33758,9 +33770,11 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                         pl = _path_links(txt, sid, a.get("uuid"), _pl_memo)
                         if pl is not None:
                             ev["pathLinks"] = pl    # path-shaped tokens, filesystem-verified/fixed → the client's link gate
-                            pv = _path_previews(pl, sid)
-                            if pv:
-                                ev["pathPreview"] = pv   # the links a hover may preview, by kind; the markdown ones warmed (T351)
+                            pv, pw = _path_preview_verdicts(pl, sid)
+                            if pl:
+                                ev["pathPreview"] = pv   # the links a hover may preview, by kind; the markdown ones warmed (T351). The key rides EVERY event with links (empty when none previews): its presence is the verdict, and the fold refolds an event built without one (T364)
+                            if pw:
+                                ev["pathPreviewWhy"] = pw   # …and for each link it may not, the exact refusal, the text card's words (T364)
                         pp = _path_pins(sid, a.get("uuid"))
                         if pp:
                             ev["pathPins"] = pp     # mention-time snapshots: this message's embeds keep these bytes
@@ -33920,6 +33934,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                 else:
                     _pdeps = tuple(_pdeps_sealed) + _postal_card_deps(_pcards_new, _pidx, _msum)
                 _plp = list(_fe["pl_pending"]) if _fold_ok else []
+                _pvm = list(_fe.get("pv_missing") or ()) if _fold_ok else []   # sealed events with links but no preview verdict (T364)
                 _touts = list(_fe["task_outs"]) if _fold_ok else []
                 for _e in _newpart:
                     for _r in (_e.get("reminders") or []) if _e.get("kind") == "user" else ():
@@ -33932,6 +33947,8 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                         _hit = _PATH_LINK_CACHE.get((sid, _e["uuid"]))
                         if _hit is not None and _hit[1]:
                             _plp.append((_e["uuid"], _e["md"], _i))
+                        if _e.get("pathLinks") and "pathPreview" not in _e:
+                            _pvm.append(_i)
                 _seg_pref = [dict(_fe["seg"][_q]) if _fold_ok else {} for _q in range(4)]
                 for _ti in range(_fk, _np):
                     for _q in range(4):
@@ -33966,7 +33983,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                                     + [(em.parse_z(_e.get("ts")) or 0, (_e.get("md") or "").strip()) for _e in _newpart if _e.get("orphaned")],
                     "open_tools": _open_tools, "skill_unfilled": _skill_unf,
                     "postal_raw": _praw, "postal_cards": _pcards,
-                    "postal_key": _pk, "postal_deps": _pdeps, "pl_pending": _plp,
+                    "postal_key": _pk, "postal_deps": _pdeps, "pl_pending": _plp, "pv_missing": _pvm,
                     "task_outs": _touts,
                     # the sealed Agent cards, for _chat_agents_moved: (toolUseId, agentId, pending) —
                     # pending = a background launch sealed without its report (the ack stands as output)
@@ -44328,6 +44345,25 @@ def _slice_warm(fp):
     return why in ("", "too large to show", "unreadable")   # a transient refusal keeps the kind; a secret or a binary drops it
 
 
+def _slice_warm_why(fp):
+    """_slice_warm's refusal as words, "" when the markdown may be previewed: the content belt's "looks like a secret"
+    or "not text" drops the kind (a credential-shaped line in a notes file is the likeliest reason a markdown link
+    the repo index resolved shows as text, T364); a transient refusal keeps it, as _slice_warm does."""
+    real = os.path.realpath(fp)
+    try:
+        st = os.stat(real)
+        with _SLICE_CACHE_LOCK:
+            if (real, st.st_mtime_ns) in _SLICE_CACHE:
+                return ""
+    except OSError:
+        return "not a file"
+    e, _hit, why = _slice_load(real)
+    if e is not None:
+        _PERF_STATS.file_slice(False, 0, warm=True)
+        return ""
+    return "" if why in ("", "too large to show", "unreadable") else why
+
+
 def _slice_body(fp, sid, anchor):
     """The slice route's answer, pure of the socket: (status, payload, content_type), the payload a dict to send as JSON
     or the plain text of a 415. 403 with `why` when the popover may not render the path (the client never asks for one
@@ -44583,16 +44619,31 @@ def _glossary_lookup(sid, term):
     return 404, {"error": "no such term in the group's glossary: %r" % want, "tried": [_tilde(str(path))], "group": group}
 
 
-def _path_previews(links, sid):
-    """{token: kind} for the verified links the preview popover may fetch for session `sid` (shipped as pathPreview
-    beside pathLinks; a token absent here is shown as text plus "open", with NO request), warming the markdown ones."""
-    out = {}
+def _path_preview_verdicts(links, sid):
+    """({token: kind}, {token: why}) for the verified links of session `sid`: the kinds the preview popover may fetch
+    (shipped as pathPreview beside pathLinks; a token absent there is shown as text plus "open", with NO request), and
+    for every token it may NOT, the exact condition that refused it (shipped as pathPreviewWhy, the text card's words:
+    T364, the review of the laptop report, where the card blamed the confinement for whatever the reason was). The
+    whys are _slice_allowed's, plus the markdown warm's content-belt refusals ("looks like a secret", "not text"). The
+    markdown ones are warmed here."""
+    kinds, whys = {}, {}
     for tok, target in (links or {}).items():
         fp = _resolve_open_path(target, sid)
-        kind, _why = _slice_allowed(fp, sid)
-        if kind and (kind != "markdown" or _slice_warm(fp)):
-            out[tok] = kind
-    return out
+        kind, why = _slice_allowed(fp, sid)
+        if kind and kind == "markdown":
+            why = _slice_warm_why(fp)
+            if why:
+                kind = None
+        if kind:
+            kinds[tok] = kind
+        else:
+            whys[tok] = why or "not previewed"
+    return kinds, whys
+
+
+def _path_previews(links, sid):
+    """{token: kind} alone (the callers that need the refusals read _path_preview_verdicts)."""
+    return _path_preview_verdicts(links, sid)[0]
 
 
 def _human_bytes(n):
@@ -45215,6 +45266,20 @@ def _repo_index_key(cwd):
         return None
 
 
+_REPO_INDEX_STOOD_DOWN = set()   # the cwds whose stand-down was said once (T364: a silent None left a bare filename unlinked with no trace)
+
+
+def _repo_index_stood_down(cwd, why):
+    """One stderr line per cwd when the repo index cannot be had (git absent or failing, a listing past the ceiling), so
+    a bare filename that stays plain text is diagnosable from the kernel log (T364, the laptop report)."""
+    if cwd in _REPO_INDEX_STOOD_DOWN:
+        return
+    if len(_REPO_INDEX_STOOD_DOWN) >= 256:
+        _REPO_INDEX_STOOD_DOWN.clear()
+    _REPO_INDEX_STOOD_DOWN.add(cwd)
+    sys.stderr.write("path links: the repo index for %s stood down (%s); bare filenames in this session's messages stay plain text\n" % (_tilde(cwd), why))
+
+
 def _repo_file_index(cwd):
     """basename -> [repo-relative paths] for every tracked or untracked-unignored file under `cwd`,
     or None when there is no list to be had (not a git repo, git absent/failing, or a listing past
@@ -45236,12 +45301,15 @@ def _repo_file_index(cwd):
     try:
         out = subprocess.run(["git", "ls-files", "-co", "--exclude-standard"],
                              cwd=cwd, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as e:
+        _repo_index_stood_down(cwd, "git did not run: %s" % (e,))
         return None
     if out.returncode != 0:
+        _repo_index_stood_down(cwd, "git ls-files exited %d: %s" % (out.returncode, (out.stderr or "").strip()[:200]))
         return None
     names = set(out.stdout.splitlines())   # a set: an index/worktree duplicate must not fake ambiguity
     if len(names) > _REPO_LIST_MAX:
+        _repo_index_stood_down(cwd, "%d files, past the %d-file ceiling" % (len(names), _REPO_LIST_MAX))
         return None
     idx = {}
     for p in names:

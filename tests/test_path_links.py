@@ -178,6 +178,28 @@ class RepoListEdges(_Repo):
         self.assertEqual(sorted(idx["dup.py"]), ["a/dup.py", "b/dup.py"])
         self.assertEqual(idx["render.js"], ["ui/render.js"])
 
+    def test_a_stand_down_is_said_once_per_cwd_on_stderr(self):
+        # T364: the index returned None silently on any git failure or a runaway listing, so a bare filename that stayed
+        # plain text left no trace in the kernel log; one stderr line per cwd names the reason
+        import contextlib
+        import io
+        km._REPO_INDEX_STOOD_DOWN.clear()
+        saved = km._REPO_LIST_MAX
+        err = io.StringIO()
+        try:
+            km._REPO_LIST_MAX = 1
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(km._repo_file_index(str(self.cwd)))
+                self.assertIsNone(km._repo_file_index(str(self.cwd)))
+        finally:
+            km._REPO_LIST_MAX = saved
+        lines = [l for l in err.getvalue().splitlines() if "stood down" in l]
+        self.assertEqual(len(lines), 1, "said once per cwd: %r" % err.getvalue())
+        self.assertIn("past the 1-file ceiling", lines[0]); self.assertIn("bare filenames in this session's messages stay plain text", lines[0])
+        with tempfile.TemporaryDirectory() as plain, contextlib.redirect_stderr(err):
+            self.assertIsNone(km._repo_file_index(plain))
+        self.assertIn("git ls-files exited", err.getvalue(), "a cwd that is no repo says git's own exit: %r" % err.getvalue())
+
     def test_the_index_is_built_at_most_once_per_build_pass(self):
         calls = []
         saved = km._repo_file_index

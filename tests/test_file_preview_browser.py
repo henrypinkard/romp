@@ -102,11 +102,15 @@ page.on("request", (r) => { if (/\/file\?/.test(r.url())) fileRequests++; });
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab[data-id]", { timeout: 20000 });
 await page.click('#tabs .tab[data-id="' + cfg.sid + '"]');
-await page.waitForFunction(() => document.querySelectorAll("#content .file-uri-link").length >= 9, null, { timeout: 20000 });
+try { await page.waitForFunction(() => document.querySelectorAll("#content .file-uri-link").length >= 11, null, { timeout: 20000 }); }
+catch (e) {   // say which links rendered, so a short count is diagnosable from the failure alone
+  const got = await page.evaluate(() => Array.from(document.querySelectorAll("#content .file-uri-link")).map((a) => a.dataset.path + (a.dataset.frag ? "#" + a.dataset.frag : "")));
+  console.error("links rendered (" + got.length + "): " + JSON.stringify(got)); process.exit(1);
+}
 await page.mouse.move(900, 720); await page.waitForTimeout(300);
 const CARD = "#file-preview-pop";
 const shown = () => page.evaluate(() => { const p = document.getElementById("file-preview-pop"); return !!p && getComputedStyle(p).display !== "none"; });
-const links = await page.evaluate(() => Array.from(document.querySelectorAll("#content .file-uri-link")).map((a) => ({ text: a.textContent, path: a.dataset.path, frag: a.dataset.frag || null, preview: a.dataset.preview || null, rel: a.dataset.rel || null })));
+const links = await page.evaluate(() => Array.from(document.querySelectorAll("#content .file-uri-link")).map((a) => ({ text: a.textContent, path: a.dataset.path, frag: a.dataset.frag || null, preview: a.dataset.preview || null, rel: a.dataset.rel || null, why: a.dataset.previewWhy || null })));
 const sel = (path, frag) => '#content .file-uri-link[data-path="' + path + '"]' + (frag ? '[data-frag="' + frag + '"]' : ":not([data-frag])");
 const card = () => page.evaluate(() => {
   const p = document.getElementById("file-preview-pop"); if (!p || getComputedStyle(p).display === "none") return null;
@@ -156,6 +160,11 @@ for (const theme of ["dark", "light"]) {
   const warmBefore = (await perfNow()).warm; bumpCold(); t.cold = await hoverCard("docs/cold.md", null); t.coldWarmedAhead = (await perfNow()).warm > warmBefore; t.coldHidden = await leave();
   t.outside = await hoverCard(cfg.outside, null); await shot("romp_chat-file-preview-textonly-" + theme); t.outsideHidden = await leave();
   t.secret = await hoverCard("docs/.env", null); t.secretHidden = await leave();
+  // a BARE filename the repo index resolved (tier 3): the preview comes from the resolved absolute path, the same path
+  // the click opens (T364 step A); a notes file whose text is credential-shaped is text with the belt's own words
+  // (a code-span link is keyed by its RESOLVED target, the path the click opens; the token is the span's text)
+  t.bare = await hoverCard("docs/notes/rollup-notes.md", null); t.bareHidden = await leave();
+  t.leaky = await hoverCard("docs/notes/leaky-notes.md", null); t.leakyHidden = await leave();
   out.themes[theme] = t;
 }
 await page.evaluate(() => document.body.classList.remove("theme-light")); await page.waitForTimeout(200);
@@ -238,6 +247,12 @@ class ServedFilePreview(unittest.TestCase):
         for d in ("docs", "plots", "src"):
             os.makedirs(os.path.join(cwd, d), exist_ok=True)
         os.makedirs(os.path.join(cls.lab, "outside"), exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=cwd, check=True, capture_output=True)   # the repo index behind a bare filename (tier 3)
+        os.makedirs(os.path.join(cwd, "docs", "notes"), exist_ok=True)
+        Path(cwd, "docs", "notes", "rollup-notes.md").write_text("# Rollup notes\n\nThe rollup gathers every open task into one line per session.\n")
+        # a notes file whose TEXT is credential-shaped (assembled here, never a literal: the scanner reads this repo too):
+        # the content belt refuses its warm, and the card must say so (T364: it blamed the confinement instead)
+        Path(cwd, "docs", "notes", "leaky-notes.md").write_text("# Leaky notes\n\n" + "api" + "_key" + " = " + "Q" * 24 + "\n")
         Path(cwd, "docs", "guide.md").write_text(GUIDE)
         Path(cwd, "docs", ".env").write_text("SETTING=not-a-real-value\n")
         Path(cwd, "docs", "cold.md").write_text(COLD)
@@ -256,7 +271,8 @@ class ServedFilePreview(unittest.TestCase):
         os.makedirs(proj, exist_ok=True)
         reply = ("Read docs/guide.md first, then the rule at docs/guide.md#fold-rules (docs/guide.md#no-such-section is not a section).\n\n"
                  "The plot is at plots/figure.png and the code at src/app.py; the secrets live in docs/.env (and docs/report.md is a link to them); "
-                 "the later note is docs/cold.md; notes outside the project sit at %s." % cls.outside)
+                 "the later note is docs/cold.md; notes outside the project sit at %s. "
+                 "The rollup is written up in `rollup-notes.md` and the leak in `leaky-notes.md`." % cls.outside)   # bare filenames as a session writes them: in code spans
         Path(proj, SID + ".jsonl").write_text(
             json.dumps({"type": "user", "uuid": U_UUID, "parentUuid": None, "timestamp": "2026-09-05T00:00:00.000Z", "sessionId": SID,
                         "message": {"role": "user", "content": "Where do I start with the notes-api docs?"}}) + "\n" +
@@ -359,10 +375,17 @@ class ServedFilePreview(unittest.TestCase):
             code = t["code"]["card"]
             self.assertEqual(code["title"], "app.py"); self.assertIn("fp-code", code["kind"]); self.assertIn("print", code["text"])
             self.assertIn("language-python", code["codeClass"] or "", "highlighted as Python: %r" % code["codeClass"])
-            for name, expect_title in (("outside", "notes.md"), ("secret", ".env")):
+            # the text card says exactly which condition refused (T364: a four-way guess blamed the confinement for everything)
+            for name, expect_title, why in (("outside", "notes.md", "outside the session's folder and your home"), ("secret", ".env", "a secrets-shaped name"),
+                                            ("leaky", "leaky-notes.md", "looks like a secret")):
                 c = t[name]["card"]
                 self.assertEqual(c["title"], expect_title); self.assertIn("fp-text", c["kind"])
-                self.assertIn("shown as text", c["note"] or ""); self.assertEqual(t[name]["requests"], 0, "%s/%s: no request at all" % (theme, name))
+                self.assertEqual(c["note"], "shown as text: " + why, "%s/%s: the kernel's own refusal on the card" % (theme, name))
+                self.assertEqual(t[name]["requests"], 0, "%s/%s: no request at all" % (theme, name))
+            # a bare filename the repo index resolved previews from its resolved path (step A: the local kernel)
+            bare = t["bare"]["card"]
+            self.assertEqual(bare["title"], "rollup-notes.md"); self.assertIn("fp-markdown", bare["kind"]); self.assertIn("one line per session", bare["text"])
+            self.assertGreaterEqual(t["bare"]["requests"], 1, "%s: the slice fetched from the resolved path" % theme)
             self.assertGreaterEqual(t["head"]["requests"], 1, "a text preview is one fetch")
         # the keyboard's route and Escape
         if os.environ.get("PV_LATENCY"):
@@ -371,6 +394,14 @@ class ServedFilePreview(unittest.TestCase):
         self.assertFalse(r["focusEarly"]); self.assertIsNotNone(r["focusCard"]); self.assertEqual(r["focusCard"]["title"], "guide.md")
         self.assertTrue(r["escapeHidden"], "Escape closes the card")
         # "open" lands the viewer on the section
+        # the link attributes: the kind on the previewable links, the why on the refused ones (the next report reads it off the DOM)
+        by = {(l["path"], l["frag"]): l for l in r["links"]}
+        bare_link, leaky_link = by[("docs/notes/rollup-notes.md", None)], by[("docs/notes/leaky-notes.md", None)]
+        self.assertEqual((bare_link["text"], bare_link["preview"]), ("rollup-notes.md", "markdown"), "a bare name the index resolved links to its resolved path and carries the kind: %r" % r["links"])
+        self.assertEqual((leaky_link["text"], leaky_link["preview"], leaky_link["why"]), ("leaky-notes.md", None, "looks like a secret"))
+        self.assertEqual(by[(self.outside, None)]["why"], "outside the session's folder and your home")
+        self.assertEqual(by[("docs/.env", None)]["why"], "a secrets-shaped name")
+        self.assertEqual(by[("docs/report.md", None)]["why"], "a secrets-shaped name", "the symlink named as markdown over the secrets file: the REAL path is judged first, so the reason names the secret: %r" % by[("docs/report.md", None)])
         o = r["opened"]
         self.assertEqual(o["heading"], "Fold Rules"); self.assertTrue(o["inView"], "the heading is in the viewer's view: %r" % o)
         self.assertTrue(o["cardHidden"], "the card closed when the viewer opened")

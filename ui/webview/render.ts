@@ -148,8 +148,8 @@ type ChatEvent = (
   // event renders as a labelled notice (renderInjected), never the user's bubble (the user 2026-09-07)
   // gist: a romp SYSTEM notice's USER-facing head, lifted by the kernel from the notice's <!-- romp-gist -->
   // marker (2026-09-08) — the body is written to the agent and never doubles as the head
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; gist?: string; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; absorbed?: boolean; sentAt?: number; hiddenByPending?: boolean; source?: InjectedSource; preamble?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string> }
-  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string> }   // pathPreview: the links a hover may preview, by kind (T351). spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; gist?: string; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; absorbed?: boolean; sentAt?: number; hiddenByPending?: boolean; source?: InjectedSource; preamble?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string>; pathPreviewWhy?: Record<string, string> }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string>; pathPreview?: Record<string, string>; pathPreviewWhy?: Record<string, string> }   // pathPreview: the links a hover may preview, by kind (T351). spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
       kind: "tool";
@@ -2416,7 +2416,9 @@ function showFilePreview(a: HTMLElement): void {
     if (hit !== null) p.dataset.sliceHit = hit ? "1" : "0";
   };
   if (!kind) {                                   // the kernel allowed no preview: text and the way to the file, no request
-    renderFilePreview(p, textOnlyContent(path, anchor, "shown as text: outside the session's folder and your home, or not a kind the preview shows"), sid);
+    // the card says exactly which condition refused (the kernel's why on the link, T364); a link with no verdict at all
+    // (an event built before the kernel judged previews, or a kernel that ships none) says that, not a guess
+    renderFilePreview(p, textOnlyContent(path, anchor, "shown as text: " + (a.dataset.previewWhy || "no preview verdict from the kernel for this link")), sid);
     stamp(null);
     return;
   }
@@ -2455,12 +2457,16 @@ function showFilePreview(a: HTMLElement): void {
 // file:// URIs are explicit absolute paths — never gated on the map. (The gates and the map walk are
 // path-links.ts's; the map is threaded through to it.)
 function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[],
-    pathLinks?: Record<string, string>, pathPins?: Record<string, string>, pathPreview?: Record<string, string>): void {
+    pathLinks?: Record<string, string>, pathPins?: Record<string, string>, pathPreview?: Record<string, string>,
+    pathPreviewWhy?: Record<string, string>): void {
   // pathPreview (T351): the kernel's word on which of these links a hover may PREVIEW, by kind; the link carries it
-  // as data-preview, and a link without it gets the text-only card with no request
+  // as data-preview, and a link without it gets the text-only card with no request. pathPreviewWhy (T364): for a link
+  // it may not, the kernel's exact refusal rides as data-preview-why, the card's words (the four-way guess went)
   const armPreview = (link: HTMLElement, tok: string, open: string) => {
     const k = previewKindOf(tok, pathPreview) || previewKindOf(open, pathPreview);
     if (k) link.dataset.preview = k; else delete link.dataset.preview;
+    const w = !k && pathPreviewWhy ? (pathPreviewWhy[tok] || pathPreviewWhy[open] || "") : "";
+    if (w) link.dataset.previewWhy = w; else delete link.dataset.previewWhy;
   };
   // A whole-backtick http(s) URL becomes a TAPPABLE link that still looks like code (the user
   // 2026-08-16, on mobile, wanting to tap through to a dashboard link a session sent). Bare URLs
@@ -3707,7 +3713,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         if (more) {
           const full = el("div", "nudge-full md");
           full.innerHTML = md(raw);
-          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);
+          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview, ev.pathPreviewWhy);
           linkTerms(full);
           bubble.appendChild(full);
           bubble.classList.add("nudge-collapsible");
@@ -3723,7 +3729,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         // the user's OWN words keep their line breaks (userMd); a harness-injected note — compact
         // summary, command stdout — shares this branch and stays on the assistant grammar
         bubble.innerHTML = kind === "user" ? userMd(ev.md) : md(ev.md);
-        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);   // bare file:// URLs in a message → clickable (open in the host's default app)
+        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview, ev.pathPreviewWhy);   // bare file:// URLs in a message → clickable (open in the host's default app)
         linkTerms(bubble);   // the team's coinages, in the user's own words too (T351 stage 2)
         if (kind === "user") markMentions(bubble);   // in the user's own bubble a typed "@name" that names a live session wears that session's color; a harness note is not the user naming a session
       }
@@ -3881,7 +3887,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const body = el("div", "assistant md");
     body.innerHTML = md(ev.md);
     highlight(body);
-    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview);   // bare file:// URLs + verified spaced filenames → clickable
+    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins, ev.pathPreview, ev.pathPreviewWhy);   // bare file:// URLs + verified spaced filenames → clickable
     linkTerms(body);   // the team's coinages (T351 stage 2)
     turn.appendChild(body);
     return turn;

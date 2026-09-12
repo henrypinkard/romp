@@ -6,6 +6,8 @@
 // lookup included), and the hover's timing (a dwell before it opens, a grace to cross into the card). render.ts owns
 // the card itself: the element, the fetch, the rendering per kind, the placement.
 
+import { hostOf, bareId } from "./host-prefix";   // pure: a remote session's sid carries its host (T364)
+
 export const PREVIEW_DWELL_MS = 350;   // a hover shorter than this is a pass-through, not a question
 export const PREVIEW_GRACE_MS = 150;   // leaving the link toward the card must not close it on the way
 
@@ -41,16 +43,27 @@ export function previewKindOf(token: string, pathPreview?: Record<string, string
   return k && /^(markdown|image|code|pdf)$/.test(k) ? k : null;
 }
 
+/** The route a preview fetch takes and the sid it carries: a session on a REMOTE host (a host-prefixed sid,
+ *  host-prefix.ts) lives on that machine's disk, so the fetch rides this kernel's /remote/<host>/file relay with the
+ *  bare sid the remote kernel knows, exactly as the inline images do (preview.ts fileUrl); a local session's fetch is
+ *  the local /file. T364: the popover asked the LOCAL origin for a remote session's file and got the wrong kernel's
+ *  answer (a 404 or a foreign session's verdict), so a laptop-hosted session's card never rendered. */
+export function previewRoute(sid: string | null): { base: string; sid: string } {
+  const host = sid ? hostOf(sid) : "";
+  return { base: host ? "/remote/" + encodeURIComponent(host) + "/file" : "/file", sid: sid ? bareId(sid) : "" };
+}
 /** GET /file?slice=1: the one fetch behind a text preview (the kernel slices the file's cached text). */
 export function sliceUrl(path: string, sid: string | null, anchor: string): string {
-  let u = "/file?path=" + encodeURIComponent(path) + "&slice=1";
-  if (sid) u += "&sid=" + encodeURIComponent(sid);
+  const r = previewRoute(sid);
+  let u = r.base + "?path=" + encodeURIComponent(path) + "&slice=1";
+  if (r.sid) u += "&sid=" + encodeURIComponent(r.sid);
   if (anchor) u += "&anchor=" + encodeURIComponent(anchor);
   return u;
 }
 /** GET /file: the bytes behind an image or a PDF preview (the route the figures already use). */
 export function fileUrl(path: string, sid: string | null): string {
-  return "/file?path=" + encodeURIComponent(path) + (sid ? "&sid=" + encodeURIComponent(sid) : "");
+  const r = previewRoute(sid);
+  return r.base + "?path=" + encodeURIComponent(path) + (r.sid ? "&sid=" + encodeURIComponent(r.sid) : "");
 }
 
 const LANG_BY_EXT: Record<string, string> = {
