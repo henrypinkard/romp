@@ -6068,6 +6068,7 @@ def _per_file_rewound(fsid, files):
     out, seen, fails = set(), set(), 0
     leaf = Path(files[0])
     cands = [Path(f) for f in files]
+    lineage = set(cands)                                  # the live session's own files (the leaf, its /clear anchor): resident
     for row in episode_rows(fsid):
         fs = str(row.get("fsid") or "")
         if fs:
@@ -6086,7 +6087,9 @@ def _per_file_rewound(fsid, files):
             if fp == leaf:                                # the leaf road: the document's pre-cut verdicts and the tail read now
                 out |= em.file_rewound(fp, rompuuid=fsid, sdk_human=_sdk_owned(fsid))
             else:                                         # a dead episode's frozen file: the walk once, its verdict set memoized in
-                out |= em.rewound_uuids(fp)               #  the file's fold document and restored at the next process (T391)
+                out |= em.rewound_uuids(fp, drop=fp not in lineage)   # the file's fold document and restored at the next process
+            #     ^ (T391); a live session's anchor keeps its records resident, since the chain walk above reads it whole at
+            #       every pass and a drop here made that a whole read per pass (round one, medium)
             #     ^ the one-file walk asks for the leaf's document quietly: a lineage document (a /clear's anchor, a
             #       resume fork) is not this walk's and stays the display's
         except Exception as e:

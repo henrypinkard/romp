@@ -4248,37 +4248,75 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
 
 _REWOUND_CACHE = {}               # path -> (count, gen, {"uuids": [...]}): file_rewound's verdict set over a FROZEN file, a registered
 #                                   fold (T391) the fold document carries and restores, so a dead episode file is read whole once
-_REWOUND_STATS = {"served": 0, "walked": 0, "stale": 0}   # the memo's answers, the walks it took, the memos an append or rewrite retired
+_REWOUND_STATS = {"served": 0, "walked": 0, "stale": 0, "fallback": 0}   # the memo's answers, the walks it took, the memos an
+#                                   append or rewrite retired, and the walks whose memo could not be read or stored
 
 
-def rewound_uuids(path):
+def _rewound_walk(path):
+    """The plain one-file walk `rewound_uuids` memoizes: file_rewound's road without a rompuuid, returning the verdict set and
+    the reader's (gen, base, count) the adapter's records came from (FileAdapter._src_keys), the witness the memo is stored at.
+    Its own, never re-fetched from the cache after the walk: an append and a refresh between the two would memoize pre-append
+    verdicts at the post-append witness (T391 round one, low 1)."""
+    key = str(path)
+    ad = FileAdapter([key], key)
+    if not ad.by_uuid and Path(path).stat().st_size > 0:
+        raise OSError("transcript read yielded no records")
+    verdicts = dict(ad.chain_verdicts())
+    return {u for u, v in verdicts.items() if v == "rewind"}, ad._src_keys.get(key, (None, 0, 0))
+
+
+def rewound_uuids(path, drop=True):
     """`file_rewound(path)` for a file with no rompuuid road (a dead episode's transcript in a lineage, walked by the judges'
     incident scan), memoized per FROZEN file as the fold `rewoundUuids` of its fold document (T391): the memo rides the
     existing document, its witness (size, mtime, the cut's guard), its restore, its fold state cap and its counted fallbacks,
     and the quiescence drop writes it from the walk's own read, so the file is read whole once and not at the next process.
     fold_records consults it: a hit or a restore at the witness answers with no read; a file that grew or was rewritten steps
     a `step` that retires the state (None), so the walk runs again and the memo is rewritten; an over-cap set is recorded as
-    such and walked again next time. The leaf road with a rompuuid never comes here."""
+    such and walked again next time. The leaf road with a rompuuid never comes here.
+
+    `drop`: whether the walk's entry leaves the reader's cache after the memo is stored (the quiescence drop, when the file
+    has been idle past its window). True for a dead episode's file, which nothing else reads; False for a file of a LIVE
+    session's lineage (its /clear anchor, T391 round one, medium): the chain walk reads that file whole first at every pass,
+    and a memo that popped the entry made the next pass's chain walk read it whole again, every pass, while the memo itself
+    found its cursor at a moved generation and walked. Resident, the anchor is read once per process and the memo's cursor
+    stays at the generation the chain walk's entry holds, so the scan reads nothing at all.
+
+    The counters (checkpoints.rewoundMemo): `served`, a memo answered in memory or from the document at the witness; `walked`,
+    every walk; `stale`, the walks over a memo the file's growth or rewrite retired (an in-process cursor stepped past by an
+    append, a document cursor restored and stepped past, a refold whose count moved); a walk over an unchanged file whose entry
+    left memory and came back under a fresh generation is walked, not stale (round one, low 2); `fallback`, a document state of
+    the wrong shape (walked, never trusted) or a walk whose reader entry was gone before the memo could be stored (round one,
+    low 3), both counted so a memo that never takes is visible on /perf."""
     key = str(path)
     had = _REWOUND_CACHE.get(key)
-    state = fold_records(_REWOUND_CACHE, key, lambda: None, lambda st, o: None, ckpt="rewoundUuids")
+    kinds = []
+    state = fold_records(_REWOUND_CACHE, key, lambda: None, lambda st, o: None, on=kinds.append, ckpt="rewoundUuids")
     if isinstance(state, dict) and isinstance(state.get("uuids"), list):
         with _CKPT_LOCK:
             _REWOUND_STATS["served"] += 1
         return set(state["uuids"])
-    if had is not None and isinstance(had[2], dict):
+    if state is not None:                                 # a state that is not the memo's shape: never trusted, counted, walked
         with _CKPT_LOCK:
-            _REWOUND_STATS["stale"] += 1                  # a state the step retired: the file moved under the memo
-    out = file_rewound(path)                              # the walk (a whole read of a frozen file: the record cache holds it)
-    with _JSONL_CACHE_LOCK:
-        ent = _JSONL_CACHE.get(key)
+            _REWOUND_STATS["fallback"] += 1
+        _REWOUND_CACHE.pop(key, None)
+    out, (gen, base, count) = _rewound_walk(path)         # the walk (a whole read of a frozen file: the record cache holds it)
+    kind = kinds[0] if kinds else None
     with _CKPT_LOCK:
         _REWOUND_STATS["walked"] += 1
-    if ent is not None:                                   # the memo at the reader's witness, dirty; then the quiescence drop over this
-        _REWOUND_CACHE[key] = (ent[5] + len(ent[4]), ent[6], {"uuids": sorted(out)})   #  frozen file writes the document from the
-        with _CKPT_LOCK:                                  #  walk's own read and lets the records go (T362's drop, its budget and its
-            _FOLD_DIRTY.add(key)                          #  deferral); a file still changing keeps its entry and is written at its settle
-        _drop_quiescent_entry(key, ent, pop=True)
+        if kind in ("append", "restore") or (kind == "refold" and had is not None and had[0] != count):
+            _REWOUND_STATS["stale"] += 1                  # a memo stood and the file moved under it
+    if gen is None:                                       # no reader entry for the walk's records: nothing to store the memo at
+        with _CKPT_LOCK:
+            _REWOUND_STATS["fallback"] += 1
+        return out
+    _REWOUND_CACHE[key] = (count, gen, {"uuids": sorted(out)})   # the memo at the walk's own witness, dirty
+    with _CKPT_LOCK:
+        _FOLD_DIRTY.add(key)
+    if drop:                                              # the quiescence drop over this frozen file writes the document from the
+        with _JSONL_CACHE_LOCK:                           #  walk's own read and lets the records go (T362's drop, its budget and its
+            ent = _JSONL_CACHE.get(key)                   #  deferral); a file still changing keeps its entry and is written at its
+        if ent is not None and ent[6] == gen:             #  settle; only the very entry the walk read is dropped
+            _drop_quiescent_entry(key, ent, pop=True)
     return out
 
 

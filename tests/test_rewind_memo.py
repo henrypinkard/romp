@@ -98,8 +98,8 @@ class RewoundMemo(Harness):
         km = kernel_module(); jd = km.jd
         src = inspect.getsource(jd._per_file_rewound)
         self.assertIn("em.file_rewound(fp, rompuuid=fsid", src, "the leaf: the document's pre-cut verdicts and the tail")
-        self.assertIn("em.rewound_uuids(fp)", src, "a dead file: the memo")
-        self.assertLess(src.index("if fp == leaf:"), src.index("em.rewound_uuids(fp)"), "the leaf road decided first")
+        self.assertIn("em.rewound_uuids(fp, drop=fp not in lineage)", src, "a dead file: the memo, its entry dropped; a lineage file resident")
+        self.assertLess(src.index("if fp == leaf:"), src.index("em.rewound_uuids(fp, drop="), "the leaf road decided first")
 
     def test_an_over_cap_set_is_recorded_as_such_and_walked_again(self):
         path = self.frozen("over")
@@ -122,6 +122,109 @@ class RewoundMemo(Harness):
         self.assertEqual(got, first, "the walk's verdicts, never a raise")
         self.assertEqual(em.rewound_memo_stats()["walked"], 1)
         self.assertTrue(em.checkpoint_stats()["fallbacks"], "the fallback counted: %s" % em.checkpoint_stats()["fallbacks"])
+
+    def _lineage(self):
+        """A live session that has cleared: its anchor <fsid>.jsonl (a rewound branch inside, idle past the quiescence window)
+        and a fresh leaf beside it, the judge's state rebound to a temp dir; returns (jd, anchor, leaf, fsid)."""
+        jd = kernel_module().jd
+        fsid = "7a391000-2222-4333-8444-000000000391"                   # private synthetic sids (the goal-store fixture rule)
+        other = "7a391000-2222-4333-8444-000000000392"
+        td = Path(tempfile.mkdtemp()); (td / "state").mkdir()
+        saved = jd.STATE; jd._rebind_state(td / "state")
+        def restore():
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._RECON_MEMO.clear()
+            jd._rebind_state(saved); shutil.rmtree(td, ignore_errors=True)
+        self.addCleanup(restore)
+        records, _sent = G.SINGLE_FILE["rewind_off_path"]
+        anchor = td / (fsid + ".jsonl")
+        anchor.write_text("\n".join(json.dumps(r) for r in records()) + "\n")
+        old = time.time() - 600; os.utime(anchor, (old, old))
+        leaf = td / (other + ".jsonl")
+        leaf.write_text(json.dumps(G.uline(NOW, "continues after the clear", "u_leaf_0", None)) + "\n")
+        return jd, anchor, leaf, fsid
+
+    def test_a_live_sessions_anchor_stays_resident_and_the_scan_reads_nothing_after_the_first_pass(self):
+        """Round one, medium: the chain walk reads a cleared session's anchor whole first at every reconcile pass; the memo
+        then walked it, popped its entry as quiescent, and the next pass's chain walk read it whole again, every pass (head:
+        1239 then 1303 bytes per pass, the entry popped each time). The anchor is a live session's own file: the memo keeps
+        it resident, and the scan reads nothing after the first pass."""
+        jd, anchor, leaf, fsid = self._lineage()
+        self.fresh_process(); jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._RECON_MEMO.clear()
+        key = str(anchor); size = os.path.getsize(anchor)
+        deltas, resident = [], []
+        for i in range(3):
+            with open(leaf, "a") as fh:                                 # one leaf append per pass: a live session at work
+                fh.write(json.dumps(G.uline(NOW + 10 * (i + 1), "one more line on the leaf %d" % i, "u_leaf_%d" % (i + 1), "u_leaf_%d" % i)) + "\n")
+            before = em.read_bytes_report().get(key, 0)
+            jd.reconcile_rewound_goals(fsid, str(leaf), NOW + 100 + i)
+            deltas.append(em.read_bytes_report().get(key, 0) - before)
+            with em._JSONL_CACHE_LOCK:
+                resident.append(em._JSONL_CACHE.get(key) is not None)
+        st = em.rewound_memo_stats()
+        self.assertEqual(st["walked"], 1, "the scan walked the anchor once: %s" % st)
+        self.assertGreaterEqual(deltas[0], size, "the first pass read the anchor whole, the chain walk's read: %r" % deltas)
+        self.assertEqual(deltas[1:], [0, 0], "no read of the anchor at the later passes: %r" % deltas)
+        self.assertEqual(resident, [True, True, True], "the anchor's entry stays resident: %r" % resident)
+        self.assertEqual(st["served"], 2, "%s" % st)
+
+    def test_the_memo_is_stored_at_the_walks_own_witness_not_the_caches_after_it(self):
+        """Round one, low 1: the witness was re-fetched from the cache after the walk; an append and a refresh between the two
+        memoized pre-append verdicts at the post-append witness. The walk's own (gen, base, count) is the witness."""
+        path = self.frozen("witness"); key = str(path)
+        self.fresh_process()
+        real = em._rewound_walk; pre = {}
+        def racing(p):
+            out, keys = real(p)
+            pre["count"] = keys[2]
+            recs = G.SINGLE_FILE["rewind_off_path"][0](); last = next(r for r in reversed(recs) if r.get("uuid"))
+            with open(path, "a") as fh:
+                fh.write(json.dumps(G.uline(NOW + 60, "landed between the walk and the memo", "u_race", last["uuid"])) + "\n")
+            em._read_jsonl_entry(path, tail_ok=False)                   # a refresh: the cache's entry is the post-append one now
+            return out, keys
+        em._rewound_walk = racing
+        self.addCleanup(setattr, em, "_rewound_walk", real)
+        em.rewound_uuids(path, drop=False)
+        cur = em._REWOUND_CACHE[key]
+        self.assertEqual(cur[0], pre["count"], "the cursor's count is the walk's, not the grown file's: %r" % (cur[:2],))
+        em._rewound_walk = real
+        got = em.rewound_uuids(path, drop=False)
+        self.assertEqual(em.rewound_memo_stats()["walked"], 2, "the grown file is walked again, never served pre-append verdicts")
+        self.assertEqual(got, em.file_rewound(path))
+
+    def test_stale_counts_a_memo_the_file_moved_under_and_not_a_moved_generation(self):
+        """Round one, low 2: `stale` was gated on an in-process memo, so a document memo retired by growth in a fresh process
+        was never counted while an unchanged file whose entry came back under a fresh generation counted stale."""
+        path = self.frozen("stalegen"); key = str(path)
+        self.fresh_process(); em.rewound_uuids(path, drop=False)
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.pop(key, None)                               # the entry leaves memory and comes back under a fresh generation
+        em._read_jsonl_entry(path, tail_ok=False)
+        em.rewound_uuids(path, drop=False)
+        st = em.rewound_memo_stats()
+        self.assertEqual((st["walked"], st["stale"]), (2, 0), "an unchanged file is walked, not stale: %s" % st)
+        path2 = self.frozen("stalegrow")
+        self.fresh_process(); em.rewound_uuids(path2)                    # walked; the memo written at the drop
+        recs = G.SINGLE_FILE["rewind_off_path"][0](); last = next(r for r in reversed(recs) if r.get("uuid"))
+        t1 = max((em.parse_z(r.get("timestamp")) or 0) for r in recs if r.get("timestamp")) + 60
+        with open(path2, "a") as fh:
+            fh.write(json.dumps(G.uline(t1, "one more question after the fact", "u_more", last["uuid"])) + "\n")
+        old = time.time() - 600; os.utime(path2, (old, old))
+        self.fresh_process(); em.rewound_uuids(path2)
+        st = em.rewound_memo_stats()
+        self.assertEqual((st["walked"], st["stale"]), (1, 1), "the document memo retired by growth is a retirement: %s" % st)
+
+    def test_a_wrong_shaped_document_state_is_walked_and_counted_as_a_fallback(self):
+        """Round one, low 3: a state that is not the memo's shape walked forever with nothing counted."""
+        path = self.frozen("shape")
+        self.fresh_process(); first = em.rewound_uuids(path)
+        f = em._ckpt_file(path); d = json.loads(f.read_text())
+        d["folds"]["rewoundUuids"]["state"] = {"uuids": "not-a-list"}
+        f.write_text(json.dumps(d))
+        self.fresh_process()
+        got = em.rewound_uuids(path)
+        self.assertEqual(got, first, "the walk's verdicts")
+        st = em.rewound_memo_stats()
+        self.assertEqual((st["walked"], st["fallback"]), (1, 1), "%s" % st)
 
 
 if __name__ == "__main__":
