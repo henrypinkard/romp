@@ -1180,6 +1180,73 @@ class KernelFolds(Base):
         km._begin_checkpoint_cycle(); self.assertEqual(km._converge_checkpoints(TS0 + 601), 0)
         self.assertEqual((em.checkpoint_stats()["converge"]["passes"], self.doc(self.leaf)["seq"]), (1, d["seq"]), "one pass, one write")
 
+    def test_with_the_drop_write_off_the_pass_refuses_a_resident_quiescent_leaf_and_keeps_its_read(self):
+        """Follow-up review, low 1: under a zero byte budget the prime popped the boot's read without writing and viaDrop counted a
+        leaf where the drop wrote nothing. With the drop write off the exception does not apply: refused, the entry kept."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "missing"}, quiescent=True)
+        jd._bg_scan(self.leaf); seq = self.doc(self.leaf)["seq"]
+        saved = km.CKPT_CONVERGE_BYTES; km.CKPT_CONVERGE_BYTES = 0
+        self.addCleanup(setattr, km, "CKPT_CONVERGE_BYTES", saved)
+        km._begin_checkpoint_cycle()
+        self.assertEqual(km._converge_checkpoints(TS0 + 600), 0)
+        cv = em.checkpoint_stats()["converge"]
+        self.assertEqual((cv["quiescent"], cv["viaDrop"], cv["dropWrites"], cv["heals"]), (1, 0, 0, 0), "%s" % cv)
+        self.assertTrue(em.entry_whole_resident(self.leaf), "the boot's read is kept, not discarded with the document stale")
+        self.assertEqual(self.doc(self.leaf)["seq"], seq)
+
+    def test_via_drop_counts_only_a_write_that_happened(self):
+        """Follow-up review, low 1: with the drop's write failing, the pop still left nothing to write, and viaDrop counted it. It
+        counts from a write that happened for that path; a failed one is the pass's failure, skipped until the file changes."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "missing"}, quiescent=True)
+        jd._bg_scan(self.leaf); seq = self.doc(self.leaf)["seq"]
+        saved = em.checkpoint_write; em.checkpoint_write = lambda path, force=False: False
+        self.addCleanup(setattr, em, "checkpoint_write", saved)
+        km._begin_checkpoint_cycle()
+        self.assertEqual(km._converge_checkpoints(TS0 + 600), 0)
+        cv = em.checkpoint_stats()["converge"]
+        self.assertEqual((cv["viaDrop"], cv["dropWrites"], cv["failed"]), (0, 0, 1), "%s" % cv)
+        self.assertTrue(km._converge_skipped(self.leaf)); self.assertEqual(self.doc(self.leaf)["seq"], seq)
+
+    def test_a_cold_launch_fold_is_healed_and_the_other_folds_still_primed_before_the_drop(self):
+        """Follow-up review, low 2: when the launch fold was itself the cold one, the heal's rerun of it dropped the entry mid-heal,
+        the prime never ran, and the folds this process never called stayed out of the document. The drop is held while the pass
+        heals and primes, then paid once: one write with every leaf fold, one pop."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "bare", "bgAll": "missing", "sessionMeta": "missing"}, quiescent=True)
+        km._agent_launch_state(self.leaf)                             # the boot: the launch fold restores cold over the tail
+        jd._bg_scan(self.leaf)                                        # the judges' first pass: the whole read, resident
+        self.assertEqual(em.cold_fold_reasons(self.leaf), {"agentLaunches": "cold"}); self.assertTrue(em.entry_whole_resident(self.leaf))
+        km._begin_checkpoint_cycle()
+        self.assertEqual(km._converge_checkpoints(TS0 + 600), 0)
+        d = self.doc(self.leaf)
+        self.assertEqual(sorted(d["folds"]), ["agentLaunches", "bgAll", "bgJudge", "bgRunning", "sessionMeta"], "every leaf fold, primed before the drop")
+        self.assertTrue(all("state" in f for f in d["folds"].values()), "the healed launch state complete, the rest primed")
+        cv = em.checkpoint_stats()["converge"]
+        self.assertEqual((cv["heals"], cv["viaDrop"], cv["dropWrites"], cv["writes"]), (1, 1, 1, 0), "%s" % cv)
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNone(em._JSONL_CACHE.get(self.leaf), "one pop, after the prime")
+        self.assertEqual(em.checkpoint_converge_candidates(), [])
+
+    def test_an_unhealable_cold_fold_is_counted_on_the_via_drop_path_too(self):
+        """Follow-up review, low 3: the viaDrop continue preceded the unhealed counter, so a cold fold the pass could not rerun
+        (not one of the leaf's five) was dropped uncounted."""
+        self._converge_world({"bgJudge": "missing", "agentLaunches": "missing", "wakeTail": "bare"}, extra=("wakeTail",), quiescent=True)
+        em.fold_records({}, self.leaf, list, lambda st, o: st + [1], ckpt="wakeTail")   # the boot: the generic fold restores cold
+        jd._bg_scan(self.leaf)
+        self.assertEqual(em.cold_fold_reasons(self.leaf), {"wakeTail": "cold"})
+        km._begin_checkpoint_cycle()
+        self.assertEqual(km._converge_checkpoints(TS0 + 600), 0)
+        cv = em.checkpoint_stats()["converge"]
+        self.assertEqual((cv["unhealed"], cv["viaDrop"], cv["dropWrites"]), (1, 1, 1), "%s" % cv)
+        self.assertNotIn("wakeTail", self.doc(self.leaf)["folds"], "left out: its next run reads the file whole once")
+
+    def test_a_raise_inside_the_drop_hold_leaves_nothing_held_on_the_thread(self):
+        """A hold left set by a raise would hold every later drop on the pusher thread, unpaid, for the kernel's life."""
+        with self.assertRaises(RuntimeError):
+            with em.hold_quiescent_drops():
+                em._DROP_HOLD.held["x"] = True
+                raise RuntimeError("a fold raised")
+        self.assertIsNone(em._DROP_HOLD.held); self.assertEqual(em.pay_held_drops(), {})
+
     def test_converge_skips_a_path_whose_write_failed_until_its_file_changes(self):
         """T361 (b): a failed write must not repeat every cycle."""
         self._converge_world({"bgJudge": "missing"})
