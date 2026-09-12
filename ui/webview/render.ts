@@ -37,7 +37,7 @@ import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompS
 import { backendLabel, effectiveDefaultBackend } from "./backend-names";
 import { delegate } from "./actions";
 import { flash } from "./actions";   // its own line: the import above is pinned verbatim by click-safe.test.ts (the file-view precedent)
-import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, GROUP_TITLE, workingFor, type AwaitRow } from "./spin-caption";
+import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, listBreakdown, keptWord, GROUP_TITLE, ROW_KINDS, workingFor, type AwaitRow } from "./spin-caption";
 import { CHIP_LABEL, chipWords, statusChip, type ChipState } from "./status-chip";   // the session status chip: its words and its classes, the one builder the bar and the tag overview's rows share (T322b)
 import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
@@ -13671,7 +13671,13 @@ function renderLedger() {
 // the box's fold + each row's detail fold key into openFolds ("bgfold:<sid>" / "bgrow:<id>") — the ONE fold
 // store since 2026-09-08 (these had their own bgFoldOpen / bgExpanded sets)
 const BG_RANK: Record<string, number> = { failed: 3, running: 2, completed: 1 };
-const BG_LEFTOVER_TITLE = "Also running";   // tracked tasks the wait does not name (a dev server the session keeps around)
+// T394 (the user 2026-09-12, from a screenshot of the fold with a section for tasks merely also running): a tracked task the kernel's rows do
+// not name is still a command or an agent, and what set it apart was a JUDGE'S VERDICT (the closer audited its launch without a
+// wait), not a kind. So it lists in its kind's section, dimmed, with the verdict as a muted suffix on the row (kept running, not
+// waited on), and the header counts it apart from the awaited breakdown; the section of its own, whose title said nothing of
+// that, is gone. One hue per kind for the dot and the caption word (the sheet: bg-kind-*), status overriding for failed and
+// completed rows.
+const BG_KEPT_WORD = "· kept running, not waited on";
 // ── SUBAGENT VIEWER (plans/subagent-transcripts.md, 2026-09-05) ─────────────────────────────────
 // The arrow on an Agent head (or an agent bg-task row) opens the agent's whole transcript as a PEEK tab:
 // a client-only pseudo-session in `sessions`/`order` with id `<parentId>/agent/<agentId>`, fed by the
@@ -13874,6 +13880,7 @@ function renderBgTasks() {
   const awPeers = s.status.awaitingPeers || [];
   const itemIds = rowIds(items);   // the rows AND what nests under them (an agent's own waits name their tasks too)
   const leftovers = tasks.filter((t) => !itemIds.has(t.id));   // tracked tasks the wait does not name (services)
+  const kept = leftovers.map((t) => taskRowSpec(t, awaited.has(t.id)));   // …as rows of their KIND, dimmed, the verdict as a suffix (T394)
   // the header dot: await-green while waiting, like the chip; otherwise the worst tracked status, so a
   // failed task is glanceable while collapsed (running-yellow when nothing tracked has failed)
   const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, "running");
@@ -13900,17 +13907,17 @@ function renderBgTasks() {
         lab.appendChild(nm);
       });
       lab.append(" · " + why.replace(/^delegated to [^;]*;\s*/i, "").replace(/^(waiting on|awaiting)\s+/i, ""));
+      if (kept.length) lab.append(" · " + keptWord(kept.length));
     } else if (groups.length > 1) {
-      lab.textContent = "Awaiting " + word + " · " + awaitBreakdown(items);   // mixed kinds: the number, then the breakdown
+      lab.textContent = "Awaiting " + word + " · " + listBreakdown(items, kept.length);   // mixed kinds: the number, then the breakdown, then the kept rows
     } else {
-      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "");
+      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "") + (kept.length ? " · " + keptWord(kept.length) : "");
     }
   } else {
     // WORKING (or idle with nothing awaited — a service the session keeps around): the same rows, worded
-    // as what they are, no idle note. The breakdown counts the in-flight rows, or the tracked tasks when
-    // the kernel names none (they are shell tasks by construction — _bg_split never makes an agent a service).
-    const counted: AwaitRow[] = items.length ? items : leftovers.map((t) => ({ kind: "commands", id: t.id, label: t.summary }));
-    lab.textContent = "In the background · " + awaitBreakdown(counted);
+    // as what they are, no idle note. The header counts every row the list shows (T394): the in-flight rows by
+    // kind, then the tracked tasks the kernel names no row for, apart, as the kept-running rows they are.
+    lab.textContent = "In the background · " + listBreakdown(items, kept.length);
   }
   head.appendChild(lab);
   host.appendChild(head);
@@ -13931,9 +13938,13 @@ function renderBgTasks() {
   }
   const taskById = new Map<string, BgTask>(tasks.map((t) => [t.id, t]));
   const peerByName = new Map<string, PeerIdent>(awPeers.map((p) => [p.name, p]));
-  const headers = groups.length + (leftovers.length ? 1 : 0) >= 2;   // group headers only when there is more than one group to tell apart
+  // the sections, one per KIND in display order: a kind the kernel's rows bring, or one only a kept row brings (T394)
+  const sections: { kind: string; rows: AwaitRow[] }[] = [...ROW_KINDS, "other"]
+    .filter((k) => groups.some((g) => g.kind === k) || kept.some((row) => row.kind === k))
+    .map((k) => ({ kind: k, rows: (groups.find((g) => g.kind === k) || { rows: [] as AwaitRow[] }).rows }));
+  const headers = sections.length >= 2;   // group headers only when there is more than one group to tell apart
   const list = el("div", "bg-list");
-  for (const g of groups) {
+  for (const g of sections) {
     if (headers) { const gh = el("div", "bg-group-head"); gh.textContent = GROUP_TITLE[g.kind] || "Other"; list.appendChild(gh); }
     for (const it of g.rows) {
       list.appendChild(bgRow(awaitRowSpec(it, taskById.get(it.id || ""), peerByName), sid));
@@ -13950,10 +13961,7 @@ function renderBgTasks() {
         list.appendChild(bgRow(spec, sid));
       });
     }
-  }
-  if (leftovers.length) {
-    if (headers) { const gh = el("div", "bg-group-head"); gh.textContent = BG_LEFTOVER_TITLE; list.appendChild(gh); }
-    for (const t of leftovers) list.appendChild(bgRow(taskRowSpec(t, awaited.has(t.id)), sid));
+    for (const row of kept) if (row.kind === g.kind) list.appendChild(bgRow(row, sid));   // the kept rows of this kind, after the awaited ones
   }
   // the plain-words note on what the state means — for the idle wait only, where the state is not obvious
   // from the header; "In the background" says all a working session needs (2026-09-06)
@@ -13988,6 +13996,8 @@ interface BgRowSpec {
   command?: string | null;    // the fold: an agent's prompt, a command's command line, a watch's predicate
   output?: string | null;     // the fold: a command's output tail (never an agent's — its output file IS the transcript; the arrow is the way in)
   peer?: PeerIdent | null;    // a peer row: the name in identity colour
+  kind?: string | null;       // the row's kind (agents | commands | watches | peer | timer): its section, and the hue of its dot and caption (T394)
+  kept?: boolean;             // a tracked task nobody waits on (the judge audited its launch without a wait): dimmed, the verdict as a muted suffix (T394)
   sub?: "first" | "rest" | null;   // a NESTED row — what the agent above it waits on (2026-09-10): indented; "first" wears the "waiting on" label, "rest" its blank twin so the dots align
   deeper?: string | null;     // a nested row that has waits of its own: their count, said in the label ("waiting on 1 command") — the box draws one level
 }
@@ -13995,6 +14005,7 @@ interface BgRowSpec {
 function taskRowSpec(t: BgTask, awaited: boolean): BgRowSpec {
   const status = t.status || "running";
   return { id: t.id, status, caption: status, label: t.summary || "Background task", awaited,
+           kind: t.agentId ? "agents" : "commands", kept: !awaited,   // its kind's section; kept running unless the kernel names it awaited (T394)
            agentId: t.agentId || null, stopId: status === "running" ? t.id : null,
            command: t.command || null, output: t.agentId ? null : (t.output || "(no output captured)") };
 }
@@ -14010,30 +14021,31 @@ function awaitRowSpec(it: AwaitRow, tracked: BgTask | undefined, peerByName: Map
   // the nested rows would have no Stop at all.
   const stopId = running ? tracked!.id : (it.stoppable && id ? id : null);
   if (it.kind === "agents") {
-    return { id, status: "running", caption: "running", label: it.label || (tracked && tracked.summary) || "background agent",
+    return { id, status: "running", caption: "running", kind: "agents", label: it.label || (tracked && tracked.summary) || "background agent",
              agentId: it.agentId || (tracked && tracked.agentId) || null, since: it.since,
              stopId, command: (tracked && tracked.command) || null, output: null };
   }
   if (it.kind === "commands") {
     const status = (tracked && tracked.status) || "running";
-    return { id, status, caption: status, label: it.label || (tracked && tracked.summary) || "background command", since: it.since,
+    return { id, status, caption: status, kind: "commands", label: it.label || (tracked && tracked.summary) || "background command", since: it.since,
              stopId, command: (tracked && tracked.command) || null,
              output: tracked ? (tracked.output || "(no output captured)") : null };
   }
   if (it.kind === "watches") {
-    return { id, status: "armed", caption: "armed", label: it.label || "a watch", since: it.since,
+    return { id, status: "armed", caption: "armed", kind: "watches", label: it.label || "a watch", since: it.since,
              watchId: it.watchId || null, command: it.detail || null };
   }
   if (it.kind === "peer") {
-    return { id, status: "waiting", label: it.label || "a peer", peer: peerByName.get(it.label || "") || null };
+    return { id, status: "waiting", kind: "peer", label: it.label || "a peer", peer: peerByName.get(it.label || "") || null };
   }
-  return { id, status: "waiting", caption: it.kind === "timer" ? "timer" : null, label: it.label || it.kind, since: it.since };
+  return { id, status: "waiting", caption: it.kind === "timer" ? "timer" : null, kind: it.kind, label: it.label || it.kind, since: it.since };
 }
 
 function bgRow(t: BgRowSpec, sid: string): HTMLElement {
   const tOpen = openFolds.has("bgrow:" + t.id);
   const foldable = !!(t.command || t.output);
-  const row = el("div", "bg-task bg-" + (t.status || "running") + (t.awaited ? " bg-awaited" : "") + (t.sub ? " bg-sub" : "") + (tOpen && foldable ? " open" : ""));
+  const row = el("div", "bg-task bg-" + (t.status || "running") + (t.kind ? " bg-kind-" + t.kind : "") + (t.kept ? " bg-kept" : "")
+                     + (t.awaited ? " bg-awaited" : "") + (t.sub ? " bg-sub" : "") + (tOpen && foldable ? " open" : ""));
   const rh = el("div", "bg-head" + (foldable ? "" : " bg-flat"));
   if (foldable) { rh.dataset.act = "bg-toggle"; rh.dataset.id = t.id; }   // the row header toggles; clicks in the detail body don't collapse it
   if (t.sub) {
@@ -14051,6 +14063,7 @@ function bgRow(t: BgRowSpec, sid: string): HTMLElement {
     if (t.peer.color && t.peer.color.bg) sum.style.color = t.peer.color.bg;
   } else sum.textContent = t.label || "Background task";
   rh.appendChild(sum);
+  if (t.kept) { const kw = el("span", "bg-kept-word"); kw.textContent = BG_KEPT_WORD; rh.appendChild(kw); }   // the judge's verdict, muted, beside the label (T394)
   if (t.deeper) {
     // the level the box does not draw, counted in words (the meta rung, like the elapsed time)
     const dp = el("span", "bg-deeper"); dp.textContent = "· waiting on " + t.deeper; rh.appendChild(dp);

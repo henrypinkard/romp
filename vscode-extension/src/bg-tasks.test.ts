@@ -23,8 +23,8 @@ test("the header is ONE line worded from the rows — 'Awaiting …' idle, 'In t
   // presentations at each turn boundary; one renderer now words the header from the same rows in both states
   assert.doesNotMatch(SRC, /count \+ " background tasks"/);
   assert.doesNotMatch(SRC, /"Background task · "/);
-  assert.match(SRC, /lab\.textContent = "In the background · " \+ awaitBreakdown\(counted\);/);
-  assert.match(SRC, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ awaitBreakdown\(items\);/);
+  assert.match(SRC, /lab\.textContent = "In the background · " \+ listBreakdown\(items, kept\.length\);/);   // every row the list shows, the kept rows counted apart (T394)
+  assert.match(SRC, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(items, kept\.length\);/);
   // collapsed by default: when the fold isn't open, only the header renders
   assert.match(SRC, /const open = openFolds\.has\("bgfold:" \+ sid\);/);   // the ONE fold store since 2026-09-08 (was bgFoldOpen)
   assert.match(SRC, /if \(!open\) return;/);
@@ -74,5 +74,5 @@ test("expanded list is capped (never crowds the composer) and scrolls; tasks are
 test("status tints keep their meaning (running yellow, failed red, completed blue — not the accent)", () => {
   assert.match(CSS, /\.bg-task \{ --bgt: var\(--st-working-bg\)/);
   assert.match(CSS, /\.bg-task\.bg-failed \{ --bgt: var\(--st-blocked-bg\); \}/);
-  assert.match(CSS, /\.bg-task\.bg-completed \{ --bgt: var\(--st-ready-bg\); \}/);
+  assert.match(CSS, /\.bg-task\.bg-completed \{ --bgt: var\(--dim\); \}/);   // T394: the dim ink, since the ready blue would collide with the command hue
 });
