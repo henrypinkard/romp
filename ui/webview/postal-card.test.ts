@@ -165,7 +165,6 @@ test("a sent card that has not landed wears the pending send's own provisional d
   // bubble and the bubble being edited bring the words to full ink, and a notice romp itself queued (T243) keeps its
   // landed card's full ink under the wrapper
   assert.match(CSS, /\.queued-bubble\.cancelable:hover \{ --prov-ink: var\(--fg\); border-color: var\(--accent\); \}/);
-  assert.match(CSS, /\.queued-bubble\.editing \{ --prov-ink: var\(--fg\);/);
   assert.match(CSS, /\.queued-bubble\.queued-romp \{ background: transparent; border: 0; padding: 0; --prov-ink: var\(--fg\); \}/);
   assert.doesNotMatch(CSS, /\.queued-bubble[^\n{]*\{[^}]*\bopacity:/, "no queued-bubble rule sets an opacity: the fade and its lifts are the ink");
   assert.match(CSS, /\.queued-bubble\.cancelable \{ position: relative; padding-right: 30px; transition: color \.1s, border-color \.1s, background \.1s; \}/, "the transition names what changes");

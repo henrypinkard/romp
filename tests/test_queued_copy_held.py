@@ -354,7 +354,7 @@ await page.waitForTimeout(300);
 const pressed = await measure();
 // the id the send posted, and the id our bubble's ✕ carries: one id, minted at the press
 const posted = await page.evaluate(() => window.__posted);
-const bubbleQid = await page.evaluate(() => { const x = document.querySelector(".turn-queued .queued-x"); return x ? x.dataset.qid : null; });
+const bubbleQid = await page.evaluate(() => { const x = document.querySelector(".turn-queued .queued-edit"); return x ? x.dataset.qid : null; });
 // a kernel that minted its own id for the copy (it took none from the press): our copy hidden for ours, by text
 await inject({ ...base, type: "update", events: [...base.events, { kind: "queued", texts: [{ md: cfg.text, qid: "echo:m9", qts: Date.now(), cancelable: true, idx: 0 }] }] });
 await page.waitForTimeout(400);

@@ -49,7 +49,7 @@ export function stagedRunBody(items: readonly StagedMsg[], typed?: { text: strin
  *  follow-up on that card; quote chips wrap client-side) and the image paths the echo renders as
  *  thumbnails. The typed message a release carries has this shape, and so does each post stagedPosts
  *  returns. */
-export interface Post { text: string; cites?: unknown[]; imgPaths?: string[] }
+export interface Post { text: string; cites?: unknown[]; imgPaths?: string[]; paths?: string[] }   // paths: every attachment the trailing line carries (T373 fold)
 
 // a goal citation names the card the words follow up on; the kernel wraps one goal per message
 const isGoalCite = (c: unknown): boolean =>
@@ -82,7 +82,7 @@ export function stagedPosts(items: readonly StagedMsg[], typed?: Post | null): P
   const close = (last?: Post | null) => {
     if (!run.length) return;
     const goal = last ? (last.cites || []).find(isGoalCite) : undefined;
-    posts.push({ text: stagedRunBody(run, last), cites: goal ? [goal] : undefined, imgPaths: last?.imgPaths });
+    posts.push({ text: stagedRunBody(run, last), cites: goal ? [goal] : undefined, imgPaths: last?.imgPaths, paths: last?.paths });
     run = [];
   };
   for (const it of items) {
@@ -90,7 +90,7 @@ export function stagedPosts(items: readonly StagedMsg[], typed?: Post | null): P
     else run.push(it);
   }
   if (typed && run.length && !isSlashCommand(typed.text)) close(typed);
-  else { close(); if (typed) posts.push({ text: typed.text, cites: typed.cites, imgPaths: typed.imgPaths }); }
+  else { close(); if (typed) posts.push({ text: typed.text, cites: typed.cites, imgPaths: typed.imgPaths, paths: typed.paths }); }
   return posts;
 }
 

@@ -363,7 +363,7 @@ test("CSS: an expanded label wraps an unbroken token inside the list; the caret 
 test("the composer closure's call sites: deliver sends only through flushStaged with the typed message, the stage path is the one reveal, and nothing collapses a list on its own", () => {
   // deliver lives inside setupComposer's closure, which nothing lifts: the typed message rides the flush
   // as the run's last item, and no second send follows it
-  assert.match(RENDER, /const cites = composerCitations\.get\(activeId\);\s*\n\s*flushStaged\(sid, \{ text, cites, imgPaths: attached\.filter\(\(p\) => previewKind\(p\) === "img"\) \}\);/);
+  assert.match(RENDER, /const cites = composerCitations\.get\(activeId\);\s*\n\s*flushStaged\(sid, \{ text, cites, imgPaths: attached\.filter\(\(p\) => previewKind\(p\) === "img"\), paths: attached \}\);/);
   const deliverBody = RENDER.split("const deliver = () => {")[1].split("setComposerAskMode();")[0];
   assert.doesNotMatch(deliverBody, /routeUserMessage\(/, "deliver sends only through flushStaged");
   assert.equal((deliverBody.match(/flushStaged\(/g) || []).length, 1);
@@ -378,7 +378,7 @@ test("the composer closure's call sites: deliver sends only through flushStaged 
   // one routing loop over the module's post list; the composition and its exceptions are decided there,
   // and quoteReplyBody lives there too (one function for the send, the release and the chip preview)
   assert.match(RENDER, /import \{ StagedStack, quoteReplyBody, stagedPosts, type StagedMsg \} from "\.\/staged-messages";/);   // + the type: a moved tab's staged messages travel with it (the chat split, 2026-09-11)
-  assert.match(FLUSH, /for \(const p of stagedPosts\(run, typed\)\) routeUserMessage\(sid, p\.text, p\.cites as Citation\[\] \| undefined, p\.imgPaths\);/);
+  assert.match(FLUSH, /for \(const p of stagedPosts\(run, typed\)\) routeUserMessage\(sid, p\.text, p\.cites as Citation\[\] \| undefined, p\.imgPaths, p\.paths\);/);
   assert.equal((FLUSH.match(/routeUserMessage\(/g) || []).length, 1, "no send outside the post list");
   assert.doesNotMatch(FLUSH, /stagedRunBody|itemId|isSlashCommand/, "not re-derived here");
   assert.doesNotMatch(RENDER, /^function quoteReplyBody\(/m);

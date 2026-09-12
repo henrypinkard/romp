@@ -109,7 +109,7 @@ test("creating a session opens the provisional tab instead of a modal", () => {
 });
 
 test("a send on a provisional tab is HELD, not posted to a session that doesn't exist", () => {
-  assert.match(RENDER, /provisionalQueue\.push\(text\);\s*\n\s*registerOptimistic\(sid, text, attached\.filter\(\(p\) => previewKind\(p\) === "img"\)\);/,
+  assert.match(RENDER, /provisionalQueue\.push\(text\);\s*\n\s*registerOptimistic\(sid, text, attached\.filter\(\(p\) => previewKind\(p\) === "img"\), undefined, attached\);/,
     "the dashed bubble goes up now — with its dragged-image thumbnails — romp has it, it is not delivered");
   // a FAILED tab has no pending spawn to queue onto: refuse loudly, the box keeps the only copy. The refusal reports
   // a state the page after a reload does not have, so it is ephemeral (executed in reload-notices.test.ts)

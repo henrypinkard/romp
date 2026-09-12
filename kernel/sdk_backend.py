@@ -4911,7 +4911,12 @@ def queue_meta_from_reg(reg: dict) -> list:
     entries = [m for m in raw if isinstance(m, dict) and isinstance(m.get("text"), str)] if isinstance(raw, list) else []
 
     def ident(m):
-        return {"qid": m["qid"], "qts": m.get("qts")} if isinstance(m.get("qid"), str) and m["qid"] else None
+        if not (isinstance(m.get("qid"), str) and m["qid"]):
+            return None
+        out = {"qid": m["qid"], "qts": m.get("qts")}
+        if isinstance(m.get("paths"), list) and m["paths"]:
+            out["paths"] = [str(x) for x in m["paths"] if isinstance(x, str)]   # the attachment list survives a restart with the copy (T373 fold)
+        return out
 
     # the mirror lists EVERY position (text alone for an id-less copy): align the mirrored run as one block of the
     # queue — the boot paths that edit reg['queue'] by text (a notice prepended, a re-delivered send appended)
@@ -5270,12 +5275,6 @@ class SdkSession:
         # the record that lands the text (FIFO per text, at or after the feed) — the landed atom then carries
         # the same id the queued copy and the echo wore, and the chat places by identity, never by text.
         self._pending_meta: list = queue_meta_from_reg(reg)   # the ids the mirror carries, aligned with _pending
-        # A HOLD beside each copy (T306, the user 2026-09-10): the id of the connection whose editor has the copy's
-        # words open, or None. The feeder skips a held copy (_feed_index_locked) so the message cannot leave while it
-        # is being changed; the hold ends with the edit (replace_queued), its cancel (release_queued) or that
-        # connection closing (release_holds_by). Aligned with _pending by the _q_* helpers; in memory only, so a
-        # kernel death drops every hold and the client re-holds when it reconnects.
-        self._pending_hold: list = [None] * len(self._pending)
         self._fed_meta: list = []
         self._landed_qid: dict = {}
         self._ping_feeding = False   # a rename ping was fed and its turn hasn't streamed yet: hold the
@@ -5327,14 +5326,12 @@ class SdkSession:
     def _q_append(self, text: str, meta=None):
         self._pending.append(text)
         self._pending_meta.append(meta if isinstance(meta, dict) and meta.get("qid") else None)
-        self._pending_hold.append(None)
 
     def _q_prepend(self, texts, metas=None):
         texts = list(texts)
         self._pending[0:0] = texts
         metas = list(metas) if metas is not None and len(metas) == len(texts) else [None] * len(texts)
         self._pending_meta[0:0] = [m if isinstance(m, dict) and m.get("qid") else None for m in metas]
-        self._pending_hold[0:0] = [None] * len(texts)
 
     def _unfeed_locked(self, texts):
         """The fed entries for `texts` (FIFO per text), popped from the ledger: their identities go back to the queue
@@ -5355,17 +5352,7 @@ class SdkSession:
         """(text, meta) at `idx`, both lists popped together — the one way a copy leaves the queue."""
         text = self._pending.pop(idx)
         meta = self._pending_meta.pop(idx) if idx < len(self._pending_meta) else None
-        if idx < len(self._pending_hold):
-            self._pending_hold.pop(idx)                     # the hold leaves with the copy
         return text, meta
-
-    def _feed_index_locked(self) -> int:
-        """The slot the input generator feeds next (under self._lock): the first copy with no hold on it, or -1 when
-        every queued copy is being edited (T306). A held copy keeps its slot; the queue behind it keeps moving."""
-        for i in range(len(self._pending)):
-            if not (self._pending_hold[i] if i < len(self._pending_hold) else None):
-                return i
-        return -1
 
     def _locate_locked(self, idx: int, expect, qid) -> int:
         """The slot a click means (under self._lock), the way unqueue reads it: the copy wearing `qid` when one is
@@ -5383,53 +5370,8 @@ class SdkSession:
         if loop is not None and wake is not None:
             loop.call_soon_threadsafe(wake.set)
 
-    def hold_queued(self, idx: int, expect, owner: str, qid: str | None = None) -> bool:
-        """Mark the queued copy at `idx` (located like unqueue: by `qid`, else by `idx` verified against `expect`, else
-        by text) as held by `owner`, the connection whose editor has its words open (T306). The feeder skips it
-        until release_queued / replace_queued / release_holds_by. False when no such copy is queued (fed already):
-        the caller's cue to refuse the edit loudly."""
-        if not owner:
-            return False                                     # a hold needs an owner to release it by
-        with self._lock:
-            i = self._locate_locked(idx, expect, qid)
-            if i < 0:
-                return False
-            while len(self._pending_hold) < len(self._pending):
-                self._pending_hold.append(None)
-            cur = self._pending_hold[i]
-            if cur and cur != owner:
-                return False                                 # another connection's editor has it: the first keeps it
-            self._pending_hold[i] = owner
-        return True
-
-    def release_queued(self, idx: int, expect, owner: str | None = None, qid: str | None = None) -> bool:
-        """Clear the hold on the copy at `idx` (located like hold_queued) when `owner` placed it (or no owner is
-        named); wakes the feeder so the freed copy goes on the next pass. False when the copy is not held by
-        that owner, or is gone."""
-        with self._lock:
-            i = self._locate_locked(idx, expect, qid)
-            cur = self._pending_hold[i] if 0 <= i < len(self._pending_hold) else None
-            if i < 0 or cur is None or (owner is not None and cur not in ("", owner)):
-                return False
-            self._pending_hold[i] = None
-        self._wake_feeder()
-        return True
-
-    def release_holds_by(self, owner: str) -> int:
-        """Every hold `owner` placed is released (its socket closed: the disconnect is the event, T306). Returns
-        how many; wakes the feeder when any."""
-        n = 0
-        with self._lock:
-            for i, h in enumerate(self._pending_hold):
-                if h is not None and h == owner:
-                    self._pending_hold[i] = None
-                    n += 1
-        if n:
-            self._wake_feeder()
-        return n
-
     def _pop_for_feed_locked(self, idx: int = 0):
-        """The copy at `idx` (the feed slot, _feed_index_locked) leaves for the CLI (the input generator, under
+        """The copy at `idx` (the feed slot, the head) leaves for the CLI (the input generator, under
         self._lock): its identity moves to the fed ledger, where the landing is paired with it. Returns (text, meta)."""
         text, meta = self._q_pop(idx)
         if meta and meta.get("qid"):
@@ -5443,10 +5385,8 @@ class SdkSession:
         with self._lock:
             if len(self._pending_meta) != len(self._pending):
                 return None
-            return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"),
-                     "held": bool(self._pending_hold[i] if i < len(self._pending_hold) else None),   # T306: an open editor…
-                     "holder": (self._pending_hold[i] if i < len(self._pending_hold) else None) or None}   # …and whose (the kernel's ownership check)
-                    for i, (t, m) in enumerate(zip(self._pending, self._pending_meta))]
+            return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"), **({"paths": m["paths"]} if isinstance(m, dict) and m.get("paths") else {})}
+                    for t, m in zip(self._pending, self._pending_meta)]
 
     def qids_for_landing(self, uuid_: str, texts, t=None):
         """The ids of the fed copies a landed user record carries, one per text block: for each block the
@@ -5498,7 +5438,7 @@ class SdkSession:
         with self._lock:
             self._fed_meta = [f for f in self._fed_meta if f.get("qid") != qid]
 
-    def enqueue(self, text: str, qid: str | None = None, qts: int | None = None):
+    def enqueue(self, text: str, qid: str | None = None, qts: int | None = None, paths: list | None = None):
         """Deliver a user turn (called from the kernel thread). Held in self._pending —
         VISIBLE to pending_queued — until the input generator releases it at turn end. Works
         before the loop is ready too (the generator drains _pending on its first pass). `qid`/`qts`:
@@ -5506,7 +5446,10 @@ class SdkSession:
         with self._lock:
             if qid:
                 self._fed_meta = [f for f in self._fed_meta if f.get("qid") != qid]   # back in the queue: not fed (a re-delivery)
-            self._q_append(text, {"qid": qid, "qts": qts} if qid else None)
+            meta = {"qid": qid, "qts": qts} if qid else None
+            if meta is not None and paths:
+                meta["paths"] = [str(x) for x in paths if isinstance(x, str) and x]   # the attachments the send carried, beside its id (T373 fold)
+            self._q_append(text, meta)
             loop, wake = self.loop, self._input_wake
         self._persist_queue()
         if loop is not None and wake is not None:
@@ -5569,26 +5512,6 @@ class SdkSession:
             self._persist_queue()
         return item
 
-    def replace_queued(self, idx: int, text: str, expect: str | None = None) -> str | None:
-        """Replace the queued turn at `idx` IN PLACE — the chat's edit of a message that has not started
-        (the user 2026-09-08): same _pending position (the queue drains front-first, so the edited message
-        still goes where it would have), new words. `expect` verifies — and, on a shifted index,
-        re-locates — the exact old text UNDER the lock, exactly as unqueue does, so the input generator
-        consuming entries between the caller's snapshot and this swap can never rewrite the wrong
-        message. Returns the OLD text, or None on a miss: the entry is gone (fed to the CLI, where no
-        recall exists) and nothing was changed."""
-        with self._lock:
-            if expect is not None and not (0 <= idx < len(self._pending) and self._pending[idx] == expect):
-                idx = next((i for i, q in enumerate(self._pending) if q == expect), -1)
-            if not (0 <= idx < len(self._pending)):
-                return None
-            old, self._pending[idx] = self._pending[idx], text
-            if idx < len(self._pending_hold):
-                self._pending_hold[idx] = None                   # the Save is the hold's release (T306)
-        self._persist_queue()
-        self._wake_feeder()                                      # the edited copy goes on the next pass
-        return old
-
     def _adopt_queue_mirror(self, reg: dict) -> None:
         """Take the registry mirror's queue as this session's, WHOLESALE, when it differs from the seed: texts
         and their identities from reg['queue'] + reg['queueMeta'], the seed's own reading. Called by _ensure
@@ -5613,7 +5536,7 @@ class SdkSession:
         with self._lock:
             snap = list(self._pending)
             metas = list(self._pending_meta)
-        qmeta = [{"text": t, "qid": m["qid"], "qts": m.get("qts")} if isinstance(m, dict) and m.get("qid") else {"text": t}
+        qmeta = [{"text": t, "qid": m["qid"], "qts": m.get("qts"), **({"paths": m["paths"]} if m.get("paths") else {})} if isinstance(m, dict) and m.get("qid") else {"text": t}
                  for t, m in zip(snap, metas)]        # every position, so the restore aligns the run as a block
         try:
             self.backend._update_reg(self.sid, queue=snap, queueMeta=qmeta)
@@ -6397,8 +6320,7 @@ class SdkSession:
                     # turn-end events. Mid-turn forwards keep flowing (inflight > 0), so the
                     # in-flight turn can still finish; the wedged/rewind holds above are untouched.
                     blocked = blocked or (self.inflight == 0 and self.backend.drain_holding())
-                    # a copy whose editor is open is HELD (T306): the first unheld copy feeds, the held one keeps its slot
-                    fi = self._feed_index_locked() if (self._pending and not blocked) else -1
+                    fi = 0 if (self._pending and not blocked) else -1
                     item, _meta = self._pop_for_feed_locked(fi) if fi >= 0 else (None, None)
                     fresh = item is not None and self.inflight == 0     # starting from idle, not mid-turn
                     if item is not None:
@@ -12336,7 +12258,7 @@ class SdkBackend:
             return s.pending_meta()
         reg = read_reg(self.state_dir, sid) or {}
         texts = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
-        return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"), "held": False}
+        return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"), **({"paths": m["paths"]} if isinstance(m, dict) and m.get("paths") else {})}
                 for t, m in zip(texts, queue_meta_from_reg(reg))]
 
     def qid_for_landing(self, sid: str, uuid_: str, text: str, t=None):
@@ -12420,58 +12342,6 @@ class SdkBackend:
             self._wake_push()                              # repaint without the echo so it stops reading as sent
         return text
 
-    def hold_queued(self, sid: str, idx: int, expect, owner: str, qid: str | None = None) -> bool:
-        """Hold the queued copy at `idx` for `owner` while its editor is open (SdkSession.hold_queued; T306). False
-        when the session is not running or the copy is gone: the kernel refuses the edit with the too-late text."""
-        with self._lock:
-            s = self.sessions.get(sid)
-        return bool(s) and s.hold_queued(idx, expect, owner, qid=qid)
-
-    def release_queued(self, sid: str, idx: int, expect, owner: str | None = None, qid: str | None = None) -> bool:
-        """Release `owner`'s hold on the copy at `idx` (SdkSession.release_queued): the editor's Cancel."""
-        with self._lock:
-            s = self.sessions.get(sid)
-        return bool(s) and s.release_queued(idx, expect, owner, qid=qid)
-
-    def release_holds_by(self, owner: str) -> int:
-        """Every hold `owner` placed in any session is released (its connection closed; T306). Returns how many."""
-        with self._lock:
-            sessions = list(self.sessions.values())
-        return sum(s.release_holds_by(owner) for s in sessions)
-
-    def edit_queued(self, sid: str, idx: int, text: str, expect: str | None = None) -> str | None:
-        """Edit the queued turn at `idx` in place for an SDK session (the kernel's editQueued route) —
-        unqueue's twin: returns the OLD text, or None on a miss the caller surfaces loudly. The message's
-        optimistic echo (send()'s blue 'you' bubble, matched by its exact old text like unqueue does) is
-        re-worded too, so the live tail shows the edited message and the landing scan matches the record
-        the transcript will write. The kernel gates the chat's ✎ on the backend having `edit_queued`."""
-        with self._lock:
-            s = self.sessions.get(sid)
-        if not s:
-            return None
-        old = s.replace_queued(idx, text, expect)
-        if old is not None:
-            with self._live_lock:
-                for a in (self._live.get(sid) or {}).values():
-                    if a.get("_echo_text") != old:
-                        continue
-                    a["_echo_text"] = text
-                    m = a.get("message")
-                    if isinstance(m, dict):
-                        c = m.get("content")
-                        if isinstance(c, list):
-                            for b in c:
-                                if isinstance(b, dict) and b.get("type") == "text":
-                                    b["text"] = text
-                                    break
-                        elif isinstance(c, str):
-                            m["content"] = text
-                    self._touch_live(sid)                  # the reworded echo is a change to the tail (see _touch_live)
-                    break                                  # one echo per edited message
-            self._persist_echoes(sid)                      # the restart mirror carries the new words
-            self._wake_push()                              # repaint with them
-        return old
-
     def queue_recallable(self, sid: str) -> bool:
         """Can a ✕ on this session's queued bubble still win? False while a turn is running UN-HELD:
         there the input generator forwards a queued send to the CLI within milliseconds, and once it's
@@ -12492,7 +12362,7 @@ class SdkBackend:
                         or getattr(s, "_ping_feeding", False)   # getattr: test doubles skip __init__
                         or (s._rewind_to and not getattr(s, "_rewind_armed", False)))
 
-    def send(self, sid: str, text: str, qid: str | None = None, user: bool = False) -> bool:
+    def send(self, sid: str, text: str, qid: str | None = None, user: bool = False, paths: list | None = None) -> bool:
         """`user`: the text is a message the USER typed (the composer, the phone, an untagged `romp send`, a comment
         reply or merge, a parked user send replayed, a compact click), the one word that retries a stood-down
         attach (T315). Romp's own automatic messages (the default: the nudge, the awaiting backstop, the debt
@@ -12536,7 +12406,7 @@ class SdkBackend:
         # writes the real user atom.
         key = qid or "echo:" + uuid.uuid4().hex
         try:
-            s.enqueue(text, qid=key, qts=int(time.time() * 1000))
+            s.enqueue(text, qid=key, qts=int(time.time() * 1000), paths=paths or None)
         except TypeError:                                    # a stand-in session that takes the text alone: an id-less copy
             s.enqueue(text)
         # optimistic input echo: show the user's own message INSTANTLY (neither the transcript nor the
@@ -14564,7 +14434,7 @@ class SdkBackend:
 
         THE RULE: every site that adds, replaces, pops, flags or REWORDS an atom in `_live` calls this,
         once per call that changed something: _stash_live, _forward (its eviction included), unqueue (the
-        cancelled copy's echo), edit_queued (the echo's new words), dismiss_echo, prune_live,
+        cancelled copy's echo), dismiss_echo, prune_live,
         retire_live_work, settle_echoes (the overtaken flags, one bump per call that flagged), and the two
         flag writes _mark_dropped_echoes makes outside the lock (each takes
         the lock for its bump). tests/test_live_tail_rev.py pins the set by source, so a new queue or echo

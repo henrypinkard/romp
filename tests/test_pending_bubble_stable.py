@@ -149,7 +149,7 @@ for (let k = 0; k < 6; k++) {
   twoPushes.push(await measure());
 }
 // the ✕ on the FIRST bubble
-await page.evaluate(() => { const xs = Array.from(document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-x")); if (xs[0]) xs[0].click(); });
+await page.evaluate(() => { const xs = Array.from(document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-edit")); if (xs[0]) xs[0].click(); });
 await page.waitForTimeout(400);
 const afterX = await measure();
 for (let k = 0; k < 4; k++) {

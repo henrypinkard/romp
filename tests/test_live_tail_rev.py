@@ -147,22 +147,6 @@ class SdkLiveTailRevision(unittest.TestCase):
         self.assertEqual(self.be.unqueue(SID, 0), "already gone")
         self.assertEqual(self.rev(), r0 + 1, "a queue hit whose echo was retired ahead of it changes no atom")
 
-    def test_edit_queued_rewords_the_echo_and_bumps(self):
-        """The queue-edit route rewrites a queued message's echo in place (its text and its message block),
-        so the tab that renders the echo changed with no file moving: a change to the tail, one bump."""
-        self.be._stash_live(SID, "e1", _echo("e1", "the old words", 6))
-        self.be.sessions[SID] = types.SimpleNamespace(replace_queued=lambda idx, text, expect=None: "the old words")
-        r0 = self.rev()
-        self.assertEqual(self.be.edit_queued(SID, 0, "the new words"), "the old words")
-        self.assertEqual(self.rev(), r0 + 1, "the reworded echo is a change to the tail")
-        self.assertEqual(self.be.live_atoms(SID)[0]["_echo_text"], "the new words")
-        self.be.sessions[SID] = types.SimpleNamespace(replace_queued=lambda idx, text, expect=None: None)
-        self.assertIsNone(self.be.edit_queued(SID, 0, "nothing to edit"))
-        self.assertEqual(self.rev(), r0 + 1, "a queue miss rewords nothing and bumps nothing")
-        self.be.sessions[SID] = types.SimpleNamespace(replace_queued=lambda idx, text, expect=None: "no echo wears this")
-        self.assertEqual(self.be.edit_queued(SID, 0, "still nothing"), "no echo wears this")
-        self.assertEqual(self.rev(), r0 + 1, "a queue hit with no matching echo changes no atom")
-
     def test_mark_dropped_echoes_bumps_for_its_flag_writes_outside_the_lock(self):
         """The two in-place flag writes (`dropped`, `_landed`) change atoms the pusher already holds by
         identity, without the live-tail lock; each is a change to the tail and advances the revision."""
@@ -187,7 +171,7 @@ class SdkLiveTailRevision(unittest.TestCase):
         (which carry the claim that each bump happens): each mutator's source calls _touch_live, the two
         flag-writing lines in _mark_dropped_echoes are each followed by one, and _stash_live and _forward are
         the only sites that stash into _live, so a new mutator fails here until it is classified."""
-        for name in ("_stash_live", "_forward", "unqueue", "edit_queued", "dismiss_echo", "prune_live",
+        for name in ("_stash_live", "_forward", "unqueue", "dismiss_echo", "prune_live",
                      "retire_live_work", "_mark_dropped_echoes", "settle_echoes"):
             src = inspect.getsource(getattr(sb.SdkBackend, name))
             self.assertIn("self._touch_live(", src, "%s changes the tail without advancing its revision" % name)
