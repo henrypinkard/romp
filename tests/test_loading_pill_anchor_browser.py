@@ -160,6 +160,9 @@ class ServedLoadingPillAnchor(unittest.TestCase):
         cwd = os.path.join(cls.lab, "proj")
         for d in ("names", "sdk", "states"):
             os.makedirs(os.path.join(state, d), exist_ok=True)
+        # a lab root writes its own session-hosts off (the conftest rule): hosts are on by default, and a kernel-side boot
+        # attach for twenty alive sessions would otherwise spawn twenty real session hosts on a developer's machine
+        Path(state, "session-hosts").write_text("off\n")
         os.makedirs(cwd, exist_ok=True)
         proj = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cwd)))
         os.makedirs(proj, exist_ok=True)
