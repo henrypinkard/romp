@@ -951,21 +951,65 @@ class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
         self.assertIn("_echo_holdable(", frame)
         self.assertNotIn('not a.get("dropped") and not a.get("_landed")', frame, "the clauses live in the predicate alone")
 
-    def test_the_echo_landing_sets_floor_ignores_a_dropped_echo_too(self):
-        """The first boot with T384 hydrated 198 MB through `_atom_user_texts<-_merge_tx_sets`: the echo landing set's floor took
-        every live echo with a text, so a dropped send older than the compaction sank it. One floor (`_echo_floor`, over the
-        holdable echoes) serves the landing set's caller and the comments frame's walk."""
-        import inspect
+    def _merge_with_live(self, name, live):
+        """_merge_live_atoms over a restored tree with a stubbed owning backend holding `live`: the merged rows and the
+        by-text mapping prune_live received (the two consumers of the transcript-side text sets beside the landing set)."""
         km = self.km
-        newest = 1800000000.0
-        live = [{"_echo_text": "an old dropped line", "t": 0, "dropped": True}, {"_echo_text": "a new line", "t": newest}]
-        self.assertEqual(km._echo_floor(live), newest, "the dropped echo does not set the floor")
-        self.assertIsNone(km._echo_floor([{"_echo_text": "landed", "t": 1, "_landed": True}]), "no holdable echo: no floor")
-        self.assertIn("echo_floor = _echo_floor(live)", inspect.getsource(km._merge_live_atoms), "the landing set's caller takes the same floor")
-        self.assertIn("since = _echo_floor(live)", inspect.getsource(km._echo_landing_atoms))
-        path, tree = self._restored("setfloor")
+        path, tree = self._restored(name)
+        got = {}
+        class _Backend:
+            def live_atoms(self, sid):
+                return [dict(a) for a in live]
+            def prune_live(self, sid, tx_uuids, tx_user_texts=(), human_floor=0):
+                got["texts"] = tx_user_texts
+        saved = km.Sessions.__dict__["backend_for"]
+        km.Sessions.backend_for = staticmethod(lambda sid: _Backend())
+        self.addCleanup(lambda: setattr(km.Sessions, "backend_for", saved))
         km._merge_sets_memo.clear()
-        km._merge_tx_sets(tree, SID + "-setfloor", km._echo_floor(live))   # the floor a dropped echo no longer sinks: above every atom
+        merged = km._merge_live_atoms(tree, SID + "-" + name)
+        rows = [a.get("_echo_text") for t in merged["turns"] for a in (t.get("atoms") or []) if a.get("_echo_text")]
+        return path, tree, rows, got.get("texts")
+
+    def _pre_cut_user_text(self, path, tree):
+        """A user text of a pre-cut turn (one the restored tree holds as a marker), read from the cold parse."""
+        pre_uuids = {a.get("uuid") for t in tree["turns"] for a in t["atoms"] if a.get("lazy") is not None}
+        for t in self.cold(path)["turns"]:
+            for a in t["atoms"]:
+                if a.get("uuid") in pre_uuids and a.get("type") == "user":
+                    for txt in self.km._atom_user_texts(a):
+                        if txt:
+                            return txt
+        self.fail("the fixture has a pre-cut user text")
+
+    def test_a_dropped_echo_whose_text_landed_before_the_cut_is_hidden_and_pruned(self):
+        """Follow-up round one, M3: the landing set's floor was narrowed to the holdable echoes, but the text sets it floors are
+        also prune_live's by-text retirement input and the chat's echo dedupe input, which must cover EVERY live echo with a
+        text. A dropped echo whose text landed in a pre-cut turn: at the floor over every echo the chat hides it and prune
+        would retire it; under the holdable floor (None with no holdable echo; above the cut with one in the tail) it is
+        painted as a permanent never-delivered row beside the message that did land, and prune never retires it, the by-text
+        prune being an already-dropped echo's only automatic exit (_mark_dropped_echoes skips it at boot)."""
+        km = self.km
+        for tag, tail in (("alone", []), ("withtail", [{"_echo_text": "a fresh pending line", "t": 4102444800.0, "uuid": "echo-tail"}])):
+            with self.subTest(tag):
+                path, tree = self._restored("m3-" + tag)
+                dropped_text = self._pre_cut_user_text(path, tree)
+                dropped = {"_echo_text": dropped_text, "t": 0, "dropped": True, "uuid": "echo-dropped-" + tag}
+                path, tree, rows, texts = self._merge_with_live("m3-" + tag, [dropped] + tail)
+                self.assertNotIn(dropped_text, rows, "the dropped echo whose text landed is hidden: rows %r" % rows)
+                self.assertIsNotNone(texts, "prune_live ran")
+                self.assertTrue(km._echo_landed_in(dropped_text, texts), "prune's by-text input covers the landed text")
+                if tail:
+                    self.assertIn("a fresh pending line", rows, "the pending echo still paints")
+
+    def test_the_echo_landing_set_reads_no_text_below_the_oldest_echo(self):
+        """The saving that stands: the landing set reads pre-cut user texts from the oldest live echo's send up, dropped or
+        not; with every echo newer than the cut, no pre-cut body is hydrated."""
+        km = self.km
+        path, tree = self._restored("setfloor")
+        newest = max(float(a.get("t") or 0) for t in tree["turns"] for a in t["atoms"] if a.get("t"))
+        live = [{"_echo_text": "a new dropped line", "t": newest + 1, "dropped": True}, {"_echo_text": "a new line", "t": newest + 5}]
+        km._merge_sets_memo.clear()
+        km._merge_tx_sets(tree, SID + "-setfloor", min(float(e["t"]) for e in live))
         self.assertEqual(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "%s" % em.asm_checkpoint_stats()["hydratedBy"])
 
     def test_a_dropped_echo_below_the_cut_does_not_sink_the_landing_floor(self):

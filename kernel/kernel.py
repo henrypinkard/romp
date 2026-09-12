@@ -15164,10 +15164,10 @@ def _echo_holdable(e):
 
 
 def _echo_floor(live):
-    """The oldest send among the live echoes the frame can hold (`_echo_holdable`), or None with none: the floor below which no
-    user text is read for an echo's landing, in the comments frame's walk and in the echo landing set alike (T384 follow-up: the
-    landing set's own floor took every echo with a text, so one dropped send older than the compaction, never popped by the
-    backend's prune, sank it and every pre-cut user text above it was read; 198 MB on the first boot with T384)."""
+    """The oldest send among the live echoes the frame can hold (`_echo_holdable`), or None with none: the floor below which the
+    comments frame reads no user text for an echo's landing (`_echo_landing_atoms`). The frame's alone: _merge_live_atoms floors
+    its text sets over EVERY echo with a text, because prune_live's by-text retirement and the chat's dedupe read the same sets
+    and must cover a dropped or landed echo too (T384 follow-up, round one)."""
     return min((float(e.get("t") or 0) for e in live if _echo_holdable(e)), default=None)
 
 
@@ -32533,7 +32533,15 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     # The transcript-side sets come from the per-sid memo (_merge_tx_sets): a function of the parsed
     # session alone, which the parse cache hands back as the same object until the transcript changes,
     # and which every build of a cycle (chat, feed, timeline) used to derive again from every atom.
-    echo_floor = _echo_floor(live)             # the oldest HOLDABLE echo's send (a dropped or landed one must not sink the floor):
+    # The floor is the oldest send among EVERY live echo carrying a text, dropped, landed and command echoes included, and
+    # never `_echo_floor` (the comments frame's, over the holdable echoes alone): the text sets it floors are three consumers'
+    # inputs, the landing set below (`hide`), prune_live's by-text retirement (`tx_text_t`) and the chat's echo dedupe, and the
+    # last two must see the text of every live echo. An already-dropped echo's only automatic exit is the by-text prune
+    # (_mark_dropped_echoes skips it at boot), so a floor that skipped its send left a dropped send whose text landed in a
+    # pre-cut turn painted as a permanent never-delivered row beside the message that did land (T384 follow-up, round one).
+    # A dropped send older than the compaction therefore reads every pre-cut user text once per parse object; the pre-cut
+    # markers carry no exact text key (their hash is over the unstripped joined text alone), so no scalar road answers this.
+    echo_floor = min((float(a.get("t") or 0) for a in live if a.get("_echo_text")), default=None)   # the oldest echo's send:
     tx_uuids, tx_text_uuids, tx_texts, tx_text_t, human_floor = _merge_tx_sets(session, sid, echo_floor)   # no text lands before it
     # A TEXTLESS disk twin must not land a texty live atom (the user 2026-07-28): on some model+tool
     # combinations (observed: fable-5 replying before an AskUserQuestion) the CLI persists the reply
