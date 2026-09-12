@@ -1,6 +1,7 @@
 # The chat is one scrollable conversation: lazy history regions and one landing notice (T386)
 
-**Status:** design note awaiting the user's approval (2026-09-12); no code landed. Written against upstream/main at ff6b46cb;
+**Status:** the user approved the design and answered the four questions (2026-09-12 about 3:45 PM PT; the answers are folded
+into the sections below). Stage 1 is its own fix pull request; stages 2 and 3 follow. Written against upstream/main at ff6b46cb;
 the line references describe the repo at that commit.
 
 ## What the user saw and asked for (paraphrased, 2026-09-12 about 2:25 PM PT)
@@ -28,7 +29,7 @@ detached mode.
 ## Part A: the double click, from the landing audit
 
 The rows (the kernel serving the session files one per landing attempt in `locate-audit.jsonl`; read on the devbox,
-not copied into the repo) show the same shape three times in four minutes, in the manager's session:
+not copied into the repo) show the same shape three times in four minutes, in a session of this project:
 
 1. `ok false`, trail `pointer-fetch-window`, the anchor's time present. The click: the anchor is outside the resident
    run, so `scrollToAnchor` asks for a window (`requestAround`) and files the honest "not yet".
@@ -58,7 +59,7 @@ adoption (`chatWindow`, ~17056) then re-arms the anchor for the landing pass and
 never needed the time (the id resolved), but the row lost the datum that ties it to the click, and any future
 nearest-moment fallback would have nothing. Carrying the time through the adoption is a one-line correctness fix.
 
-**The other shape** (21:02:38 and 21:04:30 in the same session): `ok false pointer-fetch-window` then `ok true
+**The other shape** (twice more in the same session, minutes apart): `ok false pointer-fetch-window` then `ok true
 pointer-exact` a second or seven later, then a second click within seconds. Same mechanism.
 
 ### The red-first lab (before any fix)
@@ -103,8 +104,10 @@ up), and the render.ts wiring pins (`landOn` observes the spacers and the target
 A session's transcript is an ordered list of REGIONS covering turns `[0, floor)` plus the live tail:
 
 - a **run**: resident events (rendered turns, virtualised as today);
-- a **gap**: a turn span `[lo, hi)` the page does not hold, rendered as one placeholder element with an estimated
-  height and a loading mark while its request is in flight.
+- a **gap**: a turn span `[lo, hi)` the page does not hold, rendered as EMPTY SPACE in the thread, one placeholder
+  element of an estimated height, with a loading mark that says it is loading: the romp loading glyph (the swirl, the
+  wordmark and the three accent dots, the dashboard's own loading vocabulary, `_pane_spin` and the boot splash) drawn
+  large enough to read at a glance, never the small pill (the user 2026-09-12).
 
 The **tail run** is always resident and always live: `chatTail` deltas apply to it by `afterUuid` exactly as today.
 No client is ever detached, so the kernel never withholds a delta; the bottom strip, "Return to live",
@@ -126,15 +129,21 @@ The pure rules live in a new `ui/webview/chat-regions.ts` (executed by `chat-reg
 
 ### DOM and scroll anchoring
 
-A gap is one `.tx-gap` element inside the view (`data-lo`, `data-hi`, `style.height`), with its loading mark as a
-child while a request is in flight (the same pill dress as today's loading pill, inside the region, not before
-`#content`). Gaps carry `overflow-anchor: none`: the browser then never picks a gap as its scroll anchor node, so
+A gap is one `.tx-gap` element inside the view (`data-lo`, `data-hi`, `style.height`): empty space with the romp loading
+glyph centred in it while a request is in flight (the boot splash's glyph at a size read at a glance; the loading pill's
+small dress is not this mark). Gaps carry `overflow-anchor: none`: the browser then never picks a gap as its scroll anchor node, so
 when a gap above the viewport is replaced by its turns, or re-sized from estimate to measurement, Chromium keeps the
 first visible TURN where it is (styles.css already records why `#content` keeps `overflow-anchor` on: 0 px drift with
 it, 194 to 246 px without). A gap entering the viewport is detected by one `IntersectionObserver` over the gap
 elements (an event, not a scroll poll), which asks for `pagesToAsk` and marks the gap loading. When the reply
 arrives, the gap is replaced by a run region in one DOM operation (`replaceChildren` on a fragment): the turns
-render through the existing virtualiser, so a large run still has spacers inside it.
+render through the existing virtualiser, so a large run still has spacers inside it. **A fill moves nothing** (the user
+2026-09-12): the content appears in place and `scrollTop` does not change at all, on every fill, above the viewport
+included. The placeholder's height is an estimate, so the fill compensates the difference exactly in the same frame:
+after the replace, the rendered run's height minus the gap's height is added to `scrollTop` when the gap sat above
+the viewport's top (one attributed write, `gap-fill`), and nothing is written when it sat below; `overflow-anchor`
+stays on as the belt for the browser's own compensation. The lab reads `scrollTop` and the target turn's rect before
+and after every fill and asserts both unchanged, for a gap above the viewport and for one below.
 
 The virtualiser's two spacers become the gaps' cousins: a run longer than the render window keeps its own
 `.tx-spacer` pair as today; gaps stand between runs. `virtualizeToViewport` keeps its edge logic per run; the
@@ -147,15 +156,17 @@ A card, lane, notch, deep link or seek names an anchor (uuid, time, kind). If th
 today's (`scrollToAnchor`, settled per part A). If not:
 
 1. The page asks the kernel for the anchor's pages (`loadAround` as today, whose reply now carries the turn span).
-2. Immediately, the view jumps TOWARD the target: the anchor's turn index is not known yet, so the page uses the
-   anchor's time against the resident runs' times to pick the gap it falls in and scrolls to that gap's estimated
-   position (top-aligned on the gap), so the reader sees the loading mark in a placeholder, not a frozen page. With
-   no time and no resident neighbour (a bare uuid into a wholly unloaded history) the view does not move until the
-   reply; the notice still shows.
+2. Immediately, the view jumps STRAIGHT to the position where the target will be (the user 2026-09-12): the anchor's
+   time against the resident runs' times picks the gap it falls in, and its place inside the gap is the time's
+   proportion between the gap's neighbours' times, so the reader sees the loading glyph in the empty space at the
+   spot the words will fill. With no time and no resident neighbour (a bare uuid into a wholly unloaded history)
+   the view does not move until the reply; the notice still shows.
 3. The ONE notice appears at the loading pill's anchor before `#content` (`.tx-loading-anchor`, the place T365 chose
-   so the pill follows the tab strip's bottom by layout): "Going to the message from 7:41 AM… click to stay here" (with
-   a time) or "Going to the earlier message… click to stay here" (without). The pill's "Loading earlier messages…" is
-   retired for landings; a scroll-driven gap fill shows its mark inside the gap and no notice.
+   so the pill follows the tab strip's bottom by layout): "Going to the message from 7:41 AM, click to stay here" (the
+   time in the user's clock, as the strip renders it today) or "Going to the earlier message, click to stay here"
+   (without a time). The pill's "Loading earlier messages…" is retired for landings; a scroll-driven gap fill shows
+   the glyph inside the gap and no notice. Clicking the notice is the ONLY cancel (the user 2026-09-12): the reader's
+   own scroll during the wait does not cancel the landing.
 4. When the reply lands, the run is inserted and, unless cancelled, the view snaps to the target (top-aligned, the
    flash, the settle rule) and the notice goes. The landing row is filed at settle time.
 5. **Cancel** (a click on the notice): drops the pending target and the notice; the reply still inserts its run
@@ -182,6 +193,12 @@ held run and whether to withhold deltas. With the tail always resident:
   "reattach" full-frame reason retire; `fullFrameMerges` keeps only its change-driven replace meaning.
 
 ### The memory bound
+
+**Stage 3 waits for a measurement** (the user 2026-09-12, deferring to the performance thread): before any fold rule, the
+performance session is asked, with numbers from a lab over a long synthetic transcript, what a resident run costs in
+the page (DOM nodes and JS heap per turn), whether a bound is needed at all, and if so which fraction rule they would
+use; stage 3's shape follows their answer. The user's rule stands whatever the answer: any cap is a fraction of memory,
+never a literal. The design below is the shape a bound would take.
 
 Runs far from the viewport fold back to gaps under a bytes budget (the events' JSON size as the estimate the page
 already keeps for its perf rows). Never folded: the tail run, the run holding the viewport, and its nearest
@@ -232,15 +249,14 @@ Why not the whole thing at once: stage 1 is a user-visible bug with a small fix 
 wire and the kernel's per-client state and needs its own verification round; putting the bug fix behind it would
 leave the double click on the user's screen for the whole design round.
 
-### Open for the user (put to them by the manager with these proposed defaults; stages 2 and 3 plan against them)
+### Answered by the user (2026-09-12 about 3:45 PM PT; the proposed defaults were put to them and stand as below)
 
-1. The notice's words. Proposed: "Going to the message from 7:41 AM, click to stay here" (the time in the user's clock,
-   as the strip renders it today) / "Going to the earlier message, click to stay here".
-2. Should the reader's own scroll during the wait cancel the landing too, or only the click? Proposed: only the click
-   (the user asked for a cancelable notice; a flick to look around while it loads should not lose the jump).
-3. The jump "toward" the target before the reply: to the gap's estimated position (proposed), or no move until the
-   snap.
-4. The resident-runs budget: a fraction of the device's memory (`navigator.deviceMemory` in gigabytes where the browser
-   exposes it, else a stated fallback), never a small literal, reported on the chat's diagnostic rows (proposed); and
-   whether a folded run's refill on scroll-back shows its loading mark or fills silently (proposed: the mark, since the
-   fill is not instant).
+1. The notice's words: "Going to the message from 7:41 AM, click to stay here" (the time in the user's clock, as the
+   strip renders it today) / "Going to the earlier message, click to stay here". Yes.
+2. Only the click on the notice cancels; a scroll during the wait does not. Yes.
+3. The view moves before the reply: yes, straight to the position where the target will be, into empty space with the
+   loading glyph; the fill then appears in place with the scroll position unchanged (the sharpened model, folded into
+   the sections above).
+4. The memory bound: the user defers to the performance thread; stage 3 asks it for the measured cost of a resident run
+   and whether a bound is needed, and any cap is a fraction of memory, never a literal. A folded run's refill shows the
+   loading glyph like any gap.
