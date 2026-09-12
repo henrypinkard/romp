@@ -695,6 +695,54 @@ class HydrationAttribution(Harness):
         self.assertEqual(list(em.asm_checkpoint_stats()["hydratedBy"]), ["_atom_text<-other_walker"], "the first caller outside the shared readers")
 
 
+class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
+    """T384 (2026-09-12): after the planner stopped hydrating every pre-cut body, the next walkers paid for the same bodies (the
+    first T377 boot: _seg_prompt 723 MB, _seg_of_tool_uses 155 MB, _atom_user_texts 78 MB of 966). Each reads what it needs:
+    the segment-prompt reader hydrates the one trigger atom, the tool-uses reader takes the ids from the lazy markers' scalars
+    with no hydration, and the echo set reads no user text when no echo can land (an infinite floor). Per-reader bytes over a
+    restored tree, on both builds."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.km = kernel_module()
+
+    def _restored(self, name):
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write(name, records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        return path, tree
+
+    def test_the_segment_prompt_reader_hydrates_the_trigger_atom_alone(self):
+        path, tree = self._restored("segprompt")
+        segs = [seg for t in tree["turns"] for seg in em.segments(t)]
+        pre = [seg for seg in segs if any(a.get("lazy") is not None for a in seg["atoms"])]
+        self.assertTrue(pre, "pre-cut segments in play")
+        prompts = [self.km._seg_prompt(seg) for seg in segs]
+        st = em.asm_checkpoint_stats()
+        self.assertLessEqual(st["hydratedAtoms"], len(pre), "one atom per pre-cut segment, the trigger: %s" % st)
+        self.fresh(); whole = self.parse(path)
+        self.assertEqual(prompts, [self.km._seg_prompt(seg) for t in whole["turns"] for seg in em.segments(t)], "the same prompts as the whole parse")
+
+    def test_the_tool_uses_reader_takes_the_ids_from_the_markers_scalars(self):
+        path, tree = self._restored("tooluses")
+        whole_ids = {b.get("id") for t in self.cold(path)["turns"] for a in t["atoms"] if a.get("type") == "assistant"
+                     for b in ((a.get("message") or {}).get("content") or []) if isinstance(b, dict) and b.get("type") == "tool_use"}
+        self.assertTrue(whole_ids, "the fixture has tool calls")
+        self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        found = self.km._seg_of_tool_uses(tree, {"placements": {}, "nodes": {}, "seq": 0}, list(whole_ids))
+        self.assertEqual(set(found), whole_ids, "every id resolved to its segment")
+        self.assertEqual(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "from the scalars, no body read: %s" % em.asm_checkpoint_stats()["hydratedBy"])
+
+    def test_the_echo_set_reads_no_user_text_when_no_echo_can_land(self):
+        path, tree = self._restored("echoset")
+        self.km._merge_sets_memo.clear()
+        self.km._merge_tx_sets(tree, SID + "-t384", float("inf"))    # no live echo: no text can land, none is read
+        self.assertEqual(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "%s" % em.asm_checkpoint_stats()["hydratedBy"])
+
+
 class KernelOverRestored(Harness):
     """The kernel's and the judges' body readers over a restored tree: every consumer the audit named hydrates what it
     reads, so the same answers come from the restored tree as from the whole parse, with no LazyBodyRead."""

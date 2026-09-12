@@ -25658,20 +25658,16 @@ def _seg_of_tool_uses(ps, store, tool_ids):
     every id is found; seam-aware (_segs_seam) so the ids match the judge's placement keys."""
     found, want = {}, set(tool_ids)
     for turn in reversed(ps.get("turns") or []):
-        em.hydrate(turn.get("atoms") or [])      # bodies before the assembly cut: read on demand, newest turns first (T323 stage 4a)
         if not want:
             break
         for seg in _segs_seam(turn, store):
             for a in seg["atoms"]:
                 if a.get("type") != "assistant":
                     continue
-                blocks = (a.get("message") or {}).get("content")
-                if not isinstance(blocks, list):
-                    continue
-                for b in blocks:
-                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in want:
-                        found[b["id"]] = seg["id"]
-                        want.discard(b["id"])
+                for tid, _name in em.atom_tool_uses(a):   # the ids from the body, or a lazy atom's marker scalars: no hydration
+                    if tid in want:                        #  (T384: every turn was hydrated whole, newest first, 155 MB a boot)
+                        found[tid] = seg["id"]
+                        want.discard(tid)
     return found
 
 
@@ -32425,7 +32421,9 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     # The transcript-side sets come from the per-sid memo (_merge_tx_sets): a function of the parsed
     # session alone, which the parse cache hands back as the same object until the transcript changes,
     # and which every build of a cycle (chat, feed, timeline) used to derive again from every atom.
-    echo_floor = min((float(a.get("t") or 0) for a in live if a.get("_echo_text")), default=None)   # the oldest echo's send:
+    echo_floor = min((float(a.get("t") or 0) for a in live if a.get("_echo_text")), default=float("inf"))   # the oldest echo's send;
+    #                                                                                                 no echo: no text can land, none
+    #                                                                                                 is read (T384: None read them all)
     tx_uuids, tx_text_uuids, tx_texts, tx_text_t, human_floor = _merge_tx_sets(session, sid, echo_floor)   # no text lands before it
     # A TEXTLESS disk twin must not land a texty live atom (the user 2026-07-28): on some model+tool
     # combinations (observed: fable-5 replying before an AskUserQuestion) the CLI persists the reply
@@ -39522,8 +39520,9 @@ def _expand_judging(wire):
 
 
 def _seg_prompt(seg):
-    """The segment's request text (its trigger/opener atom) for the prompt-dot tooltip."""
-    em.hydrate(seg.get("atoms") or [])   # bodies before the assembly cut: read on demand (T323 stage 4a)
+    """The segment's request text (its trigger/opener atom) for the prompt-dot tooltip. Over a restored tree the trigger is
+    found by its uuid and type, scalars every lazy atom carries, and that ONE atom is hydrated (T384: the whole segment was
+    hydrated for it, 723 MB on the first boot after the planner stopped filling the memo for everyone after it)."""
     trig = seg.get("trigger")
     atoms = seg["atoms"]
     a = next((x for x in atoms if x.get("uuid") == trig), None) if trig else None
@@ -39531,6 +39530,7 @@ def _seg_prompt(seg):
         a = next((x for x in atoms if x.get("type") == "user"), None)
     if a is None:
         return ""
+    em.hydrate([a])                          # the trigger's body alone, before the assembly cut: read on demand (T323 stage 4a)
     blocks = (a.get("message") or {}).get("content", [])
     if isinstance(blocks, list):
         return " ".join(b.get("text", "") for b in blocks
