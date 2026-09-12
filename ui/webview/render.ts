@@ -1308,7 +1308,7 @@ let landTrail: string[] = [];
 // count is NOT len − winStart + spacer: a unit may own more than one node (the day
 // divider that opens a new day precedes its turn), so anything mapping DOM back to
 // units reads data-unit off the node rather than counting children.
-interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; edgeTop?: number; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
+interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
 const views = new Map<string, View>();
 
 // Pending pickers (AskUserQuestion / tool-permission) keyed by session id. These
@@ -10857,7 +10857,7 @@ function tailMutations(records: MutationRecord[]): { removedTail: string[]; adde
 // the cap is the default unless the page's localStorage says otherwise (a laptop capturing raises it; T262j)
 const scrollDiagCap = readScrollDiagCap((k) => { try { return localStorage.getItem(k); } catch { return null; } });
 const scrollDiag = new ScrollDiagBudget(scrollDiagCap);
-function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "spacer" | "tailmut" | "unitchange", data: any): void {
+function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "spacer" | "tailmut" | "unitchange" | "windowask", data: any): void {
   const v = scrollDiag.take(activeId || "", kind, Date.now());
   if (v === "drop") return;
   vscodeApi?.postMessage(v === "cap"
@@ -12513,10 +12513,18 @@ function showActive(keep?: { uuid: string; y: number } | null) {
 // screen). When the direct restore misses, the deep-link land takes over with the kept offset: it renders a
 // window AROUND the anchor's unit (or fetches older history and re-lands on arrival) and writes "keep-offset",
 // the anchor's exact on-screen position — the same machinery a jump into folded history uses.
+// True only while keepPlaceAcrossWindow lands the reader's own row across a rebuild (T366): the one window ask that is no
+// navigation. The reload restore arms the same keep offset (the reader's saved place, which they want back), the durable
+// seek, a card, a notch and a deep link arm an anchor of their own; every one of those lands (verifier medium 1: keying
+// the refusal on the keep offset refused the reload restore too, and a reader reloaded while reading older history lost
+// their place)
+let relandAsk = false;
 function keepPlaceAcrossWindow(content: HTMLElement, v: View, keep: { uuid: string; y: number }): boolean {
   if (restoreScrollAnchor(content, v, keep)) return true;
   pendingAnchor = keep.uuid; pendingAnchorKeepY = keep.y;
-  const landed = scrollToAnchor(keep.uuid);
+  relandAsk = true;
+  let landed = false;
+  try { landed = scrollToAnchor(keep.uuid); } finally { relandAsk = false; }
   if (!anchorPendingOlder) { pendingAnchor = null; pendingAnchorKeepY = null; }   // an older-history fetch keeps them armed for chatHead's re-land
   return landed;
 }
@@ -12990,7 +12998,10 @@ function updateReplyChips(): void {
     followReader(activeId ? views.get(activeId) : null, c.scrollTop, atBottom(c), pendingBuildRaf != null);
     // the scroll nobody's code asked for is the user's (T262): filed so a recording lines up with the journal;
     // a write's own echo (within a pixel of the value written) is consumed here and never read as a gesture
-    if (classifyScroll(c.scrollTop, lastScrollWriteAfter) === "write-echo") lastScrollWriteAfter = null;
+    const cls = classifyScroll(c.scrollTop, lastScrollWriteAfter);
+    const gv = activeId ? views.get(activeId) : null;
+    if (gv) gv.gestureScroll = cls === "gesture";   // read once by the edge check this event runs next (T366): a write's echo is no gesture
+    if (cls === "write-echo") lastScrollWriteAfter = null;
     else scrollDiagRow("scrollgesture", { sid: activeId || "", top: c.scrollTop, gesture: true, sh: c.scrollHeight, ch: c.clientHeight });
     lastKnownSh = c.scrollHeight;   // sh/ch: a clamp reads top == sh - ch after sh dropped (T262e)
   }, { passive: true });
@@ -13213,10 +13224,16 @@ function virtualizeToViewport(): void {
   const topH = topEl ? topEl.offsetHeight : 0;
   const renderedBottom = botEl ? botEl.getBoundingClientRect().top - cRectTop + content.scrollTop : content.scrollHeight;
   const st = content.scrollTop, vh = content.clientHeight;
-  // the gesture's direction (T366): an older-history ask needs an upward or unchanged move; a reader heading DOWN never
-  // asks, whatever the spacer estimate says about the top band (chat-window.ts olderRequestAllowed)
-  const upward = olderRequestAllowed(v.edgeTop, st);
+  // the gesture's direction (T366): an older-history ask needs an upward or unchanged move OF THE READER'S OWN; a reader
+  // heading DOWN never asks, whatever the spacer estimate says about the top band (chat-window.ts olderRequestAllowed).
+  // The page's compensating writes (a re-window's, a land's) move scrollTop too and echo as scroll events, so the
+  // direction is read only on a gesture event (the scroll listener marks it) and the last verdict holds across the page's
+  // own writes: a one-write jump to the top asks once at the head as it always did (verifier medium 2)
+  const gesture = v.gestureScroll === true;
+  v.gestureScroll = undefined;
+  if (gesture) v.edgeUp = olderRequestAllowed(v.edgeTop, st);
   v.edgeTop = st;
+  const upward = v.edgeUp !== false;
   // At the top of the RESIDENT events with older history still on the server → fetch the previous chunk
   // (loadOlder → chatHead). winStart 0 ⇒ no top spacer left to expand into; topH is 0 so this is "near 0".
   if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx && upward) { requestOlder(activeId, v, content); return; }
@@ -16982,18 +16999,21 @@ function olderOnServer(s: Session): boolean {
 // index wire's fetch-older-until-resident loop. False when nothing can be asked (an index session, a request in flight).
 // sid -> the window was asked by a NAVIGATION (a card, a notch, a deep link, a seek, a reload's restore of the reader's
 // saved place: every anchor landing but one), not by the keep-offset RE-LAND of the reader's own row across a rebuild
-// (pendingAnchorKeepY set), the one ask that exists only to keep their row on screen and must never move them off the
-// live run (T366: a window landing mid-flick detached a reader; a navigation's window may, a re-land's never)
-const pendingWindowNav = new Map<string, { nav: boolean; t: number | null }>();   // …and the navigation's time when its frame carried one (the strip names it)
+// (relandAsk), the one ask that exists only to keep their row on screen and must never move them off the live run (T366:
+// a window landing mid-flick detached a reader; a navigation's window may, a re-land's never); `named` says the ask came
+// from a frame that carried a kind or the message's time (a card or lane click, a deep link), which the strip names
+const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null }>();
 function requestAround(sid: string, uuid: string): boolean {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || loadingOlder.has(sid)) return false;
-  const nav = pendingAnchorKeepY == null;
-  pendingWindowNav.set(sid, { nav, t: nav ? (pendingAnchorT ?? null) : null });
+  const nav = !relandAsk;
+  const kind = pendingAnchorKind ?? pendingAnchorIntent ?? null;
+  pendingWindowNav.set(sid, { nav, named: nav && (pendingAnchorT != null || !!kind), t: nav ? (pendingAnchorT ?? null) : null });
   // every window ask leaves a diagnostic row (T366: the rows of the report had the reply's landing but nothing said
-  // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked
+  // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked;
+  // under the same per-minute budget as the other scroll rows (verifier low 5)
   const cAsk = document.getElementById("content");
-  vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "windowask", data: { sid, nav, kind: pendingAnchorKind ?? null, intent: pendingAnchorIntent ?? null, keep: pendingAnchorKeepY != null, trail: landTrail.slice(-4), detached: !!s.detached, atBottom: !!cAsk && atBottom(cAsk) } });
+  scrollDiagRow("windowask", { sid, nav, kind, keep: pendingAnchorKeepY != null, reland: relandAsk, trail: landTrail.slice(-4), detached: !!s.detached, atBottom: !!cAsk && atBottom(cAsk) });
   pendingOlderAnchor.set(sid, uuid);
   pendingOlderKeepY.delete(sid);
   loadingOlder.add(sid);
@@ -17038,6 +17058,9 @@ function chatWindow(msg: any) {
   const landing = windowLanding(detached, msg.id === activeId && !wasDetached, ask?.nav ?? false);
   pendingWindowNav.delete(msg.id);
   if (landing === "reattach") {
+    // the kernel's base for this client is the window until the re-attach lands; a tail it pushes meanwhile misses its
+    // afterUuid here and asks for a full frame as a gap, which requestFullSession drops while the re-attach ask is in
+    // flight (awaitingFull), so the pending reason stays reattach and the frame MERGES into the held run (verifier low 4)
     reconcileOptimistic(s);
     if (msg.id === activeId) { if (pendingAnchor === anchorUuid) { pendingAnchor = null; pendingAnchorKeepY = null; } anchorPendingOlder = false; landTrail.push("window-not-adopted"); }
     reattachLive(msg.id, true);
@@ -17048,12 +17071,12 @@ function chatWindow(msg: any) {
   s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
   s.lastUuid = newLast;
   s.detached = detached;
-  s.detachNav = detached && ask?.nav ? { t: ask.t } : null;   // the strip names a navigation's detach (T366); read only while detached
+  s.detachNav = detached && ask?.named ? { t: ask.t } : null;   // the strip names a detach by a card, lane or deep link (T366); read only while detached
   if (msg.moreBefore === false) s.headKnown = true;
   s.headTotal = s.headKnown && !s.detached ? s.events.length : null;   // a count only when the whole is resident
   reconcileOptimistic(s);
   const v = views.get(msg.id);
-  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.stale = true; }
+  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) return;
   const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
   if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }

@@ -94,8 +94,8 @@ test("the paused strip names a navigation's detach, with the opened message's cl
   assert.ok(strip.includes("livePausedTxt.textContent = livePausedText(!!s.detachNav, s.detachNav ? s.detachNav.t : null, clockOf);"), "the strip re-says its sentence on every evaluation from the session's detach");
   assert.ok(strip.indexOf("livePausedTxt.textContent = livePausedText(") > strip.indexOf("document.body.appendChild(livePausedEl);"), "…after the one-time build, so a later detach changes the words");
   const win = RENDER.slice(RENDER.indexOf("function chatWindow(msg: any) {"), RENDER.indexOf("function chatMore(msg: any) {"));
-  assert.ok(win.includes("s.detachNav = detached && ask?.nav ? { t: ask.t } : null;"), "a landed window records whether a navigation detached, and its time");
-  assert.ok(RENDER.includes("pendingWindowNav.set(sid, { nav, t: nav ? (pendingAnchorT ?? null) : null });"), "the ask carries the navigation's time to the reply");
+  assert.ok(win.includes("s.detachNav = detached && ask?.named ? { t: ask.t } : null;"), "a landed window records whether a card, lane or deep link detached, and its time");
+  assert.ok(RENDER.includes("pendingWindowNav.set(sid, { nav, named: nav && (pendingAnchorT != null || !!kind), t: nav ? (pendingAnchorT ?? null) : null });"), "the ask carries the navigation's time to the reply, and whether its frame carried a kind or a time (a reload restore has neither: the plain sentence)");
 });
 
 test("an older-history ask needs an upward or unchanged move; a downward gesture never asks (T366)", () => {
@@ -109,15 +109,25 @@ test("an older-history ask needs an upward or unchanged move; a downward gesture
 
 test("render.ts asks for older history only on an upward move, marks each window ask with whether a navigation made it, and files the ask (T366)", () => {
   const virt = RENDER.slice(RENDER.indexOf("function virtualizeToViewport()"), RENDER.indexOf("\n}\n", RENDER.indexOf("function virtualizeToViewport()")));
-  assert.ok(virt.includes("const upward = olderRequestAllowed(v.edgeTop, st);"), "the direction is read from the view's last edge-check top");
-  assert.ok(virt.indexOf("const upward = olderRequestAllowed(v.edgeTop, st);") < virt.indexOf("v.edgeTop = st;"), "…before the top is remembered for the next check");
+  assert.ok(virt.includes("const gesture = v.gestureScroll === true;\n  v.gestureScroll = undefined;\n  if (gesture) v.edgeUp = olderRequestAllowed(v.edgeTop, st);"), "the direction is read only on the reader's own gesture, from the view's last edge-check top, and the mark is consumed");
+  assert.ok(virt.indexOf("if (gesture) v.edgeUp = olderRequestAllowed(v.edgeTop, st);") < virt.indexOf("v.edgeTop = st;"), "…before the top is remembered for the next check (the page's own writes move it too)");
+  assert.ok(virt.includes("const upward = v.edgeUp !== false;"), "the last gesture's verdict holds across the page's compensating writes; no verdict yet allows the ask");
   assert.ok(virt.includes("st < topH + edgePx && upward) { requestOlder(activeId, v, content); return; }"), "the older ask is gated on the direction, not only the estimate's band");
-  assert.ok(RENDER.includes("edgeTop?: number;"), "the view remembers the top the last edge check saw");
-  assert.ok(RENDER.includes("v.unitTotal = undefined; v.edgeTop = undefined; v.stale = true; }"), "a window rebuild forgets it: the first check after a rebuild may ask");
+  assert.match(RENDER, /const cls = classifyScroll\(c\.scrollTop, lastScrollWriteAfter\);\n\s*const gv = activeId \? views\.get\(activeId\) : null;\n\s*if \(gv\) gv\.gestureScroll = cls === "gesture";/, "the scroll listener marks a gesture (a write's echo is none) for the edge check that runs next");
+  assert.ok(RENDER.includes("edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean;"), "the view remembers the top the last edge check saw, the last verdict and the gesture mark");
+  assert.ok(RENDER.includes("v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }"), "a window rebuild forgets both: the first check after a rebuild may ask");
   const around = RENDER.slice(RENDER.indexOf("function requestAround(sid: string, uuid: string): boolean {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function requestAround(sid: string, uuid: string): boolean {")));
-  assert.ok(around.includes("const nav = pendingAnchorKeepY == null;") && around.includes("pendingWindowNav.set(sid, { nav,"), "a window ask records whether a navigation made it: every anchor landing but the keep-offset re-land of the reader's own row");
-  assert.ok(around.includes('what: "windowask"'), "…and files a diagnostic row: the report's rows had the landing but not the ask");
+  assert.ok(around.includes("const nav = !relandAsk;") && around.includes("pendingWindowNav.set(sid, { nav,"), "a window ask records whether a navigation made it: every anchor landing but the re-land of the reader's own row across a rebuild");
+  const keep = RENDER.slice(RENDER.indexOf("function keepPlaceAcrossWindow("), RENDER.indexOf("\n}\n", RENDER.indexOf("function keepPlaceAcrossWindow(")));
+  assert.ok(keep.includes("relandAsk = true;\n  let landed = false;\n  try { landed = scrollToAnchor(keep.uuid); } finally { relandAsk = false; }"), "the re-land's own flag is set only around its landing (the reload restore shares the keep offset and must land)");
+  assert.equal((RENDER.match(/relandAsk = true;/g) || []).length, 1, "nothing else raises the flag");
+  assert.ok(around.includes('scrollDiagRow("windowask", {'), "…and files a diagnostic row under the scroll rows' per-minute budget: the report's rows had the landing but not the ask");
+  assert.ok(RENDER.includes('| "unitchange" | "windowask", data: any): void {'), "the budgeted row kinds include it");
   assert.ok(around.indexOf("pendingWindowNav.set(sid, { nav,") < around.indexOf('type: "loadAround"'), "the mark is set before the ask goes out");
+  // a refused window leaves the kernel's base on the window until the re-attach lands; a tail pushed meanwhile misses its
+  // anchor and asks for a full frame as a gap, which must not overwrite the pending reattach reason (a replace, not a merge)
+  const full = RENDER.slice(RENDER.indexOf("function requestFullSession(id: string, why: NeedFullWhy): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function requestFullSession(id: string, why: NeedFullWhy): void {")));
+  assert.ok(full.indexOf("if (!id || awaitingFull.has(id)) return;") < full.indexOf("pendingFullWhy.set(id, why);"), "a second full ask while one is in flight is dropped before it can overwrite the pending reason");
 });
 
 test("render.ts wires the three rules, tracks the pending needFull reason, hides the paused strip on a frame and a tab switch, and lands orphan notes by record uuid", () => {

@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """T366 (the user 2026-09-12): the chat's "live updates are paused" strip appeared while they scrolled DOWN toward
-the bottom of a live session they had clicked nothing in. The laptop's rows put a chatWindow reply landing mid-flick,
-asked by a re-land of the reader's own row after a rebuild, not by any navigation; the reply's verdict detached the
-run, the strip showed, and two page requests later the reader reached the tail and it went away.
+the bottom of a live session. The landing audit named the pass behind it: a NAVIGATION frame (a card's or a lane's,
+carrying a message's uuid and its time far back in history) whose window reply landed in the middle of a flick, so the
+jump read as the scroll pausing the page; two page requests later the reader reached the tail and the strip went away.
+Two things follow. The strip now names such a detach ("Showing the message from <clock> you opened; live updates are
+paused") instead of the plain sentence. And the one window ask that is NO navigation, the re-land of the reader's own
+row across a rebuild, which would produce the same landing with nothing to name, is refused: it never detaches an
+attached reader. Whether a landing that arrives after the reader has scrolled since the click should still land is
+held for the user.
 
 The served guard drives the real /chat page over a transcript longer than the wire tail (older history stays on the
 server) and lands proto-2 window frames on it through window.postMessage, the kernel's own frame shape:
@@ -14,9 +19,10 @@ server) and lands proto-2 window frames on it through window.postMessage, the ke
   2. the same page when the reader DID navigate (a focus frame with an anchor and its time into history the page does
      not hold, a card's road): the client asks for the window, the reply lands and detaches, and the strip names the
      jump and the opened message's time instead of the plain sentence: the rule refuses only the window nobody asked
-     for, and a jump that lands mid-scroll no longer reads as the scroll pausing the page.
-  3. a fast downward flick from the top band of the resident run sends no loadOlder: an older-history ask needs an
-     upward or unchanged move.
+     for.
+  3. a one-write jump to the top of the resident run asks for older history exactly once, and the downward flick that
+     follows asks for none: the direction is the reader's own gesture, never the page's compensating write (verifier
+     medium 2: the re-window's write read as downward and refused the ask the base always made).
 
 Skips LOUDLY without the extension deps or a Playwright browser (CI installs none); the executed rules and the
 wiring pins ride ui/webview/chat-window.test.ts. All fixtures synthetic.
@@ -87,7 +93,7 @@ const state = () => page.evaluate(() => {
            strip: !!strip && !strip.hidden && getComputedStyle(strip).display !== "none",   // fixed-position: no offsetParent to read
            firstUuid: turns.length ? turns[0].dataset.uuid : null, lastUuid: turns.length ? turns[turns.length - 1].dataset.uuid : null,
            turns: turns.length,
-           sent: window.__sent.map((m) => m.type + (m.why ? ":" + m.why : "")) };
+           sent: window.__sent.map((m) => m.type + (m.why ? ":" + m.why : "") + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") + (m.what === "windowask" && m.data ? ":nav=" + m.data.nav + ":reland=" + m.data.reland : "") : "")) };
 });
 const sentOf = (type) => page.evaluate((t) => window.__sent.filter((m) => m.type === t).length, type);
 const boot = await state();
@@ -138,6 +144,7 @@ process.exit(0);
 DRIVER_FLICK = DRIVER_HEAD + r"""
 // to the top band of the resident run in ONE write (an upward move: the one older ask it may make is allowed), then
 // wait for that ask's reply to settle the view
+const olderAtBoot = await sentOf("loadOlder");
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 1; });
 await page.waitForTimeout(1500);
 const settled = await state();
@@ -149,7 +156,7 @@ for (let i = 0; i < 40; i++) { await page.mouse.wheel(0, 240); await page.waitFo
 await page.waitForTimeout(600);
 const flicked = await state();
 const olderAfterDown = await sentOf("loadOlder");
-fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, flicked, olderAfterUp, olderAfterDown }) + "\n");
+fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, flicked, olderDuringJump: olderAfterUp - olderAtBoot, olderDuringFlick: olderAfterDown - olderAfterUp }) + "\n");
 await browser.close();
 process.exit(0);
 """
@@ -261,11 +268,11 @@ class ServedWindowLanding(unittest.TestCase):
         self.assertTrue(nav["stripText"].startswith("Showing the message from ") and nav["stripText"].endswith(" you opened; live updates are paused."),
                         "the strip names the navigation and the opened message's time: %r" % nav["stripText"])
 
-    def test_a_downward_flick_from_the_top_band_asks_for_no_older_history(self):
+    def test_a_jump_to_the_top_asks_once_and_the_downward_flick_asks_for_no_older_history(self):
         r = self._drive(DRIVER_FLICK, "flick")
         print("RESULT:" + json.dumps(r), file=sys.stderr)
-        self.assertLessEqual(r["olderAfterUp"], 1, "the one upward write may ask once: %r" % r)
-        self.assertEqual(r["olderAfterDown"], r["olderAfterUp"], "the downward flick asked for older history: %r" % r)
+        self.assertEqual(r["olderDuringJump"], 1, "a one-write jump to the top asks once at the head, as the base did: %r" % r)
+        self.assertEqual(r["olderDuringFlick"], 0, "the downward flick asked for older history: %r" % r)
         self.assertGreater(r["flicked"]["top"], r["settled"]["top"], "the flick moved down: %r" % r)
 
 
