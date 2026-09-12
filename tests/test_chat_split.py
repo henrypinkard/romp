@@ -105,16 +105,25 @@ class SplitSourcePins(unittest.TestCase):
         self.assertIn('client["reconnect"] = True\n            if not reconnect:\n                client["skeletonOnReady"] = True', src)
         # a pre-ready skeleton client is sent no session frame: the ready arm's connect push is the one full (the strip and
         # the statuses still go; review find 2026-09-11: the full crossed the wire twice per open)
+        # …and none while `reconnect` is ARMED either (2026-09-12): a client with the flag has no set yet, and a pusher
+        # iteration landing in the ready arm's gap (the set popped, the flag re-armed, the arm's own resolve still ahead)
+        # sent a full for a skeleton tab (test_chat_skeleton_reconnect test_11_d runs the gap)
         so = inspect.getsource(km._send_chat_or_status)
-        self.assertIn('if c.get("skeletonOnReady"):', so)
-        self.assertLess(so.index('if sid in (c.get("skeleton") or ()):'), so.index('if c.get("skeletonOnReady"):'))
-        self.assertLess(so.index('if c.get("skeletonOnReady"):'), so.index('return _send_chat_locked(c, m, ms, change_from, led_changed)'))
-        # the ready arm re-arms the flag PAST the reset and BEFORE its connect push
+        guard = 'if c.get("skeletonOnReady") or c.get("reconnect"):'
+        self.assertIn(guard, so)
+        self.assertLess(so.index('if sid in (c.get("skeleton") or ()):'), so.index(guard))
+        self.assertLess(so.index(guard), so.index('return _send_chat_locked(c, m, ms, change_from, led_changed)'))
+        # the flag is re-armed INSIDE the reset, under its lock and right behind its pop of `reconnect` (2026-09-12: as the
+        # arm's own two statements past the reset there was an instant with neither flag set), and the reset precedes the
+        # arm's connect push
+        rs = inspect.getsource(km._client_reset_chat_base)
+        self.assertIn('if client.pop("skeletonOnReady", False):\n            client["reconnect"] = True', rs)
+        self.assertLess(rs.index("with _client_lock(client):"), rs.index('client.pop("reconnect", None)'))
+        self.assertLess(rs.index('client.pop("reconnect", None)'), rs.index('client.pop("skeletonOnReady", False)'))
         i = src.index('msg.get("type") == "ready"')
         body = src[i:i + 3500]
-        self.assertIn('if client.pop("skeletonOnReady", False):\n                client["reconnect"] = True', body)
-        self.assertLess(body.index("_client_reset_chat_base(client)"), body.index('client.pop("skeletonOnReady", False)'))
-        self.assertLess(body.index('client.pop("skeletonOnReady", False)'), body.index("self._push_one(client)"))
+        self.assertNotIn('client.pop("skeletonOnReady"', body, "the arm's own pop and re-arm are gone: the reset's lock holds both")
+        self.assertLess(body.index("_client_reset_chat_base(client)"), body.index("self._push_one(client)"))
         # a pre-ready pop (the flag still set) neither stamps the client ready nor lets its caller consume a parked reveal:
         # _reveal_request aims taps at stamped clients, and this page has no listener yet
         rr = inspect.getsource(km._resolve_reconnect)

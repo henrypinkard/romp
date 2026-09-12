@@ -42142,6 +42142,16 @@ def _client_reset_chat_base(client):
         # …and the reconnect skeleton set (2026-09-07): a renderer that just evaluated holds NOTHING, so there
         # is nothing it could lazily reload — every tab must arrive whole, and the status slots go with the set
         client.pop("skeleton", None); client.pop("skeletonOrder", None); client.pop("reconnect", None)
+        # A SKELETON client (a later chat column, ?skeleton=1 at its handshake, 2026-09-11): the pop above took the
+        # `reconnect` the handshake armed, with the set a pre-ready pusher cycle may have built into a document that
+        # could not hear it. Re-armed HERE, from the survivor, so the ready arm's connect push serves the page the same
+        # view (the strip with a skeleton list, one full for the session it opened on, a status per other tab) instead
+        # of the whole board. Popped once: the bundle posts one ready, and a redial finds nothing to re-arm. Under THIS
+        # lock, right behind the pop (2026-09-12): as two statements of the arm's own past the reset, there was an
+        # instant with the set gone and neither flag set, and a pusher iteration landing in it (_send_chat_or_status
+        # reads both under the lock) sent a full for a tab the column holds as a skeleton.
+        if client.pop("skeletonOnReady", False):
+            client["reconnect"] = True
         snt = client.get("sent", {})
         # …and the ("activeChat",) slot (T347): a feed page that reloads registers while its bundle still
         # evaluates, and a tab switch in its window relays a frame to a document with no listener yet; the
@@ -42233,8 +42243,8 @@ def _resolve_reconnect(c, chat_list):
         # go; the session frames themselves wait for the ready, _send_chat_or_status, since the arm re-arms the flag
         # past its reset for the push the page CAN hear and that push is the one full), but the client is NOT stamped ready
         # (_reveal_request aims taps at stamped clients, and this page cannot hear one yet) and the caller consumes
-        # no parked reveal (the return): the ready arm's own stamp and consume run as for any fresh page. The arm
-        # pops `skeletonOnReady` before re-arming, so its own pop here is not fresh.
+        # no parked reveal (the return): the ready arm's own stamp and consume run as for any fresh page. The arm's
+        # reset pops `skeletonOnReady` as it re-arms, so the arm's own pop here is not fresh.
         fresh = bool(c.get("skeletonOnReady"))
         if not fresh:
             # The redial's stamp (2026-09-10): the page listens (the shim dials ?reconnect=1 only once the kernel's caps
@@ -42278,12 +42288,21 @@ def _send_chat_or_status(c, m, ms, change_from, led_changed):
         if sid in (c.get("skeleton") or ()):
             _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": m.get("status")})
             return ms
-        if c.get("skeletonOnReady"):
+        if c.get("skeletonOnReady") or c.get("reconnect"):
             # A skeleton client BEFORE its bundle's ready (the chat split, 2026-09-11): the handshake's `reconnect` woke
             # a pusher cycle into a document that cannot hear it yet, and the ready arm's reset re-sends whatever it
             # held anyway, so a full sent here crossed the wire twice per open (about 95 KB on the lab board; review
             # find 2026-09-11). The strip and the statuses above still go (cheap, and heard when the bundle won the
             # race); the session frames wait for the connect push the ready arm makes, which is then the one full.
+            # …and a client whose `reconnect` is ARMED (2026-09-12): its set is not resolved yet, and the strip sender
+            # that pops the flag serves the active tab's full itself. The pusher's cycle was still in this loop when the
+            # ready arm's reset popped the set and re-armed the flag, and the arm's connect push rebuilds the set only at
+            # its own _resolve_reconnect, past a liveness sweep and the tab list: in that gap neither read above held and
+            # every session this loop visited went out whole, a full for a tab the column holds as a skeleton, an echat
+            # entry, and the arm's strip dropped the sid from its skeleton list as held (the second full on a new column's
+            # socket: one to six per open on a slow runner, never the active tab's, and no ask from the page;
+            # tests/test_chat_skeleton_reconnect.py test_11_d). The reset re-arms under its own lock, so no instant has
+            # neither flag.
             return ms
         return _send_chat_locked(c, m, ms, change_from, led_changed)
 
@@ -57789,14 +57808,8 @@ class Handler(BaseHTTPRequestHandler):
             # its socket died (the user 2026-09-02; duplicating the browser tab always recovered
             # because cached bundles win the race). Same repair as needFull above, client-wide;
             # ready is posted once per renderer life, so this cannot loop.
-            _client_reset_chat_base(client)
-            # A SKELETON client (a later chat column, ?skeleton=1 at its handshake, 2026-09-11): the reset above popped
-            # the `reconnect` the handshake armed, with the set a pre-ready pusher cycle may have built into a document
-            # that could not hear it. Re-armed here, past the reset, so the connect push below serves the page the same
-            # view — the strip with a skeleton list, one full for the session it opened on, a status per other tab —
-            # instead of the whole board. Popped once: the bundle posts one ready, and a redial finds nothing to re-arm.
-            if client.pop("skeletonOnReady", False):
-                client["reconnect"] = True
+            _client_reset_chat_base(client)   # …and, for a skeleton client (a later chat column), re-arms `reconnect` under
+            #                                   its lock, so the connect push below serves the view its handshake declared
             if client.get("app") == "feed":
                 _send_active_chat(client)      # T347: the window's focus, ahead of the first paint
             # Capture the seq of the views blob the pushes below serve — from the frames THIS thread
@@ -58813,9 +58826,9 @@ class Handler(BaseHTTPRequestHandler):
             # redial's diet fits a fresh page exactly — the strip with a skeleton list, ONE full for the active tab, a
             # status per other tab: a view of one session instead of the whole board (17 frames, 9 MB measured above).
             # `reconnect` makes the pusher cycle that lands before the bundle's ready serve that set (into a document
-            # that may not hear it yet: one frame, not the board); `skeletonOnReady` survives the ready arm's
-            # _client_reset_chat_base (which pops `reconnect` with the set) and re-arms the flag there, so the connect
-            # push the bundle CAN hear is the same set. Until that ready, _resolve_reconnect neither stamps the client
+            # that may not hear it yet: one frame, not the board); `skeletonOnReady` survives to the ready arm's
+            # _client_reset_chat_base, which pops `reconnect` with the set and re-arms the flag from it under its own
+            # lock, so the connect push the bundle CAN hear is the same set. Until that ready, _resolve_reconnect neither stamps the client
             # ready nor lets its caller consume a parked reveal (the fresh guard): the page has no listener yet, and
             # the arm's own stamp and consume run as for any fresh page. No `active` (a corrupt blob): the whole push,
             # the fail-safe _resolve_reconnect already has.
