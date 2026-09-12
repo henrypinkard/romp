@@ -3931,9 +3931,39 @@ a.fileview-btn { text-decoration: none; display: inline-flex; align-items: cente
    moves under the pointer when the readout appears after the first press. visibility, not display: the slot
    stays, the button leaves the tab order. */
 .fileview-size-reset { min-width: 5.5em; box-sizing: border-box; text-align: center; font-variant-numeric: tabular-nums; }
-.fileview-size-reset.fileview-size-default { visibility: hidden; }
+.fileview-size-reset.fileview-size-default { color: var(--dim); }
 /* a link whose branch is not on origin yet: dashed, the caption carries the note */
 a.fileview-gh-note { border-style: dashed; }
+/* T367 (the user 2026-09-12): the bar's controls in GROUPS that read as units — the view group (the Rendered|Raw
+   pair, the SVG Source toggle, the text-size glyph) and the file group (edit, the GitHub link, download, copy path),
+   set apart by a wider gap than the controls within them; the close cross alone at the end. */
+.fileview-group { display: inline-flex; align-items: center; gap: 4px; }
+.fileview-acts > .fileview-group + .fileview-group, .fileview-acts > .fileview-close { margin-left: 10px; }
+/* the Rendered|Raw pair is ONE segmented control: joined, the shared hairline drawn once, the outer corners rounded,
+   the pressed segment's accent border over the seam */
+.fileview-seg { display: inline-flex; align-items: stretch; }
+.fileview-seg .fileview-btn { border-radius: 0; }
+.fileview-seg .fileview-btn + .fileview-btn { margin-left: -1px; }
+.fileview-seg .fileview-btn:first-child { border-radius: 6px 0 0 6px; }
+.fileview-seg .fileview-btn:last-child { border-radius: 0 6px 6px 0; }
+.fileview-seg .fileview-btn.on { position: relative; z-index: 1; }
+/* a glyph button: the drawing alone, its words in the title and aria-label (one hover away); the copy control's
+   acknowledgements (a check, a cross) recolour it; a busy press dims it until the answer */
+.fileview-btn.fileview-icon { display: inline-flex; align-items: center; justify-content: center; padding: 3px 7px; line-height: 1; }
+.fileview-btn.fileview-icon svg { display: block; }
+/* the display an author rule sets (inline-flex on a glyph button, on a group) would beat the browser's own [hidden]
+   rule, and a hidden edit pencil or zoom glyph would still paint (found on the lab's image screenshot) */
+.fileview-btn[hidden], .fileview-group[hidden], .fileview-zoom[hidden] { display: none; }
+.fileview-btn.fileview-icon.ok { color: var(--accent); border-color: var(--accent); }
+.fileview-btn.fileview-icon.err { color: var(--err); border-color: var(--err); }
+.fileview-btn.fileview-busy { opacity: 0.55; }
+/* the text-size flyout under its glyph: the menu vocabulary (the menu tokens, ui/CLAUDE.md), one row holding A−,
+   the readout and A+; the readout at the default reads dimmed (nothing to reset) rather than empty */
+.fileview-zoom { position: relative; display: inline-flex; }
+.fileview-zoom-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 5; display: flex; align-items: center; gap: 4px; padding: 4px;
+  background: var(--menu-bg, #252526); color: var(--menu-fg, #cccccc); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-menu, 6px); box-shadow: var(--shadow-menu, 0 4px 12px rgba(0, 0, 0, 0.35)); }
+.fileview-zoom-menu[hidden] { display: none; }
 .fileview-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
 /* the raw-mode editor: height: 100% (not flex) — .fileview-body above is a plain overflow block,
    not a flex container, so a flex basis on its child is inert and the textarea sat at the UA's

@@ -235,7 +235,7 @@ function view(): Promise<typeof import("./file-view")> {
   if (!bound) bound = import("./file-view").then((fv) => { fv.initFileView(() => { /* the WS poster: nothing asks the kernel here */ }); return fv; });
   return bound;
 }
-type Card = { fv: typeof import("./file-view"); wrap: El; root: El; bar: El; acts: El; body: El; down: El; reset: El; up: El; btn: (label: string) => El };
+type Card = { fv: typeof import("./file-view"); wrap: El; root: El; bar: El; acts: El; body: El; down: El; reset: El; up: El; zoom: El; btn: (label: string) => El };   // zoom: the glyph that shows or hides the control (T367)
 /** The card up now, with the control's three buttons held by reference (they are built once per open). */
 function card(fv: typeof import("./file-view")): Card {
   const wrap = doc.getElementById("romp-fileview");
@@ -247,10 +247,10 @@ function card(fv: typeof import("./file-view")): Card {
   const body = root.children[root.children.length - 1];
   assert.equal(body.className, "fileview-body");
   const acts = bar.children.find((c) => c.classList.contains("fileview-acts"))!;
-  const btn = (label: string) => { const b = acts.children.find((c) => c.tagName === "button" && c.textContent === label); assert.ok(b, "the " + label + " button"); return b!; };
-  const reset = acts.children.find((c) => c.classList.contains("fileview-size-reset"));
+  const btn = (label: string) => { const walk = (n: El): El | undefined => { for (const c of n.children) { if (c.tagName === "button" && (c.textContent === label || c.getAttribute("aria-label") === label)) return c; const d = walk(c); if (d) return d; } return undefined; }; const b = walk(acts); assert.ok(b, "the " + label + " button"); return b!; };   // T367: controls sit in groups, glyph buttons carry their word as aria-label
+  const reset = acts.querySelector(".fileview-size-reset");   // inside the zoom flyout since T367
   assert.ok(reset, "the readout between A− and A+ (the reset)");
-  return { fv, wrap: wrap!, root, bar, acts, body, down: btn("A−"), reset: reset!, up: btn("A+"), btn };
+  return { fv, wrap: wrap!, root, bar, acts, body, down: btn("A−"), reset: reset!, up: btn("A+"), zoom: acts.querySelector(".fileview-zoom-btn")!, btn };
 }
 /** Open `p` for the fixture session; `wait` lets the bytes land. The stored size is the caller's, set before the call. */
 async function openFile(t: TestContext, p: string, wait = true): Promise<Card> {
@@ -317,21 +317,28 @@ test("foldWheel: a notch is one step, a pinch's small deltas add up to one, a re
 
 // ── the control over the real openFileView ─────────────────────────────────────────────────────────
 
-test("a markdown file opens at the default: A− and A+ after the format toggles, the readout slot empty, the root at 100; each press steps, stores and acknowledges in the same tick; an end reads as reached and a press there changes nothing", async (t) => {
+test("a markdown file opens at the default: the zoom glyph after the format pair, its flyout holding A−, the readout (dimmed) and A+, the root at 100; each press steps, stores and acknowledges in the same tick; an end reads as reached and a press there changes nothing", async (t) => {
   const { TEXT_SIZES } = await view();
   const o = await openFile(t, REPORT);
   assert.equal(size(o), "100", "the root carries the step the sheets read");
-  assert.equal(o.down.hidden, false); assert.equal(o.up.hidden, false);
-  assert.equal(o.reset.hidden, false, "the readout's slot is in the row from the start, so A− never moves when it fills");
-  assert.equal(blank(o), true, "nothing to reset at the default, so nothing is said: the slot is empty");
+  assert.equal(o.zoom.hidden, false);
+  assert.equal(o.zoom.hidden, false, "the readout's slot is in the flyout from the start, so A− never moves when it fills");
+  assert.equal(blank(o), true, "nothing to reset at the default: the readout reads dimmed (T367: inside the flyout, never an empty slot)");
   assert.equal(o.down.getAttribute("aria-label"), "Smaller text"); assert.equal(o.up.getAttribute("aria-label"), "Larger text");
-  const row = labels(o.acts);
-  assert.ok(row.indexOf("Raw") < row.indexOf("A−") && row.indexOf("A−") < row.indexOf("A+") && row.indexOf("A+") < row.indexOf("Edit"),
-    "the control sits after Rendered and Raw and before Edit: " + row.join(" | "));
-  assert.equal(o.acts.children.indexOf(o.reset), o.acts.children.indexOf(o.down) + 1, "the readout sits between A− and A+");
+  // T367: the row is GROUPS; the view group leads with the Rendered|Raw pair, then the zoom glyph whose flyout holds the three
+  const viewGroup = o.acts.children[0];
+  assert.ok(viewGroup.classList.contains("fileview-group-view"), "the view group leads the row: " + labels(o.acts).join(" | "));
+  assert.ok(viewGroup.children[0].classList.contains("fileview-seg") && viewGroup.children[1].classList.contains("fileview-zoom"), "the zoom glyph follows the Rendered|Raw pair");
+  const zoomBtn = viewGroup.children[1].children[0], menu = viewGroup.children[1].children[1];
+  assert.equal(zoomBtn, o.zoom);
+  assert.equal(zoomBtn.getAttribute("aria-label"), "Text size"); assert.equal(zoomBtn.title, "Text size 100% (Ctrl/Cmd + wheel)", "the hover says the size and the wheel binding");
+  assert.equal(menu.className, "fileview-zoom-menu");
+  assert.deepEqual(menu.children, [o.down, o.reset, o.up], "A−, the readout, A+ ride the flyout in that order");
+  assert.ok(o.acts.children[1].classList.contains("fileview-group-file"), "the file group (edit, download, copy path) follows the view group");
   o.up.click();
   assert.equal(size(o), "115", "one step, synchronously");
   assert.equal(blank(o), false); assert.equal(o.reset.textContent, "115%", "the readout is the acknowledgement");
+  assert.equal(o.zoom.title, "Text size 115% (Ctrl/Cmd + wheel)", "and the glyph's hover follows it");
   assert.equal(store.get(SIZE_KEY), "115", "stored as the percentage, under the viewer's own key");
   o.down.click(); o.down.click();
   assert.equal(size(o), "90"); assert.equal(o.reset.textContent, "90%"); assert.equal(store.get(SIZE_KEY), "90");
@@ -373,11 +380,11 @@ test("persistence: the size survives a close and a fresh open, is on the root be
   const again = await openFile(t, REPORT, false);                    // no settle: the loader still holds the body
   assert.equal(size(again), "150", "the stored step is on the root at open, before the fetch, so the first paint is at size");
   assert.equal(again.reset.textContent, "150%");
-  assert.equal(again.down.hidden, true); assert.equal(again.reset.hidden, true); assert.equal(again.up.hidden, true,
+  assert.equal(again.zoom.hidden, true); assert.equal(again.zoom.hidden, true,
     "the control waits for the bytes: whether this is a text file is the kernel's verdict, in the fetch's headers");
   await settle();
   assert.equal(size(again), "150", "the paint keeps it");
-  assert.equal(again.down.hidden, false); assert.equal(again.reset.hidden, false); assert.equal(blank(again), false);
+  assert.equal(again.zoom.hidden, false); assert.equal(blank(again), false);
   again.fv.closeFileView();
   store.set(SIZE_KEY, "purple");
   const third = await openFile(t, REPORT);
@@ -387,7 +394,7 @@ test("persistence: the size survives a close and a fresh open, is on the root be
   store.set(SIZE_KEY, "80");
   const fourth = await openFile(t, APP);
   assert.equal(size(fourth), "80", "one size for every file this browser opens, a .py included");
-  assert.equal(fourth.down.hidden, false, "a non-markdown text file has the control: its code view scales too");
+  assert.equal(fourth.zoom.hidden, false, "a non-markdown text file has the control: its code view scales too");
   assert.equal(fourth.reset.textContent, "80%");
 });
 
@@ -449,49 +456,49 @@ test("click-safe: the three buttons are built once per open and never rebuilt by
 
 test("the control is absent for a picture and a PDF, present for the SVG Source view, hidden in edit mode and back on exit", async (t) => {
   const pic = await openFile(t, PLOT);
-  assert.equal(pic.down.hidden, true); assert.equal(pic.up.hidden, true); assert.equal(pic.reset.hidden, true, "a picture has no text to size");
+  assert.equal(pic.zoom.hidden, true, "a picture has no text to size");   // the glyph is the control's visibility (T367)
   pic.fv.closeFileView();
   const pdf = await openFile(t, PAPER);
-  assert.equal(pdf.down.hidden, true); assert.equal(pdf.up.hidden, true); assert.equal(pdf.reset.hidden, true, "a PDF: the browser's viewer owns its text");
+  assert.equal(pdf.zoom.hidden, true, "a PDF: the browser's viewer owns its text");   // the glyph is the control's visibility (T367)
   pdf.fv.closeFileView();
   const svg = await openFile(t, FIG);
-  assert.equal(svg.down.hidden, true, "an SVG shown as a picture: no text yet");
+  assert.equal(svg.zoom.hidden, true, "an SVG shown as a picture: no text yet");
   svg.btn("Source").click();
   await settle();
   assert.equal(svg.body.children[0].className, "fileview-code", "the Source view is up");
-  assert.equal(svg.down.hidden, false); assert.equal(svg.up.hidden, false); assert.equal(svg.reset.hidden, false, "the Source view is a text view and has the control");
+  assert.equal(svg.zoom.hidden, false, "the Source view is a text view and has the control");   // the glyph is the control's visibility (T367)
   const ev = wheel({ dy: -100, ctrl: true });
   svg.body.dispatchEvent(ev);
   assert.equal(size(svg), "115", "and the wheel steps it"); assert.equal(ev.defaultPrevented, true);
   svg.fv.closeFileView(); store.delete(SIZE_KEY);
   store.set(SIZE_KEY, "115");
   const o = await openFile(t, REPORT);
-  assert.equal(o.down.hidden, false); assert.equal(blank(o), false, "off the default, the readout says the size");
+  assert.equal(o.zoom.hidden, false); assert.equal(blank(o), false, "off the default, the readout says the size");
   o.btn("Edit").click();
   await settle();
   assert.equal(o.btn("Cancel").hidden, false, "edit mode");
-  assert.equal(o.down.hidden, true); assert.equal(o.up.hidden, true); assert.equal(o.reset.hidden, true, "the editor keeps its own size");
+  assert.equal(o.zoom.hidden, true, "the editor keeps its own size");   // the glyph is the control's visibility (T367)
   const ev2 = wheel({ dy: -100, ctrl: true });
   o.body.dispatchEvent(ev2);
   assert.equal(size(o), "115", "the wheel stands down in edit mode"); assert.equal(ev2.defaultPrevented, false);
   o.btn("Cancel").click();
   assert.equal(o.btn("Cancel").hidden, true);
-  assert.equal(o.down.hidden, false); assert.equal(o.reset.hidden, false); assert.equal(o.up.hidden, false); assert.equal(blank(o), false, "back with the read view");
+  assert.equal(o.zoom.hidden, false);   // the glyph is the control's visibility (T367) assert.equal(blank(o), false, "back with the read view");
 });
 
 test("the control shows only once a text body is KNOWN: hidden beside the loader, shown when a text file's bytes land, never for a picture", async (t) => {
   store.set(SIZE_KEY, "130");
   const o = await openFile(t, REPORT, false);
-  assert.equal(o.down.hidden, true); assert.equal(o.up.hidden, true); assert.equal(o.reset.hidden, true, "the loader holds the body: not yet a text view");
+  assert.equal(o.zoom.hidden, true, "the loader holds the body: not yet a text view");   // the glyph is the control's visibility (T367)
   assert.equal(size(o), "130", "the step is on the root already, so the first paint is at size");
   await settle();
-  assert.equal(o.down.hidden, false); assert.equal(o.up.hidden, false); assert.equal(o.reset.hidden, false); assert.equal(o.reset.textContent, "130%");
+  assert.equal(o.zoom.hidden, false);   // the glyph is the control's visibility (T367) assert.equal(o.reset.textContent, "130%");
   o.fv.closeFileView();
   const pic = await openFile(t, PLOT, false);
-  assert.equal(pic.down.hidden, true, "a picture: hidden for the load");
+  assert.equal(pic.zoom.hidden, true, "a picture: hidden for the load");
   await settle();
   assert.equal(pic.body.children[0].className, "fileview-imgbox", "the picture landed");
-  assert.equal(pic.down.hidden, true); assert.equal(pic.up.hidden, true); assert.equal(pic.reset.hidden, true, "and after it: nothing there reads the property");
+  assert.equal(pic.zoom.hidden, true, "and after it: nothing there reads the property");   // the glyph is the control's visibility (T367)
 });
 
 test("a press on a bar control settles no selection: with a passage selected in the body, A+ steps the size and neither re-reads the file nor re-seeds the quote chip; a lift on the bar's path or padding still settles", async (t) => {
@@ -540,12 +547,13 @@ test("openUrlView carries the stored step on its root and mounts the same contro
   t.after(() => { fv.closeFileView(); store.clear(); });
   const o = card(fv);
   assert.equal(size(o), "130", "the stored step is on the root before the document lands");
-  assert.equal(o.down.hidden, true); assert.equal(o.reset.hidden, true); assert.equal(o.up.hidden, true, "hidden beside the loader");
+  assert.equal(o.zoom.hidden, true, "hidden beside the loader");   // the glyph is the control's visibility (T367)
   const row = labels(o.acts);
-  assert.ok(row.indexOf("Raw") < row.indexOf("A−") && row.indexOf("A+") < row.indexOf("Open ↗"), "after Rendered and Raw, before the link out: " + row.join(" | "));
+  const zoomAt = row.findIndex((x) => x.startsWith("A−"));   // the zoom wrap reads as one label: the flyout's three buttons (T367)
+  assert.ok(row.indexOf("Raw") < zoomAt && zoomAt < row.indexOf("Open ↗"), "after Rendered and Raw, before the link out: " + row.join(" | "));
   await settle();
   assert.equal(o.body.children[0].className, "fileview-md", "the document rendered");
-  assert.equal(o.down.hidden, false); assert.equal(o.reset.hidden, false); assert.equal(o.up.hidden, false);
+  assert.equal(o.zoom.hidden, false);   // the glyph is the control's visibility (T367)
   assert.equal(o.reset.textContent, "130%"); assert.equal(blank(o), false);
   o.up.click();
   assert.equal(size(o), "150"); assert.equal(store.get(SIZE_KEY), "150", "stored under the same key as a local file's");
@@ -651,9 +659,9 @@ test("both sheets: the title bar wraps and its action row shrinks and wraps to t
     assert.deepEqual(decls(ruleOf(css, '.fileview-btn:disabled:hover, .fileview-btn[aria-disabled="true"]:hover {')), ["border-color: var(--card-border)", "color: var(--fg)", "background: transparent"], name + ": the hover is inert (the rest colours, not the accent)");
     assert.deepEqual(decls(ruleOf(css, '.fileview-btn:disabled:active, .fileview-btn[aria-disabled="true"]:active {')), ["transform: none"], name + ": no press pulse");
     assert.doesNotMatch(css, /\.fileview-gh \.fileview-btn:disabled/, name + ": the GitHub unit's disabled rules are the bar's now, not its own");
-    // the readout: one width whatever it says, and an empty slot (not none) at the default
+    // the readout: one width whatever it says, and dimmed (not empty) at the default since it moved into the zoom flyout (T367)
     assert.deepEqual(decls(ruleOf(css, ".fileview-size-reset {")), ["min-width: 5.5em", "box-sizing: border-box", "text-align: center", "font-variant-numeric: tabular-nums"], name + ": a slot of one width");
-    assert.deepEqual(decls(ruleOf(css, ".fileview-size-reset.fileview-size-default {")), ["visibility: hidden"], name + ": the empty slot keeps its width and leaves the tab order");
+    assert.deepEqual(decls(ruleOf(css, ".fileview-size-reset.fileview-size-default {")), ["color: var(--dim)"], name + ": at the default the readout reads dimmed inside the flyout (T367): nothing to reset, the slot keeps its width");
   }
   const [chat, feed] = SHEETS.map(([, css]) => css);
   for (const head of [".fileview-bar {", ".fileview-name {", ".fileview-acts {", ".fileview-bar .fileview-name {", ".fileview-bar .fileview-acts {",
@@ -939,7 +947,7 @@ test("in a browser: from 380 to 1400px in both modals the close button and every
         if (g.win <= 600) assert.ok(g.acts.t >= g.name.b - 0.5, cell + " " + what + ": the action row is the line below the path (row top " + g.acts.t + ", path bottom " + g.name.b + ")");
         if (g.win >= 1400) assert.ok(g.acts.t < g.name.b - 0.5 && g.acts.b > g.name.t + 0.5, cell + " " + what + ": room for both, so the path and the action row share a line");
       }
-      assert.equal(off.resetVis, "hidden", cell + ": at the default the readout's slot is empty by visibility");
+      assert.equal(off.resetVis, "visible", cell + ": at the default the readout reads dimmed, its slot kept (T367: inside the flyout, visibility is never hidden)");
       assert.ok(off.reset.w > 20, cell + ": and keeps its width (" + off.reset.w + "px)");
       assert.equal(on.resetVis, "visible", cell + ": off the default the readout shows");
       near(off.down.l, on.down.l, cell + ": A− does not move when the readout fills"); near(off.down.t, on.down.t, cell + ": A− stays on its line");

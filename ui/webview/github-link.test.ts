@@ -69,21 +69,13 @@ const parts = (unit: El) => ({
   dots: unit.childNodes.find((c) => c instanceof El && c.className === "fileview-gh-dots") as El | undefined,
   ctl: unit.childNodes.find((c) => c instanceof El && c.classList.contains("fileview-btn")) as El,
 });
-/** The unit as mounted, before any reply: the placeholder the states below all start from. */
+/** The unit as mounted, before any reply: hidden and empty while the kernel's check is out (T367, the user
+ *  2026-09-12: nothing is rowed until a link resolves; the wait is named for assistive tech). */
 function assertPending(unit: El): void {
   assert.equal(unit.className, "fileview-gh");
-  assert.equal(unit.hidden, false, "shown from the mount: the wait itself is visible");
+  assert.equal(unit.hidden, true, "hidden while the check is out: no greyed button, no dots (T367)");
   assert.equal(unit.getAttribute("aria-busy"), "true", "and named as a wait for assistive tech");
-  const { cap, dots, ctl } = parts(unit);
-  assert.equal(ctl.tagName, "button", "a real disabled button holds the slot — never an hrefless anchor flash");
-  assert.equal(ctl.disabled, true); assert.equal(ctl.href, "");
-  assert.equal(ctl.textContent, "GitHub ↗");
-  assert.equal(ctl.title, "Checking GitHub…"); assert.equal(ctl.getAttribute("aria-label"), ctl.title);
-  assert.equal(cap, undefined, "no verdict yet, so no caption to mistake for one");
-  assert.ok(dots, "the loader's dots stand where the caption will go: a slow check reads as a wait");
-  assert.equal(dots!.childNodes.length, 3);
-  assert.ok(dots!.childNodes.every((c) => c instanceof El && c.tagName === "i" && c.className === "fileview-dot"));
-  assert.ok(unit.childNodes.indexOf(dots!) < unit.childNodes.indexOf(ctl), "dots before the button, as the caption will be");
+  assert.equal(unit.childNodes.length, 0, "no placeholder button, no dots, no caption");
 }
 // The module with its poster bound ONCE for this file: every initFileView call adds another romp:wsup
 // (and message) listener on the shared window, so binding per test would make the re-ask count below
@@ -100,11 +92,11 @@ async function mountAndAnswer(url: string, reason: string): Promise<El> {
   const ask = posted[posted.length - 1];
   assert.deepEqual(ask, { type: "fileGitLink", path: "/tmp/notes-api/src/app.py", sid: undefined, reqId: ask.reqId });
   win.dispatchEvent(new MessageEvent("message", { data: { type: "fileGitLink", reqId: ask.reqId, url, reason } }));
-  assert.equal(unit.hidden, false, "the answer always shows the action");
   assert.equal(unit.hasAttribute("aria-busy"), false, "the answer ends the wait");
-  assert.equal(parts(unit).dots, undefined, "the placeholder leaves with it");
-  assert.equal(unit.childNodes.filter((c) => c instanceof El && c.classList.contains("fileview-btn")).length, 1,
-    "one control: the placeholder button is replaced, not joined");
+  assert.equal(parts(unit).dots, undefined); assert.equal(parts(unit).cap, undefined, "never a caption (T367)");
+  assert.equal(unit.childNodes.filter((c) => c instanceof El && c.classList.contains("fileview-btn")).length, url ? 1 : 0,
+    url ? "one control: the link" : "no control: nothing to link to, nothing rowed (T367)");
+  assert.equal(unit.hidden, !url, url ? "shown with the link" : "stays hidden");
   return unit;
 }
 
@@ -119,41 +111,29 @@ test("state 1 — a real URL: an anchor that opens a new tab, no caption, the UR
   assert.equal(cap, undefined, "nothing to say — no caption");
 });
 
-test("state 2 — no URL: a real disabled button, the reason visible beside it and in the tooltip", async () => {
-  // the user 2026-09-05 could not tell an uncommitted file from a broken feature when the button
-  // was simply absent; and a reason only a mouse could reach (the tooltip) left touch and keyboard
-  // users with the same question
+test("state 2 — no URL: nothing is rowed, neither a greyed button nor the reason (T367)", async () => {
+  // the user 2026-09-12 wanted the greyed link and its explanation gone from a file outside a repository: the
+  // 2026-09-05 always-fill-the-slot rule gave way; the kernel's verdict still rides the reply, it is just not rowed
   const unit = await mountAndAnswer("", "the file is not committed");
-  const { cap, ctl } = parts(unit);
-  assert.equal(ctl.tagName, "button", "a real button: assistive tech exposes disabled and the label");
-  assert.equal(ctl.type, "button");
-  assert.equal(ctl.disabled, true);
-  assert.equal(ctl.href, "", "nothing to follow, nothing to go stale");
-  assert.equal(ctl.textContent, "GitHub ↗");
-  assert.equal(ctl.title, "No GitHub link: the file is not committed");
-  assert.equal(ctl.getAttribute("aria-label"), ctl.title);
-  assert.ok(cap, "the caption is the reason itself, without hover");
-  assert.equal(cap!.textContent, "the file is not committed");
-  assert.equal(cap!.title, "", "nothing waits behind a hover: the caption IS the whole reason (it wraps; a truncated "
-    + "sentence had no tap, click or focus to finish it — found in review)");
-  assert.ok(unit.childNodes.indexOf(cap!) < unit.childNodes.indexOf(ctl), "the caption annotates the control after it");
+  assert.equal(unit.hidden, true);
+  assert.equal(unit.childNodes.length, 0, "no button, no caption");
+  assert.equal(unit.hasAttribute("aria-busy"), false, "the wait is over, and it stays hidden");
 });
 
-test("state 2b — a kernel that predates link reasons: the caption says so and what to do", async () => {
-  const { cap, ctl } = parts(await mountAndAnswer("", ""));
-  assert.equal(ctl.disabled, true);
-  assert.equal(cap!.textContent, "this kernel predates link reasons; restart it after updating");
-  assert.equal(ctl.title, "No GitHub link: this kernel predates link reasons; restart it after updating");
+test("state 2b — a kernel that predates link reasons: no URL is no link, nothing rowed", async () => {
+  const unit = await mountAndAnswer("", "");
+  assert.equal(unit.hidden, true);
+  assert.equal(unit.childNodes.length, 0);
 });
 
-test("state 3 — a URL whose branch is not on origin: a dashed anchor with the note as its caption", async () => {
+test("state 3 — a URL whose branch is not on origin: a dashed anchor, the note in its tooltip and aria-label (no caption)", async () => {
   const url = "https://github.com/TESTORG/notes-api/blob/wip/src/app.py";
   const { cap, ctl } = parts(await mountAndAnswer(url, "the branch has not been pushed"));
   assert.equal(ctl.tagName, "a"); assert.equal(ctl.href, url);
   assert.equal(ctl.classList.contains("fileview-gh-note"), true);
   assert.equal(ctl.title, url + "\nthe branch has not been pushed");
   assert.equal(ctl.getAttribute("aria-label"), "GitHub: the branch has not been pushed");
-  assert.equal(cap!.textContent, "the branch has not been pushed");
+  assert.equal(cap, undefined, "the note rides the tooltip and aria-label, not a caption (T367)");
 });
 
 test("a reply for an older open lands nowhere — the newer open keeps waiting for its own", async () => {
@@ -168,8 +148,8 @@ test("a reply for an older open lands nowhere — the newer open keeps waiting f
   assertPending(second);   // a stale reply is not the newer open's answer
   win.dispatchEvent(new MessageEvent("message", { data: { type: "fileGitLink", reqId: posted[posted.length - 1].reqId,
     url: "", reason: "the file is not committed" } }));
-  assert.equal(second.hasAttribute("aria-busy"), false); assert.equal(parts(second).ctl.disabled, true);
-  assert.equal(parts(second).cap!.textContent, "the file is not committed");
+  assert.equal(second.hasAttribute("aria-busy"), false);
+  assert.equal(second.hidden, true, "no URL: nothing rowed (T367)"); assert.equal(second.childNodes.length, 0);
 });
 
 test("a socket drop while the ask is out: the reconnect re-asks with the same reqId, so the wait ends", async () => {
@@ -189,7 +169,7 @@ test("a socket drop while the ask is out: the reconnect re-asks with the same re
     "the same question, same reqId: a late first reply and the second are one answer");
   win.dispatchEvent(new MessageEvent("message", { data: { type: "fileGitLink", reqId, url: "", reason: "not committed (staged only)" } }));
   assert.equal(unit.hasAttribute("aria-busy"), false);
-  assert.equal(parts(unit).cap!.textContent, "not committed (staged only)");
+  assert.equal(unit.hidden, true, "no URL: nothing rowed (T367)");
   const settled = posted.length;
   win.dispatchEvent(new Event("romp:wsup"));
   assert.equal(posted.length, settled, "an answered open asks nothing more");
@@ -270,5 +250,5 @@ test("the GitHub link is the action REGISTRY's first entry, not another hand-wir
   assert.match(VIEW, /export const githubLinkAction: FileViewAction = \{\n  id: "github-link",/);
   assert.match(VIEW, /registerFileViewAction\(githubLinkAction\);/);
   // openFileView renders registered actions by WALKING THE TABLE, after the built-ins
-  assert.match(VIEW, /for \(const a of fileViewActions\) \{\n    const n = a\.mount\(\{ path, sid: sid \|\| null \}\);\n    if \(n\) acts\.appendChild\(n\);\n  \}/);
+  assert.match(VIEW, /for \(const a of fileViewActions\) \{\n    const n = a\.mount\(\{ path, sid: sid \|\| null \}\);\n    if \(n\) fileGroup\.appendChild\(n\);\n  \}/, "into the file group (T367)");
 });

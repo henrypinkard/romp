@@ -8,6 +8,7 @@
 
 import { hostOf, bareId } from "./host-prefix";
 import { mediaSrc } from "./media";
+import { ICON_DOWNLOAD, ICON_COPY } from "./icons";   // the shared stroke-family glyphs (T367)
 import * as pz from "./pinch";
 
 // Extensions the kernel's _PREVIEW_MIME serves — keep the two lists in step (tests pin both).
@@ -345,10 +346,7 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
   // the tray icon every download control should wear (the composer buttons' stroke family) as an
   // inline SVG: the old text glyph (U+2B73, arrow-to-bar) has no coverage in the mac system fonts
   // and rendered as a tofu box instead of an icon (the user 2026-08-19). A literal — no sanitize.
-  dl.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"'
-    + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
-    + '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+  dl.innerHTML = ICON_DOWNLOAD;   // icons.ts: the one tray drawing, shared with the file viewer's bar (T367)
   dl.title = "download";
   dl.setAttribute("aria-label", "download");
   dl.onclick = (ev) => ev.stopPropagation();               // saving must not also dismiss
@@ -362,10 +360,7 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
   // (Safari refuses a write that awaits first — the tailnet phone case). Success and failure both
   // speak in place: the icon flips to a check, or to an × whose title names the reason, and the
   // button restores itself either way.
-  const COPY_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"'
-    + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>'
-    + '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  const COPY_SVG = ICON_COPY;   // icons.ts: the one two-sheets drawing, shared with the file viewer's bar (T367)
   let cp: HTMLButtonElement | null = null;
   if (curImg && typeof ClipboardItem !== "undefined" && navigator.clipboard && navigator.clipboard.write) {
     const btn = document.createElement("button");
