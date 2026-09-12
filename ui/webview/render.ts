@@ -5388,8 +5388,7 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   const owed = !!intent && intent.cls === "question" && ev.direction === "in";
   const turn = notice({ src, glyph: "peer", gist: summaryText, meta, body, open: owed,
                         key: "postal:" + (ev.mid || ev.uuid || ""), rail: ev.color ? ev.color.bg : undefined,
-                        cls: "turn-postal-service postal-service-" + ev.direction,
-                        tip: kind ? "interaction type: " + kind.toLowerCase() : undefined });
+                        cls: "turn-postal-service postal-service-" + ev.direction });   // no head tooltip: the kind badge already says coordination, delegation or question (the user 2026-09-12)
   // the delivery state: an icon at the head's right edge, and — while the message has not landed (handed to the
   // relay, or parked for an unreachable host) — the SAME provisional dress the user's own pending send wears
   // (the queued bubble's class and tokens, the T302 amendment): solid again once the receipt says delivered,
