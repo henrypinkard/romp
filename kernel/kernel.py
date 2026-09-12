@@ -16928,7 +16928,8 @@ def _drive(msg, client):
         if _route_meta_command(be, sid, str(msg["text"]), client):
             _push_soon()
         else:
-            if _send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True) is None:
+            _paths = [p for p in (msg.get("paths") or []) if isinstance(p, str) and p][:64] if isinstance(msg.get("paths"), list) else []
+            if _send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_paths or None) is None:
                 client["send"](json.dumps({"type": "warn", "text": "the message was not delivered: no running backend owns this session"}))
             _push_soon()  # idle → instant echo; SDK busy → queued bubble forwarded mid-turn + folded (but a SLASH COMMAND parks to fire alone at turn end — mid-turn it would land as text, not execute); a backend that cannot forward, busy → held + merged at turn end
     elif t == "rewindSend" and msg.get("uuid") and msg.get("text"):
@@ -30940,6 +30941,14 @@ def _takes_user(fn) -> bool:
         return False
 
 
+def _takes_kw(fn, name):
+    """Whether `fn` takes the keyword `name` (the _takes_user shape, for any name)."""
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _user_send(be, sid, text):
     """be.send for a message the USER typed, with user=True when the backend's send takes it."""
     if _takes_user(be.send):
@@ -30947,7 +30956,7 @@ def _user_send(be, sid, text):
     return be.send(sid, text)
 
 
-def _send_with_id(be, sid, text, qid=None, user=False):
+def _send_with_id(be, sid, text, qid=None, user=False, paths=None):
     """be.send, with the copy's press-time id when one rode and the backend's send takes it (_takes_qid:
     SdkBackend, whose queued copy and echo then wear the id the chat's bubble already has). A send that takes
     no id (Codex; a stand-in) gets the text alone, as before. `user`: a message the user typed (the composer, the phone, a user's `romp send`, a parked
@@ -30957,10 +30966,18 @@ def _send_with_id(be, sid, text, qid=None, user=False):
         kw["qid"] = qid
     if user and _takes_user(be.send):
         kw["user"] = True
+    if paths and _takes_kw(be.send, "paths"):
+        kw["paths"] = list(paths)                          # the attachment list, beside the copy's id (T373 fold)
     return be.send(sid, text, **kw)
 
 
-def _send_or_park(be, sid, text, echo=None, qid=None, user=False):
+def _op_paths(op):
+    """The attachment list a parked send carried (its sixth slot, T373 fold): every path the send's trailing line named,
+    images and documents alike, so the chat's rescind gives them back as chips; [] for an op that carried none."""
+    return list(op[5]) if op[0] == "send" and len(op) > 5 and isinstance(op[5], (list, tuple)) else []
+
+
+def _send_or_park(be, sid, text, echo=None, qid=None, user=False, paths=None):
     """`user` (T315): the text is the USER's (the composer, the phone, an untagged `romp send`, a typed command),
     handed to the backend as its word to retry a stood-down attach and remembered on a parked op's fifth slot for the
     replay; a machine caller (a watch notice, a nudge, a tagged `romp send`) passes nothing and is queued behind a
@@ -31026,6 +31043,8 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False):
         op = op + (qid,)
     if user:
         op = op + (None,) * (4 - len(op)) + (True,)     # the fifth slot: the user's words (_op_user); the fourth stays the id or None
+    if paths and not cmd:
+        op = op + (None,) * (5 - len(op)) + (list(paths),)   # the sixth slot: the attachments the trailing line named (_op_paths, T373 fold)
     if _compacting_now(sid) or _pending_ops.get(sid) or _limit_hold(sid):
         _park_op(sid, op)
         return True
@@ -31034,7 +31053,7 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False):
         return True
     if _park_behind_queue(sid, op):
         return True
-    if _send_with_id(be, sid, text, qid, user=user) is False:
+    if _send_with_id(be, sid, text, qid, user=user, paths=paths) is False:
         return None                                      # refused by the backend: not parked, not delivered
     return False
 
@@ -31282,7 +31301,7 @@ def _deliver_send_batch(be, sid, run):
         return
     if _forwards_sends(be):
         for op in run:
-            _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op))   # under the id the press minted, when one rode the park
+            _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op), paths=_op_paths(op) or None)   # under the id the press minted, with its attachment list
         return
     merged = "\n\n".join(op[1] for op in run)          # one message, blank-line separated between turns
     if any(_op_user(op) for op in run):
@@ -33779,6 +33798,8 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                     m["goalId"] = _gid.group(1)               # the goal the follow-up was on: the rescind re-arms its chip (T373)
                 if ctx:                                       # expandable header on queued follow-ups too
                     m["fuCtx"] = ctx
+            if _metas and isinstance(_metas[i], dict) and isinstance(_metas[i].get("paths"), list) and _metas[i]["paths"]:
+                m["paths"] = [str(x) for x in _metas[i]["paths"] if isinstance(x, str)]   # every attachment the send carried (T373 fold)
             qmsgs.append(m)
         # ops parked while this session COMPACTS (the user 2026-07-02): messages and slash commands render
         # as queued bubbles IN PARK ORDER — the same FIFO _apply_pending_ops delivers in, so the rendering
@@ -33805,6 +33826,11 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                         m["goal"] = goal
                     if ctx:
                         m["fuCtx"] = ctx
+                    _gid = _FOLLOWUP_GOAL_RE.search(op[1])
+                    if _gid:
+                        m["goalId"] = _gid.group(1)           # as the backend branch ships it (the fold's low 3): the rescind's goal chip
+                if _op_paths(op):
+                    m["paths"] = _op_paths(op)               # the attachments the parked send carried (T373 fold)
             qmsgs.append(m)
         # While the session is COMPACTING, the live "Compacting context…" element (above) already represents
         # the running /compact — so drop ONE "/compact" from the queue so it isn't shown twice (the user

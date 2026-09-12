@@ -216,7 +216,6 @@ function liftToastSites(): (w: World) => Lifted {
     const hostIsDown = () => W.hostDown;
     const vscodeApi = { postMessage: (m) => { W.posted.push(m); } };
     const SLASH_CMD_RE = /^[/][A-Za-z]/;   // a template literal: the real regex's escaped slash would not survive it
-    const pendingEditRestores = new Map();
   `;
   return new Function("WORLD", prelude + toasts + stage + jump + send
     + "\nreturn { stageComposer, branchjump: handlers.branchjump, warnToast, deliver };") as (w: World) => Lifted;

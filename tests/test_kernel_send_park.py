@@ -389,7 +389,7 @@ class SendPathsPark(unittest.TestCase):
     def test_ws_drive_paths_use_the_parks(self):
         with open(os.path.join(BIN, "romp-kernel")) as f:
             src = f.read()
-        self.assertIn('_send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True)', src,
+        self.assertIn('_send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_paths or None)', src,
                       "the composer send parks mid-compaction, and speaks as the user (T315)")
         self.assertIn("_send_or_park(be, sid, body,", src, "the follow-up/nudge send parks mid-compaction")
         self.assertIn("_send_or_park(be, sid, cmd, user=True)", src, "the timeline sendCommand parks mid-compaction; the user typed it")
@@ -410,6 +410,26 @@ class QueuedBubble(unittest.TestCase):
                       "ONE loop, park order — rendering IS execution order")
         self.assertIn('{"md": _parked_md(op), "park": j, "cancelable": True, **(_queued_romp_flags(op[1]) if op[0] == "send" else {})}', src,
                       "parked ops are CANCELABLE (the user 2026-07-08): park index + shared body renderer")
+
+    def test_a_queued_copy_carries_its_attachment_list_and_a_parked_follow_up_its_goal_id(self):
+        # T373 fold: the send frame names every attachment its trailing line carried; the kernel keeps the list beside the
+        # copy's id (a parked send's sixth slot, the backend queue's meta) and ships it on the queued copy, so the chat's
+        # rescind gives the image and the document back as chips by the record, never by a guess; a PARKED follow-up
+        # carries its goal id as the backend branch does (low 3), so its goal chip comes back too
+        import inspect
+        src = inspect.getsource(km.build_session)
+        self.assertIn('m["paths"] = [str(x) for x in _metas[i]["paths"] if isinstance(x, str)]', src, "the backend-queue copy")
+        self.assertIn('m["paths"] = _op_paths(op)', src, "the parked copy")
+        self.assertEqual(src.count('m["goalId"] = _gid.group(1)'), 2, "both branches ship the goal id")
+        drive = inspect.getsource(km._drive)
+        self.assertIn('_paths = [p for p in (msg.get("paths") or []) if isinstance(p, str) and p][:64]', drive, "the intake reads the list off the frame, bounded")
+        self.assertIn("user=True, paths=_paths or None)", drive)
+        park = inspect.getsource(km._send_or_park)
+        self.assertIn("op = op + (None,) * (5 - len(op)) + (list(paths),)", park, "the sixth slot")
+        self.assertEqual(km._op_paths(("send", "hi", "human", "echo:1", True, ["plots/a.png", "docs/r.pdf"])), ["plots/a.png", "docs/r.pdf"])
+        self.assertEqual(km._op_paths(("send", "hi", "human", "echo:1", True)), [], "an older op: none")
+        self.assertEqual(km._op_paths(("command", "/compact", "human", None, True, ["x"])), [], "a command carries no attachments")
+        self.assertIn("paths=_op_paths(op) or None", inspect.getsource(km._deliver_send_batch), "the drain hands the list to the backend with the id")
 
     def test_drive_routes_park_cancels(self):
         import inspect

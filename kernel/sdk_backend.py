@@ -4911,7 +4911,12 @@ def queue_meta_from_reg(reg: dict) -> list:
     entries = [m for m in raw if isinstance(m, dict) and isinstance(m.get("text"), str)] if isinstance(raw, list) else []
 
     def ident(m):
-        return {"qid": m["qid"], "qts": m.get("qts")} if isinstance(m.get("qid"), str) and m["qid"] else None
+        if not (isinstance(m.get("qid"), str) and m["qid"]):
+            return None
+        out = {"qid": m["qid"], "qts": m.get("qts")}
+        if isinstance(m.get("paths"), list) and m["paths"]:
+            out["paths"] = [str(x) for x in m["paths"] if isinstance(x, str)]   # the attachment list survives a restart with the copy (T373 fold)
+        return out
 
     # the mirror lists EVERY position (text alone for an id-less copy): align the mirrored run as one block of the
     # queue — the boot paths that edit reg['queue'] by text (a notice prepended, a re-delivered send appended)
@@ -5380,7 +5385,7 @@ class SdkSession:
         with self._lock:
             if len(self._pending_meta) != len(self._pending):
                 return None
-            return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts")}
+            return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"), **({"paths": m["paths"]} if isinstance(m, dict) and m.get("paths") else {})}
                     for t, m in zip(self._pending, self._pending_meta)]
 
     def qids_for_landing(self, uuid_: str, texts, t=None):
@@ -5433,7 +5438,7 @@ class SdkSession:
         with self._lock:
             self._fed_meta = [f for f in self._fed_meta if f.get("qid") != qid]
 
-    def enqueue(self, text: str, qid: str | None = None, qts: int | None = None):
+    def enqueue(self, text: str, qid: str | None = None, qts: int | None = None, paths: list | None = None):
         """Deliver a user turn (called from the kernel thread). Held in self._pending —
         VISIBLE to pending_queued — until the input generator releases it at turn end. Works
         before the loop is ready too (the generator drains _pending on its first pass). `qid`/`qts`:
@@ -5441,7 +5446,10 @@ class SdkSession:
         with self._lock:
             if qid:
                 self._fed_meta = [f for f in self._fed_meta if f.get("qid") != qid]   # back in the queue: not fed (a re-delivery)
-            self._q_append(text, {"qid": qid, "qts": qts} if qid else None)
+            meta = {"qid": qid, "qts": qts} if qid else None
+            if meta is not None and paths:
+                meta["paths"] = [str(x) for x in paths if isinstance(x, str) and x]   # the attachments the send carried, beside its id (T373 fold)
+            self._q_append(text, meta)
             loop, wake = self.loop, self._input_wake
         self._persist_queue()
         if loop is not None and wake is not None:
@@ -5528,7 +5536,7 @@ class SdkSession:
         with self._lock:
             snap = list(self._pending)
             metas = list(self._pending_meta)
-        qmeta = [{"text": t, "qid": m["qid"], "qts": m.get("qts")} if isinstance(m, dict) and m.get("qid") else {"text": t}
+        qmeta = [{"text": t, "qid": m["qid"], "qts": m.get("qts"), **({"paths": m["paths"]} if m.get("paths") else {})} if isinstance(m, dict) and m.get("qid") else {"text": t}
                  for t, m in zip(snap, metas)]        # every position, so the restore aligns the run as a block
         try:
             self.backend._update_reg(self.sid, queue=snap, queueMeta=qmeta)
@@ -12250,7 +12258,7 @@ class SdkBackend:
             return s.pending_meta()
         reg = read_reg(self.state_dir, sid) or {}
         texts = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
-        return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts")}
+        return [{"md": t, "qid": (m or {}).get("qid"), "qts": (m or {}).get("qts"), **({"paths": m["paths"]} if isinstance(m, dict) and m.get("paths") else {})}
                 for t, m in zip(texts, queue_meta_from_reg(reg))]
 
     def qid_for_landing(self, sid: str, uuid_: str, text: str, t=None):
@@ -12354,7 +12362,7 @@ class SdkBackend:
                         or getattr(s, "_ping_feeding", False)   # getattr: test doubles skip __init__
                         or (s._rewind_to and not getattr(s, "_rewind_armed", False)))
 
-    def send(self, sid: str, text: str, qid: str | None = None, user: bool = False) -> bool:
+    def send(self, sid: str, text: str, qid: str | None = None, user: bool = False, paths: list | None = None) -> bool:
         """`user`: the text is a message the USER typed (the composer, the phone, an untagged `romp send`, a comment
         reply or merge, a parked user send replayed, a compact click), the one word that retries a stood-down
         attach (T315). Romp's own automatic messages (the default: the nudge, the awaiting backstop, the debt
@@ -12398,7 +12406,7 @@ class SdkBackend:
         # writes the real user atom.
         key = qid or "echo:" + uuid.uuid4().hex
         try:
-            s.enqueue(text, qid=key, qts=int(time.time() * 1000))
+            s.enqueue(text, qid=key, qts=int(time.time() * 1000), paths=paths or None)
         except TypeError:                                    # a stand-in session that takes the text alone: an id-less copy
             s.enqueue(text)
         # optimistic input echo: show the user's own message INSTANTLY (neither the transcript nor the

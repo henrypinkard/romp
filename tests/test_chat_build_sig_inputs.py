@@ -118,6 +118,7 @@ CENSUS = {
     "_op_qid": ("pure", "over a parked op"),
     "_orphan_replies": ("sig", "states"),
     "_parked_md": ("pure", "over a parked op"),
+    "_op_paths": ("pure", "over a parked op (its attachment list, T373 fold)"),
     "_parse": ("sig", "transcript", "memoized on the transcript's (mtime, size), the pending cut (cut) and the states file (states)"),
     "_parse_task_notification": ("pure", "over a reminder string"),
     "_patch_rows": ("pure", "over a structured patch"),

@@ -13,13 +13,19 @@ test("quote sections come back as citations and the text follows; a body without
   assert.deepEqual(splitQuoteReplyBody(quoteReplyBody([{ quote: "context only" }], "")), { cites: [{ quote: "context only" }], text: "" }, "a citation with nothing typed");
 });
 
-test("the trailing paths line comes off as files, exactly by the page's own record, else when every token reads as a path", () => {
+test("the trailing paths line comes off as files by the record alone: no record, no guess", () => {
   assert.deepEqual(splitTrailingPaths("look at these\nplots/a.png \"docs/with space.md\"", ["plots/a.png", "docs/with space.md"]), { text: "look at these", files: ["plots/a.png", "docs/with space.md"] });
+  assert.deepEqual(splitTrailingPaths("look at these\nplots/a.png docs/report.pdf", ["plots/a.png", "docs/report.pdf"]), { text: "look at these", files: ["plots/a.png", "docs/report.pdf"] }, "an image and a document alike (the fold's medium: the record is every attachment, not the images)");
   assert.deepEqual(splitTrailingPaths("look at these\nplots/a.png", ["plots/b.png"]), { text: "look at these\nplots/a.png", files: [] }, "a record that does not match leaves the text whole");
-  assert.deepEqual(splitTrailingPaths("look at these\nplots/a.png notes.txt"), { text: "look at these", files: ["plots/a.png", "notes.txt"] }, "no record: every token a path");
-  assert.deepEqual(splitTrailingPaths("look at these\nand tell me what changed."), { text: "look at these\nand tell me what changed.", files: [] }, "a last line of prose stays prose");
-  assert.deepEqual(splitTrailingPaths("notes.txt"), { text: "notes.txt", files: [] }, "one bare name alone is the message, not an attachment");
-  assert.deepEqual(splitTrailingPaths("plots/a.png"), { text: "", files: ["plots/a.png"] }, "one path alone was an attachment sent with no words");
+  assert.deepEqual(splitTrailingPaths("see https://example.test/a and /var/log/x.log"), { text: "see https://example.test/a and /var/log/x.log", files: [] }, "a user's own URL or path line is never an attachment without a record (the fold's low)");
+  assert.deepEqual(splitTrailingPaths("plots/a.png"), { text: "plots/a.png", files: [] }, "even a bare path alone stays words without a record");
+});
+
+test("a pasted excerpt whose first line is the send's own lead reads as a citation and re-composes but for one blank line (accepted, documented)", () => {
+  const pasted = "Replying to this part of the conversation:\n> the pasted quote\n\nmy words";
+  const back = splitQuoteReplyBody(pasted);
+  assert.deepEqual(back, { cites: [{ quote: "the pasted quote" }], text: "my words" });
+  assert.equal(quoteReplyBody(back.cites, back.text), pasted, "the round trip is byte-exact here; only an excerpt with extra blank lines between lead and text differs by them");
 });
 
 test("the whole state: text, citations and files, round-tripped from what the send composed", () => {
@@ -48,9 +54,9 @@ test("the queued message's one control is the ✎, which rescinds it to the comp
   assert.match(RENDER, /qedit: \(el\) => rescindQueued\(el, true\),/);
   assert.match(RENDER, /qx: \(el\) => rescindQueued\(el, false\),/);
   assert.match(RESCIND, /const msg: Record<string, unknown> = \{ type: "cancelQueued", id: sidQ, md: qmd \};/, "the rescind IS the cancel: the same kernel route clears every other client's bubble");
-  assert.match(RESCIND, /if \(goal && goal\.itemId\) setCitation\(sidQ, \{ itemId: goal\.itemId, title: goal\.title \}\);/, "a follow-up comes back on its goal");
+  assert.match(RESCIND, /if \(goal && goal\.itemId\) \{ setCitation\(sidQ, \{ itemId: goal\.itemId, title: goal\.title \}\); armed = true; \}/, "a follow-up comes back on its goal");
   assert.match(RESCIND, /else if \(back\.cites\.length\) \{ composerCitations\.set\(sidQ,/, "quote citations come back as chips");
-  assert.match(RESCIND, /if \(!provisional\) pendingCancelRestores\.set\(activeId \+ " " \+ qmd, \{ before, after: ta \? ta\.value : "" \}\);/, "a refused cancel can undo the restore, as before");
+  assert.match(RESCIND, /if \(!provisional\) pendingCancelRestores\.set\(activeId \+ " " \+ qmd, \{ before, after: ta \? ta\.value : "", cites: citesBefore, files: filesBefore, armed \}\);/, "a refused cancel can undo the restore, as before");
   assert.match(CSS, /\.queued-edit \{\s*\n\s*position: absolute; top: 3px; right: 4px;/, "the pencil sits in the cross's corner");
   assert.match(CSS, /\.queued-bubble\.editable \{ padding-right: 28px; \}/, "room for the one control");
 });

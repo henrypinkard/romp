@@ -83,7 +83,11 @@ box — the words, the quote chips it was written against and its attachments �
 change it and send it again, or clear the box to drop it. A queued slash command, and a
 notice romp itself queued, carry a **✕** instead: there is nothing to reword, so they just
 cancel. If the session took the message before you pressed, the bubble says so and the
-box is left as it was, so nothing is sent twice.
+box is left as it was, so nothing is sent twice. One narrow window: a chat page from
+before an update, still open while the kernel restarts on the new one, presses a pencil
+the new kernel no longer knows as an edit; the bubble reverts and the message stays
+queued. The page reloads itself on the new kernel within moments, which keeps that
+window short.
 
 **Opening a markdown document.** A markdown link in the chat opens in the file viewer,
 rendered, with **Raw** one click away — a path on the session's machine, or a link to a

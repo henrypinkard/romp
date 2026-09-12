@@ -13,7 +13,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("a queued ChatEvent carries the pending messages (backend-agnostic, per-message md)", () => {
   // idx = backend-queue position (SDK); park = _pending_ops position (compaction/model parking, any backend)
   // `optimistic` (romp's own unconfirmed echo) rides along at the end — see optimistic-send.test.ts
-  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; goalId\?: string; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean; optimistic\?: boolean; romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; hiddenByPending\?: boolean; landing\?: boolean \}\[\]/);   // gist: a queued romp SYSTEM notice's user-facing head (2026-09-08); imgPaths: the echo's dragged-image thumbnails (2026-08-25); romp flags: T243; lost + qts: the pending entry's connection-drop state and its identity for the ✕ (2026-09-06)
+  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; goalId\?: string; paths\?: string\[\]; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean; optimistic\?: boolean; romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; hiddenByPending\?: boolean; landing\?: boolean \}\[\]/);   // gist: a queued romp SYSTEM notice's user-facing head (2026-09-08); imgPaths: the echo's dragged-image thumbnails (2026-08-25); romp flags: T243; lost + qts: the pending entry's connection-drop state and its identity for the ✕ (2026-09-06)
 });
 
 test("renderQueued draws a wireframe-hourglass header (singular/plural) + one markdown bubble per queued message", () => {
@@ -71,9 +71,9 @@ test("the delegated qx handler cancels click-safely: kernel op for commands and 
   assert.match(RENDER, /if \(el\.dataset\.qidx !== undefined\) msg\.idx = Number\(el\.dataset\.qidx\);/);
   assert.match(RENDER, /if \(el\.dataset\.qpark !== undefined\) msg\.park = Number\(el\.dataset\.qpark\);/);
   // a MESSAGE returns to the composer (the ✎, toComposer): its words, its quote citations and its attachments as chips
-  assert.match(RENDER, /if \(toComposer && qmd\) \{/);
+  assert.match(RENDER, /if \(restoreHere && qmd\) \{/);
   assert.match(RENDER, /const back = rescindedComposerState\(qmd, known\);/, "the send's composition is undone (queued-rescind.ts)");
-  assert.match(RENDER, /for \(const f of back\.files\) addComposerFile\(sidQ, f\);\s*\n\s*restoreToComposer\(back\.text\);/, "the attachments as chips, then the words");
+  assert.match(RENDER, /for \(const f of back\.files\) \{ addComposerFile\(sidQ, f\); armed = true; \}\s*\n\s*restoreToComposer\(back\.text\);/, "the attachments as chips, then the words");
   assert.match(RENDER, /const bub = el\.closest\("\.queued-bubble"\) as HTMLElement \| null;[\s\S]*?bub\?\.remove\(\);/,
     "optimistic removal before the next push");
   // restoreToComposer fills the composer textarea, fires input (autosize/enable), focuses, caret to end
@@ -110,8 +110,13 @@ test("a queued bubble with no ✕ says where the message actually is", () => {
 });
 
 test("the qx click stashes the composer before/after so a failed cancel can undo the restore", () => {
-  assert.match(RENDER, /const pendingCancelRestores = new Map<string, \{ before: string; after: string \}>\(\);/);
-  assert.match(RENDER, /pendingCancelRestores\.set\(activeId \+ " " \+ qmd, \{ before, after: ta \? ta\.value : "" \}\);/);
+  assert.match(RENDER, /const pendingCancelRestores = new Map<string, \{ before: string; after: string; cites: Citation\[\]; files: string\[\]; armed: boolean \}>\(\);/);
+  // the refusal looks the stash up under the very key the rescind stored: one separator, spelled the same on both sides
+  // (a literal NUL byte sat in the handler's key from 2026-07-20 to the T373 fold, invisible in every text view, so no
+  // refusal ever found its stash; the served lab caught it, and the file is held free of control bytes here)
+  assert.match(RENDER, /const key = m\.id \+ " " \+ \(typeof m\.md === "string" \? m\.md : ""\);/, "the handler's key is the store's key");
+  assert.doesNotMatch(RENDER, /[\x00-\x08\x0b\x0c\x0e-\x1f]/, "no control byte in render.ts: a separator is spelled as an escape");
+  assert.match(RENDER, /pendingCancelRestores\.set\(activeId \+ " " \+ qmd, \{ before, after: ta \? ta\.value : "", cites: citesBefore, files: filesBefore, armed \}\);/);
 });
 
 test("cancelResult ok:false toasts the kernel's 'too late' and reverts an untouched composer restore", () => {
@@ -277,7 +282,6 @@ test("what romp itself queued wears the LANDED romp grammar, split as landed: no
   assert.match(body, /if \(!t\.romp && !isCmd\) bubble\.innerHTML = userMd\(t\.md\)/);
   // the ✕ stays; romp's words are never restored to the composer on cancel
   assert.match(body, /x\.title = t\.rompSystem \? "cancel this queued notice" : t\.romp \? "cancel this queued nudge"/);
-  assert.match(body, /if \(t\.romp\) x\.dataset\.qromp = "1";/);
   // the gray tone replaces the dashed blue on the romp variants; the ✕ room is reserved only when there is a ✕
   assert.match(CSS, /\.queued-bubble\.queued-romp \{[^}]*background: transparent;[^}]*border: 0;/);
   assert.match(CSS, /\.queued-bubble\.queued-romp\.cancelable > \.notice,\s*\n\s*\.queued-bubble\.queued-romp\.cancelable > \.romp-bubble \{ padding-right: 30px; \}/);   // .notice since 2026-09-08

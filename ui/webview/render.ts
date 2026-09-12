@@ -229,7 +229,7 @@ type ChatEvent = (
   // `held` DOES come from the kernel (_limit_hold): the queue is stuck on the ACCOUNT rather than on this
   // session — a usage limit or a monthly spend cap holds every send — so the head names what it is waiting
   // for, and how long is left when the API reported a reset (the user 2026-07-24).
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; goalId?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; gist?: string; imgPaths?: string[]; lost?: string; qts?: number; qid?: string; hiddenByPending?: boolean; landing?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }   // imgPaths: an optimistic echo's dragged-image attachments → thumbnails, the landed form's own renderer (the user 2026-08-25); lost: client-only, the connection dropped after this unconfirmed send; qts: on OUR optimistic copy the pending entry's identity (its press time) so the ✕ removes ITS entry, on a kernel copy its enqueue stamp (T252c); qid: the copy's identity (T252c): minted at the press on OUR copy and posted with the send, so the kernel's copy wears the same one; the ✕ names it on both (send-pending.ts)
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; goalId?: string; paths?: string[]; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; gist?: string; imgPaths?: string[]; lost?: string; qts?: number; qid?: string; hiddenByPending?: boolean; landing?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }   // imgPaths: an optimistic echo's dragged-image attachments → thumbnails, the landed form's own renderer (the user 2026-08-25); lost: client-only, the connection dropped after this unconfirmed send; qts: on OUR optimistic copy the pending entry's identity (its press time) so the ✕ removes ITS entry, on a kernel copy its enqueue stamp (T252c); qid: the copy's identity (T252c): minted at the press on OUR copy and posted with the send, so the kernel's copy wears the same one; the ✕ names it on both (send-pending.ts)
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
@@ -584,9 +584,9 @@ function hideQueuedCopy(s: Session, p: PendingSend): { held?: Extract<ChatEvent,
 // copy's id the caller minted at the press (mintQid) and posted with the send, so the kernel queues or parks the
 // copy under the id this bubble wears and the bubble, the kernel's chip and the ✕ agree from the press; a caller
 // that posts nothing (a provisional tab's send, held until the session exists) lets the entry mint its own.
-function registerOptimistic(id: string, text: string, imgPaths?: string[], qid?: string): void {
+function registerOptimistic(id: string, text: string, imgPaths?: string[], qid?: string, paths?: string[]): void {
   const arr = pendingSent.get(id) || [];
-  const p = newPending(text, imgPaths, Date.now(), qid);
+  const p = newPending(text, imgPaths, Date.now(), qid, paths);
   arr.push(p);   // the anchor (`at`) is stamped by the reconcile just below
   pendingSent.set(id, arr);
   const s = sessions.get(id);
@@ -4874,13 +4874,11 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
       x.textContent = "✕";
       x.title = t.rompSystem ? "cancel this queued notice" : t.romp ? "cancel this queued nudge" : "cancel this queued command";
       x.dataset.act = "qx";
-      if (t.romp) x.dataset.qromp = "1";   // romp's words, not the user's: cancelling never restores it to the composer (T243)
       if (t.idx !== undefined) x.dataset.qidx = String(t.idx);
       if (t.park !== undefined) x.dataset.qpark = String(t.park);
       if (t.optimistic) x.dataset.qopt = "1";   // ✕ before confirmation → cancel-by-body (no park/idx yet)
       if (t.optimistic && t.qts !== undefined) x.dataset.qts = String(t.qts);   // OUR entry's identity: the ✕ removes this bubble's entry, not the first with its text
       if (t.qid) x.dataset.qid = t.qid;   // the copy's id (T252c): on a kernel copy the ✕ drops the send that owns it (a kernel copy's own qts is its enqueue stamp, not an entry); on ours it rides the cancel, so the kernel removes exactly this copy
-      if (isCmd) x.dataset.qcmd = "1";
       (x as any)._qmd = t.md;   // the bubble's body — the kernel's drift guard + the composer restore read it
       xHost.appendChild(x);
     }
@@ -4904,6 +4902,7 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
       if (t.qid) ed.dataset.qid = t.qid;   // the copy's id: the cancel names exactly this copy (T252c)
       (ed as any)._qmd = t.md;
       (ed as any)._qimgs = t.imgPaths;     // the attachments the bubble shows, back as chips
+      (ed as any)._qpaths = t.paths;       // …and the kernel's record of every attachment the copy carried (images and documents alike)
       (ed as any)._qgoal = t.goalId ? { itemId: t.goalId, title: t.goal || "" } : null;   // a follow-up's goal, back as its chip
       xHost.appendChild(ed);
     }
@@ -4934,8 +4933,11 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
   if (!activeId || !vscodeApi) return;
   const qmd = (el as any)._qmd as string | undefined;
   const sidQ = owningSidOf(el) || activeId;
-  if (toComposer && sidQ !== activeId) { warnToast("open that session's chat to edit its queued message"); return; }   // the composer is the active session's
-  let ownImgs: string[] | null = null;
+  // a bubble owned by another session (a comment thread's popover): the cancel goes out as ever; only the composer half is
+  // refused, with a pointer, since the box is the active session's (the fold's low: the base cancelled here, never a dead end)
+  const restoreHere = toComposer && sidQ === activeId;
+  if (toComposer && !restoreHere) warnToast("open that session's chat to edit its queued message");
+  let ownPaths: string[] | null = null;
   if (qmd) {
     // EVERY control drops our own optimistic entry for the text first (the user 2026-08-30). At the
     // optimistic stage (qopt) that is the whole client half — the kernel may not have pushed its
@@ -4949,7 +4951,8 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
     const qts = el.dataset.qts !== undefined ? Number(el.dataset.qts) : undefined;
     const qid = el.dataset.qid || undefined;
     const own = list.find((p) => (qid && p.qid === qid) || (qts !== undefined && p.ts === qts && p.text === qmd) || (!qid && qts === undefined && p.text === qmd));
-    if (own && own.imgPaths && own.imgPaths.length) ownImgs = own.imgPaths.slice();   // the attachments as the press knew them, before the entry goes
+    const rec = own ? (own.paths && own.paths.length ? own.paths : own.imgPaths) : null;   // every attachment the press knew (the record; images alone on an older entry), before the entry goes
+    if (rec && rec.length) ownPaths = rec.slice();
     if (dropPending(list, qmd, qts, qid)) { if (list.length) pendingSent.set(sidQ, list); else pendingSent.delete(sidQ); }
     echoShownSig.delete(sidQ);
   }
@@ -4966,21 +4969,25 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
   if (!provisional) vscodeApi.postMessage(msg);
   else vscodeApi.postMessage({ type: "clientDiag", surface: "chat", what: "cancel-provisional",
                               data: { mdLen: qmd ? qmd.length : -1, queuedLeft: provisionalQueue.length } });
-  if (toComposer && qmd) {
+  if (restoreHere && qmd) {
     // the message comes back as it was composed: the typed words into the box, the quote citations and the attachments
-    // as chips (queued-rescind.ts undoes the send's composition), a follow-up's goal as its chip. The restore is
-    // optimistic — the composer's before/after is stashed so the kernel's cancelResult ok:false can undo it (untouched only).
+    // as chips (queued-rescind.ts undoes the send's composition by the RECORD: the page's own entry, else the list the
+    // kernel shipped on the copy), a follow-up's goal as its chip. The restore is optimistic — the composer's text and
+    // chips as they stood are stashed so the kernel's cancelResult ok:false undoes all of it (the fold's medium 2: a
+    // refused rescind must not leave a goal or attachments the user never asked for on their next message).
     const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     const before = ta ? ta.value : "";
-    const known = ownImgs || ((el as any)._qimgs as string[] | undefined) || null;
+    const citesBefore = (composerCitations.get(sidQ) || []).slice(), filesBefore = (composerFiles.get(sidQ) || []).slice();
+    const known = ownPaths || ((el as any)._qpaths as string[] | undefined) || ((el as any)._qimgs as string[] | undefined) || null;
     const back = rescindedComposerState(qmd, known);
     const goal = (el as any)._qgoal as { itemId: string; title: string } | null | undefined;
-    if (goal && goal.itemId) setCitation(sidQ, { itemId: goal.itemId, title: goal.title });
-    else if (back.cites.length) { composerCitations.set(sidQ, back.cites.map((c) => ({ title: c.quote.split("\n")[0].slice(0, 80), quote: c.quote, src: c.src }))); persistDrafts(); renderComposerChips(sidQ); }
-    for (const f of back.files) addComposerFile(sidQ, f);
+    let armed = false;
+    if (goal && goal.itemId) { setCitation(sidQ, { itemId: goal.itemId, title: goal.title }); armed = true; }
+    else if (back.cites.length) { composerCitations.set(sidQ, back.cites.map((c) => ({ title: c.quote.split("\n")[0].slice(0, 80), quote: c.quote, src: c.src }))); persistDrafts(); renderComposerChips(sidQ); armed = true; }
+    for (const f of back.files) { addComposerFile(sidQ, f); armed = true; }
     restoreToComposer(back.text);
     // a provisional rescind gets no cancelResult (nothing was posted) — no stash to consume, none kept
-    if (!provisional) pendingCancelRestores.set(activeId + " " + qmd, { before, after: ta ? ta.value : "" });
+    if (!provisional) pendingCancelRestores.set(activeId + " " + qmd, { before, after: ta ? ta.value : "", cites: citesBefore, files: filesBefore, armed });
   }
   // Optimistic; the next push rebuilds the queue without it. The GROUP is reflowed in the same breath —
   // the bubble alone leaves its "1 queued message" header behind, still counting what just went.
@@ -5000,7 +5007,7 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
 // composer back exactly as it was IF the user hasn't touched it since (the user 2026-07-20: the
 // restored copy of an un-recallable message is a double-send waiting to happen). An edited draft is
 // never touched — the toast alone covers it.
-const pendingCancelRestores = new Map<string, { before: string; after: string }>();
+const pendingCancelRestores = new Map<string, { before: string; after: string; cites: Citation[]; files: string[]; armed: boolean }>();   // + the chips as they stood and whether the rescind armed any (T373 fold, medium 2)
 
 // The refusal card's remedy line, ONE string: renderApiError's initial write and apiRetryTick's
 // per-second re-assert both read it, so the card and the tick can never drift into different words.
@@ -15581,7 +15588,7 @@ try { stagedMsgs.restore(((vscodeApi?.getState?.() || {}) as any).staged); } cat
 // One routing owner for a user message (deliver speaks it through flushStaged, once per post of the
 // release): a goal chip rides askFollowUp, quote chips wrap client-side, a bare message is a plain send
 // with the optimistic bubble (chip sends have their own kernel-side echo).
-function routeUserMessage(sid: string, text: string, cites: Citation[] | undefined, imgPaths?: string[]): void {
+function routeUserMessage(sid: string, text: string, cites: Citation[] | undefined, imgPaths?: string[], paths?: string[]): void {
   if (!vscodeApi) return;
   const goalCite = cites?.find((c) => c.itemId);
   const quoteCites = cites ? cites.filter((c) => c.quote) : [];
@@ -15595,9 +15602,12 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
   // the same one: the kernel queues or parks the copy under it, so the two never have to be paired by text
   // (send-pending.ts). The post still goes first: the paint that follows can never cost the send.
   const qid = mintQid();
-  if (goalCite?.itemId) { vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid, qid }); registerOptimistic(sid, text, imgPaths, qid); }
-  else if (quoteCites.length) { const body = quoteReplyBody(quoteCites, text); vscodeApi.postMessage({ type: "sendMessage", id: sid, text: body, qid }); registerOptimistic(sid, body, imgPaths, qid); }
-  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text, qid }); registerOptimistic(sid, text, imgPaths, qid); }
+  // `paths`: every attachment the trailing line carries, on the frame (the kernel keeps it beside the copy's id and ships
+  // it on the queued copy) and on the record, so a rescind gives back exactly what went out (T373 fold, medium 1)
+  const att = paths && paths.length ? { paths } : {};
+  if (goalCite?.itemId) { vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid, qid, ...att }); registerOptimistic(sid, text, imgPaths, qid, paths); }
+  else if (quoteCites.length) { const body = quoteReplyBody(quoteCites, text); vscodeApi.postMessage({ type: "sendMessage", id: sid, text: body, qid, ...att }); registerOptimistic(sid, body, imgPaths, qid, paths); }
+  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text, qid, ...att }); registerOptimistic(sid, text, imgPaths, qid, paths); }
   // One breadcrumb per composer send (client-diag.jsonl): sid, when, how long, which route — never the
   // text. A send that "vanished" can then be traced from the press through the kernel's own logs
   // instead of reconstructed from memory.
@@ -15615,9 +15625,9 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
  *  the comments after it as its argument). With nothing staged the typed message routes exactly as
  *  before. Deliver's guards (host down, provisional) run before this in the send path; Send now
  *  re-checks reachability itself. Returns how many staged items went. */
-function flushStaged(sid: string, typed?: { text: string; cites?: Citation[]; imgPaths?: string[] }): number {
+function flushStaged(sid: string, typed?: { text: string; cites?: Citation[]; imgPaths?: string[]; paths?: string[] }): number {
   const run = stagedMsgs.takeAll(sid);
-  for (const p of stagedPosts(run, typed)) routeUserMessage(sid, p.text, p.cites as Citation[] | undefined, p.imgPaths);
+  for (const p of stagedPosts(run, typed)) routeUserMessage(sid, p.text, p.cites as Citation[] | undefined, p.imgPaths, p.paths);
   if (run.length) { persistDrafts(); renderStagedStrip(sid); }
   return run.length;
 }
@@ -17456,7 +17466,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // session was already asked to raise its question again.
   else if (m.type === "askLost" && typeof m.text === "string") warnToast(m.text);
   else if (m.type === "cancelResult" && typeof m.id === "string") {
-    const key = m.id + " " + (typeof m.md === "string" ? m.md : "");
+    const key = m.id + " " + (typeof m.md === "string" ? m.md : "");   // the same separator the rescind stores under (a NUL byte sat here, unreadable in any text view, so no refusal ever found its stash; the T373 fold lab caught it)
     const stash = pendingCancelRestores.get(key);
     pendingCancelRestores.delete(key);
     if (!m.ok) {
@@ -17471,6 +17481,13 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
         if (ta && ta.value === stash.after) {
           ta.value = stash.before;
           ta.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        // the chips the rescind armed go back to what stood before, typed or not: a goal, quote chips or attachments the
+        // user never asked for must not ride their next message (the T373 fold's medium 2); persisted with the draft
+        if (stash.armed) {
+          if (stash.cites.length) composerCitations.set(m.id, stash.cites); else composerCitations.delete(m.id);
+          if (stash.files.length) composerFiles.set(m.id, stash.files); else composerFiles.delete(m.id);
+          persistDrafts(); renderComposerChips(m.id); renderComposerFiles(m.id);
         }
       }
       // …and put the BUBBLE back (the user 2026-07-24). The ✕ deletes it optimistically, but a miss means the
@@ -18140,7 +18157,7 @@ function setupComposer() {
           return;
         }
         provisionalQueue.push(text);
-        registerOptimistic(sid, text, attached.filter((p) => previewKind(p) === "img"));
+        registerOptimistic(sid, text, attached.filter((p) => previewKind(p) === "img"), undefined, attached);
         sendOnShip.delete(sid);                       // a send happened — any held one is superseded
         histWalk.delete(sid);                         // …and the history walk starts fresh
         if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }
@@ -18168,7 +18185,7 @@ function setupComposer() {
       // uuid — nothing sent, no error, the card flashing to Working and back. The kernel keeps deriving
       // its sid from itemId, so this is inert locally; every other card op carries the sid the same way.
       const cites = composerCitations.get(activeId);
-      flushStaged(sid, { text, cites, imgPaths: attached.filter((p) => previewKind(p) === "img") });
+      flushStaged(sid, { text, cites, imgPaths: attached.filter((p) => previewKind(p) === "img"), paths: attached });
       // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
       if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
       sendOnShip.delete(sid);                       // a send happened — any held one is superseded
@@ -19478,7 +19495,7 @@ setupSettings();
     // (in `others`, zero width) already opened the trail's row, and marking the tab too put two openers on that row —
     // which the simulation now tolerates (dragslot.ts: a zero-width box fills nothing), but one opener per row is the
     // strip's own shape (the user 2026-09-11, whose drops on the untagged row all landed at its head in the themed strip)
-    const boxes = others.map((t) => ({ id: t.dataset.id || " head:" + (t.dataset.group || ""),
+    const boxes = others.map((t) => ({ id: t.dataset.id || "\0head:" + (t.dataset.group || ""),
                                        w: isBreak(t) ? 0 : (t.dataset.id ? dragGeom!.widths.get(t.dataset.id) : undefined) ?? t.getBoundingClientRect().width,
                                        br: isBreak(t) || (t.classList.contains("tab-group-head") && isBreak(before(t))) }));
     const br = tabs.getBoundingClientRect();

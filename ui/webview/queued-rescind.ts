@@ -13,7 +13,10 @@ const LEAD_CODE = /^Replying to this highlighted code \((.+)\):$/;
 const MAX_SECTIONS = 64;   // a body carries at most a strip's worth of citations; the parse is bounded by it
 
 /** The inverse of quoteReplyBody: leading quote sections back into citations, the rest is the text. A body that
- *  starts with no quote section is text alone. */
+ *  starts with no quote section is text alone. Accepted and documented (the fold's low): a message the user typed
+ *  whose FIRST line is the send's own lead sentence followed by quoted lines reads as a citation here and comes back
+ *  as a chip; re-sent, it composes to the same body but for one blank line. The lead is a sentence of romp's own
+ *  making that a person has no reason to type, so the inverse trusts it rather than marking the send. */
 export function splitQuoteReplyBody(body: string): { cites: RescindCite[]; text: string } {
   const cites: RescindCite[] = [];
   let rest = body;
@@ -35,28 +38,17 @@ export function splitQuoteReplyBody(body: string): { cites: RescindCite[]; text:
   return { cites, text: rest };
 }
 
-/** Whether a token of the trailing line reads as a path: a slash inside it, or a dotted extension at its end. */
-function pathLike(tok: string): boolean {
-  return tok.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(tok);
-}
-
-/** The trailing paths line off the text when the send wrote one: `known` (the page's own pending entry's attachment
- *  paths) names them exactly; without it the last line is taken only when EVERY token of it reads as a path (quoted
- *  when it contains spaces), so a last line of prose stays prose; a message that is one bare name alone is words. */
+/** The trailing paths line off the text when the send wrote one, by the RECORD alone: `known` is the attachment list
+ *  the page's own pending entry kept or the kernel shipped on the queued copy (every attachment, images and documents
+ *  alike). No record, no guess (the fold's low: a line of the user's own URLs or paths read as attachments): the line
+ *  stays text. */
 export function splitTrailingPaths(text: string, known?: readonly string[] | null): { text: string; files: string[] } {
+  if (!known || !known.length) return { text, files: [] };
   const lines = text.split("\n");
   const last = lines[lines.length - 1] || "";
-  if (known && known.length) {
-    const want = known.map((p) => (/\s/.test(p) ? '"' + p + '"' : p)).join(" ");
-    if (last === want) return { text: lines.slice(0, -1).join("\n"), files: [...known] };
-    return { text, files: [] };
-  }
-  const toks = last.match(/"[^"]+"|\S+/g) || [];
-  if (!toks.length) return { text, files: [] };
-  const paths = toks.map((tk) => (tk.startsWith('"') && tk.endsWith('"') ? tk.slice(1, -1) : tk));
-  if (!paths.every(pathLike)) return { text, files: [] };
-  if (lines.length < 2 && !paths.every((p) => p.includes("/"))) return { text, files: [] };
-  return { text: lines.slice(0, -1).join("\n"), files: paths };
+  const want = known.map((p) => (/\s/.test(p) ? '"' + p + '"' : p)).join(" ");
+  if (last === want) return { text: lines.slice(0, -1).join("\n"), files: [...known] };
+  return { text, files: [] };
 }
 
 /** The composer state a rescinded message comes back as: text, quote citations, attachment paths. */
