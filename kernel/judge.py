@@ -11122,6 +11122,10 @@ def _latch_ask_anchors(fsid, session, store):
     return n
 
 
+em.register_whole_read_passthrough(parsed_session, parse_cached, _parse_store)   # the judges' parse family: a whole read through
+#                                                                                   them names the walker beyond (T384)
+
+
 def _plan_session(fsid, path, now):
     """Advance ONE session's goal tree: place its un-placed planner UNITS oldest-first (each sees the prior
     tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both

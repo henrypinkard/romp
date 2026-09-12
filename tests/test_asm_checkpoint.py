@@ -753,23 +753,85 @@ class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
         self.assertEqual(len(rows), sum(1 for t in tree["turns"] for a in t["atoms"] if a.get("type") == "user"))
         self.assertGreaterEqual(em.asm_checkpoint_stats()["hydratedAtoms"], len(pre_users), "below the floor they are read, as before")
 
-    def test_a_marker_without_tool_use_scalars_answers_from_the_body_not_silently_empty(self):
-        """Review, low 4: a lazy assistant marker without `tu` made the tool-uses reader resolve nothing, silently; the body
-        answers instead (a counted hydration), never an empty map for a call that exists."""
-        path, tree = self._restored("notu")
+    def test_a_marker_without_tool_use_scalars_is_an_answer_with_no_tool_call_and_hydrates_nothing(self):
+        """Round two, medium: the writer records `tu` only when an atom has tool calls, so a marker without it is the common
+        prose-only answer (the version gate and the source pin make any other marker shape unreachable). The reader takes it as
+        an empty set: no body read (a fallback read here hydrated every prose-only answer the walk met)."""
+        for name in COMPACTING:                                        # a scenario with a prose-only assistant answer before the cut
+            records, sent = G.SINGLE_FILE[name]
+            path = self.write("notu-" + name, records(), sent=sent)
+            self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+            self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
+            prose = [a for t in tree["turns"] for a in t["atoms"] if a.get("type") == "assistant" and a.get("lazy") is not None and "tu" not in a["lazy"]]
+            if prose:
+                break
+        self.assertTrue(prose, "prose-only pre-cut answers in play (markers without tu)")
         whole_ids = {b.get("id") for t in self.cold(path)["turns"] for a in t["atoms"] if a.get("type") == "assistant"
                      for b in ((a.get("message") or {}).get("content") or []) if isinstance(b, dict) and b.get("type") == "tool_use"}
         self.fresh(); modes = []; tree = self.parse(path, modes); self.assertEqual(modes, ["restore"])
-        popped = 0
-        for t in tree["turns"]:
-            for a in t["atoms"]:
-                if a.get("type") == "assistant" and a.get("lazy") is not None and "tu" in a["lazy"]:
-                    a["lazy"].pop("tu"); popped += 1
-        self.assertTrue(popped, "markers without the scalar in play")
         em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
-        found = self.km._seg_of_tool_uses(tree, {"placements": {}, "nodes": {}, "seq": 0}, list(whole_ids))
-        self.assertEqual(set(found), whole_ids, "resolved from the bodies")
-        self.assertGreater(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "read, and counted")
+        found = self.km._seg_of_tool_uses(tree, {"placements": {}, "nodes": {}, "seq": 0}, list(whole_ids) + ["toolu_not_anywhere"])
+        self.assertEqual(set(found), whole_ids, "the calls resolved from the scalars; the missing id resolves to nothing")
+        self.assertEqual(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "no prose-only answer read: %s" % em.asm_checkpoint_stats()["hydratedBy"])
+
+    def test_the_comments_frame_itself_reads_no_user_text_for_an_echo_above_the_cut(self):
+        """Round two, low 1: the pin on the call site. The frame is run over the thread's restored parse with a live echo sent
+        after every recorded atom; hydratedBy carries no user-texts row (the frame's inline walk hydrated every pre-cut user
+        atom before)."""
+        km = self.km
+        path, tree = self._restored("frame")
+        newest = max(float(a.get("t") or 0) for t in tree["turns"] for a in t["atoms"] if a.get("t"))
+        echo = {"_echo_text": "a typed-ahead line", "t": newest + 5, "uuid": "echo-1"}
+        class FakeBackend:
+            def session_state(self, tsid): return "working"
+            def live_atoms(self, tsid): return [echo]
+            def pending_queued(self, tsid): return []
+            def launch_error(self, tsid): return None
+        comments = self.td / "comments.json"; comments.write_text("{}")
+        saved = {n: getattr(km, n) for n in ("_comments_path", "_load_comments_cached", "_sdk", "_thread_messages", "_thread_events",
+                                              "_thread_reg", "_thread_turn_read", "_thread_owes_first_reply", "_agent_landed_after")}
+        try:
+            km._comments_path = lambda sid: comments
+            km._load_comments_cached = lambda sid: {"threads": [{"sid": "thread-1", "status": "open", "createdT": 1}]}
+            km._sdk = lambda: FakeBackend()
+            km._thread_messages = lambda *a, **k: []
+            km._thread_events = lambda *a, **k: []
+            km._thread_reg = lambda tsid: {}
+            km._thread_turn_read = lambda *a, **k: (False, False, tree["turns"])
+            km._thread_owes_first_reply = lambda *a, **k: False
+            km._agent_landed_after = lambda *a, **k: False
+            em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+            frame = km._comments_frame(SID)
+        finally:
+            for n, v in saved.items():
+                setattr(km, n, v)
+        self.assertIsNotNone(frame, "the frame was built")
+        by = em.asm_checkpoint_stats()["hydratedBy"]
+        self.assertFalse(any(k.startswith("_atom_user_texts") for k in by), "the frame read no user text: %s" % by)
+
+    def test_the_user_texts_reader_is_attributed_with_its_caller(self):
+        """Round two, low 2: one row, _atom_user_texts, stood for both the frame's walk and the echo set's loop; the rows name
+        the caller (T377's mechanism)."""
+        km = self.km
+        path, tree = self._restored("rows")
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
+        km._echo_landing_atoms(tree["turns"], [{"_echo_text": "an early line", "t": 0}])
+        km._merge_sets_memo.clear(); km._merge_tx_sets(tree, SID + "-rows", 0.0)
+        by = em.asm_checkpoint_stats()["hydratedBy"]
+        self.assertIn("_atom_user_texts<-_echo_landing_atoms", by, "%s" % by)
+        self.assertIn("_atom_user_texts<-_merge_tx_sets", by, "%s" % by)
+        self.assertNotIn("_atom_user_texts", by, "no bare row: %s" % by)
+
+    def test_a_dropped_echo_below_the_cut_does_not_sink_the_landing_floor(self):
+        """Round two, low 4: the floor was the min over every live echo with a text, but the frame holds only echoes that are not
+        commands, not dropped and not landed, and a dropped one is never popped by the backend's prune; one dropped send older
+        than the compaction sank the floor and every user atom above it was read on each frame."""
+        path, tree = self._restored("dropped")
+        newest = max(float(a.get("t") or 0) for t in tree["turns"] for a in t["atoms"] if a.get("t"))
+        live = [{"_echo_text": "an old dropped line", "t": 0, "dropped": True}, {"_echo_text": "a new line", "t": newest + 5}]
+        rows = self.km._echo_landing_atoms(tree["turns"], live)
+        self.assertEqual(rows, [], "the dropped echo does not set the floor: %r" % rows)
+        self.assertEqual(em.asm_checkpoint_stats()["hydratedAtoms"], 0, "%s" % em.asm_checkpoint_stats()["hydratedBy"])
 
     def test_a_whole_read_through_the_parse_family_names_the_walker(self):
         """Review, low 1: every parse goes through parsed_session, so its whole read was one row for every walker; the counter
@@ -786,6 +848,17 @@ class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
         keys = list(em.record_cache_stats()["wholeReads"])
         self.assertTrue(any(k.endswith("<-some_boot_walker") for k in keys), "the walker, not the parse family: %s" % keys)
         self.assertFalse(any(k.split("<-")[-1] in ("parsed_session", "parse_session", "parse_cached", "_parse_store") for k in keys), "%s" % keys)
+        # round two, low 3: the family is matched by code object, never by name: a local helper named like one is a walker
+        self.fresh(); jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReads"] = {}
+        def _parse():
+            return jd.parsed_session(SID, [path], NOW)
+        def outer_walker():
+            return _parse()
+        outer_walker()
+        keys = list(em.record_cache_stats()["wholeReads"])
+        self.assertTrue(any(k.endswith("<-_parse") for k in keys), "a local helper named _parse is a walker, not the family: %s" % keys)
 
 class KernelOverRestored(Harness):
     """The kernel's and the judges' body readers over a restored tree: every consumer the audit named hydrates what it

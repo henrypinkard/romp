@@ -15127,7 +15127,9 @@ def _echo_landing_atoms(turns, live):
     (a text lands at or after its send, so no older atom can hold an echo's landing). The stamp is a scalar every lazy atom
     carries, so the atoms below the floor are never hydrated (T384: the comments frame read every user atom of a thread's
     whole parse for this, a body read of every pre-cut user message on every frame with a live echo)."""
-    since = min((float(e.get("t") or 0) for e in live if e.get("_echo_text")), default=None)
+    since = min((float(e.get("t") or 0) for e in live                       # the floor over the echoes the frame can hold:
+                 if sb.echo_text_key(e.get("_echo_text")) and not e.get("command")   #  a dropped or landed one is never popped by the
+                 and not e.get("dropped") and not e.get("_landed")), default=None)   #  backend's prune and must not sink it (round two, low 4)
     if since is None:
         return []
     return [(float(a.get("t") or 0), set(_atom_user_texts(a)))
@@ -25676,15 +25678,13 @@ def _seg_of_tool_uses(ps, store, tool_ids):
             for a in seg["atoms"]:
                 if a.get("type") != "assistant":
                     continue
-                lz = a.get("lazy")
-                if lz is not None and "tu" not in lz:      # a marker older than the scalar: the body answers (a counted read), never
-                    em.hydrate([a])                        #  an empty answer for a call that exists (review, low 4)
-                    uses = [(b.get("id"), b.get("name")) for b in ((a.get("message") or {}).get("content") or [])
-                            if isinstance(b, dict) and b.get("type") == "tool_use"]
-                else:
-                    uses = em.atom_tool_uses(a)            # the ids from the body, or a lazy atom's marker scalars: no hydration
-                for tid, _name in uses:                    #  (T384: every turn was hydrated whole, newest first, 155 MB a boot)
-                    if tid in want:
+                for tid, _name in em.atom_tool_uses(a):   # the ids from the body, or a lazy atom's marker scalars: no hydration
+                    if tid in want:                        #  (T384: every turn was hydrated whole, newest first, 155 MB a boot). A
+                        #                                    marker without `tu` is an assistant answer with no tool call (the writer
+                        #                                    records the scalar only when there are calls; the document's version gate
+                        #                                    and the source pin beside it make any other marker shape unreachable), so
+                        #                                    it means an empty set, never a body read (round two: a fallback read here
+                        #                                    hydrated every prose-only answer the walk met)
                         found[tid] = seg["id"]
                         want.discard(tid)
     return found
@@ -29859,6 +29859,9 @@ def _rewind_holds_boot():
                 _on_rewind_resolved(sid, "spent")
         except Exception:
             sys.stderr.write("rewind-hold boot: %s\n" % traceback.format_exc())
+
+
+em.register_whole_read_passthrough(_parse)   # the kernel's parse entry: a whole read through it names the walker beyond (T384)
 
 
 def _display_sdk_human(sid):

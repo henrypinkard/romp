@@ -1623,8 +1623,16 @@ def _read_jsonl_incremental(path, on_fail=None):
 _TAIL_OK = threading.local()      # .flag: the calling fold accepts a tail entry (set by fold_records around its read)
 _READER_TRACE = bool(os.environ.get("ROMP_READER_TRACE"))   # one stderr line per read that pulled bytes (a diagnosis aid)
 _WHOLE_READ_KINDS = ("zero", "rewrite", "guard", "shrunk", "upgrade")   # the reader's kinds that pull a file whole (T384's counter)
-_WHOLE_READ_PASSTHROUGH = ("parse_session", "parsed_session", "parse_cached", "_parse_store", "_parse")   # the parse family every
-#                                   walker shares: the whole-read row names the first caller beyond it, the real walker
+_WHOLE_READ_PASSTHROUGH = set()   # the CODE objects of the parse family every walker shares (this module's parse_session, the judges'
+#                                   parsed_session, parse_cached and _parse_store, the kernel's _parse, each registered where it is
+#                                   defined): the whole-read row names the first caller beyond them, the real walker. Matched by code
+#                                   object, never by name (round two, low 3: a local helper named like one of them was skipped)
+
+
+def register_whole_read_passthrough(*fns):
+    """Register functions the whole-read attribution walks past (the parse family a walker reaches the reader through)."""
+    for fn in fns:
+        _WHOLE_READ_PASSTHROUGH.add(fn.__code__)
 _LAST_ENTRY = threading.local()   # .ent: the entry the last _read_jsonl_incremental on this thread served
 
 
@@ -1752,7 +1760,7 @@ def _read_jsonl_entry_unlocked(path, on_fail=None, tail_ok=False, tail_from=None
             if kind in _WHOLE_READ_KINDS:                 # a whole read: counted by kind and caller on /perf (T384), always on; the
                 try:                                      #  frame walk runs only here, on the rare whole read, never on a tail or an
                     fr = sys._getframe(1)                 #  append
-                    while fr is not None and (fr.f_code.co_filename == __file__ or fr.f_code.co_name in _WHOLE_READ_PASSTHROUGH):
+                    while fr is not None and (fr.f_code.co_filename == __file__ or fr.f_code in _WHOLE_READ_PASSTHROUGH):
                         fr = fr.f_back                    #  past this module and past the parse family, to the walker (review, low 1)
                     who = fr.f_code.co_name if fr is not None else "?"
                 except Exception:
@@ -5719,7 +5727,8 @@ def _hydrate_one(a, rec):
     a.pop("lazy", None)
 
 
-_HYDRATE_TEXT_READERS = ("_unit_text", "_prompt_text", "_atom_text")   # the judges' shared text readers: attributed with their caller
+_HYDRATE_TEXT_READERS = ("_unit_text", "_prompt_text", "_atom_text", "_atom_user_texts")   # the shared text readers (the judges'
+#                                   three and the kernel's user-texts reader): attributed with their caller
 
 
 def hydrate(atoms, rompuuid=None, by=None):
@@ -5969,6 +5978,9 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
         out["cutTurn"] = cut_turn                   # a restored tree only (T323 stage 4b): where its lazy atoms ended
     return out
 
+
+
+register_whole_read_passthrough(parse_session)   # the parse's own entry (T384)
 
 def task_store_dir(fsid):
     """Claude Code's task store for one transcript stem: <CLAUDE_CONFIG_DIR or ~/.claude>/tasks/<fsid>,
