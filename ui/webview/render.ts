@@ -12691,7 +12691,17 @@ function landActive(content: HTMLElement | null, v: View): void {
         // deep-link land, whose window-around-unit and fetch-older paths bring the anchor turn back to its exact
         // offset (review find, 2026-09-08)
         writeScroll(content, rs.top, "reload-restore");
-        if (rs.anchor) { pendingAnchor = rs.anchor.uuid; pendingAnchorKeepY = rs.anchor.y; }
+        if (rs.anchor) {
+          pendingAnchor = rs.anchor.uuid; pendingAnchorKeepY = rs.anchor.y;
+          // …and run that land NOW (T374, the verifier of 2026-09-12 executed the gap on both heads): this pass made its own
+          // landing attempt above, before the restore armed anything, and the next pass comes only with a frame that changes
+          // the run, which an idle session never sends, so a saved row outside the fresh window (mid-run: its raw top not in
+          // the top band, no older ask either) parked the reader at a raw pixel offset for good. Resident → lands here;
+          // outside the run → asks its window here (chatWindow lands it on arrival, the arm stays for that reply).
+          landTrail = [];
+          const landedNow = scrollToAnchor(rs.anchor.uuid);
+          if (landedNow || !anchorPendingOlder) { pendingAnchor = null; pendingAnchorKeepY = null; }
+        }
       }
     }
     else if (!v.shown || v.stick) writeScroll(content, content.scrollHeight, "land-bottom", true);

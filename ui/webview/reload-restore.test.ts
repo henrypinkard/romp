@@ -64,6 +64,9 @@ test("landActive's landing consumes the record for the active tab first, then fa
   const body = m![1];
   assert.match(body, /const rs = takeReloadScroll\(pendingReloadScroll, activeId\);\s*\n\s*if \(rs\) \{\s*\n\s*pendingReloadScroll = null;\s*\n\s*v\.stick = rs\.stick;\s*\n\s*if \(rs\.stick\) writeScroll\(content, content\.scrollHeight, "reload-restore", true\);\s*\n\s*else if \(!\(rs\.anchor && restoreScrollAnchor\(content, v, rs\.anchor\)\)\) \{/);
   // the anchor turn outside the fresh window: the raw top is the first guess and the deep-link land finishes it
-  assert.match(body, /writeScroll\(content, rs\.top, "reload-restore"\);\s*\n\s*if \(rs\.anchor\) \{ pendingAnchor = rs\.anchor\.uuid; pendingAnchorKeepY = rs\.anchor\.y; \}/);
+  assert.match(body, /writeScroll\(content, rs\.top, "reload-restore"\);\s*\n\s*if \(rs\.anchor\) \{\s*\n\s*pendingAnchor = rs\.anchor\.uuid; pendingAnchorKeepY = rs\.anchor\.y;/, "the raw top first, then the deep-link land is armed");
+  // …and RUN in the same pass (T374): the pass already made its own attempt before the restore armed anything, and an idle
+  // session sends no frame for another; a row outside the fresh window asks its window here and stays armed for the reply
+  assert.match(body, /landTrail = \[\];\s*\n\s*const landedNow = scrollToAnchor\(rs\.anchor\.uuid\);\s*\n\s*if \(landedNow \|\| !anchorPendingOlder\) \{ pendingAnchor = null; pendingAnchorKeepY = null; \}/, "landed or asked at once; the arm is kept only for a window in flight");
   assert.match(body, /else if \(!v\.shown \|\| v\.stick\) writeScroll\(content, content\.scrollHeight, "land-bottom", true\);\s*\n\s*else writeScroll\(content, v\.scrollTop, "land-saved"\);/);
 });
