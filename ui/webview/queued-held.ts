@@ -36,10 +36,15 @@ const isEcho = (u?: string): boolean => !!u && u.startsWith("echo:");
 const isOptimistic = (u?: string): boolean => !!u && u.startsWith("optimistic:");
 
 /** Whether a landed user event (a real record, never the kernel's echo nor our own bubble) carries this copy — by
- *  identity when the copy has one, by text otherwise (its md, or one of its blocks). */
+ *  identity where the RECORD carries one (the copy's id is the atom's `qid`, or one of its `qids`), by text otherwise (its
+ *  md, or one of its blocks). Identity decides only where the frame shows it, the pending-send rule's reading
+ *  (send-pending.ts landedCopies, T252c): a record the kernel could not pair (no feed ledger on this backend, a copy that
+ *  left the queue by another door) lands by its words; before, an identified held copy met such a record and never
+ *  released, so the landed row and the held card showed the same message twice until a later landing (T389). */
 export function landsCopy(e: HeldEvent, c: { md: string; qid?: string }): boolean {
   if (e.kind !== "user" || isEcho(e.uuid) || isOptimistic(e.uuid)) return false;
-  if (c.qid) return e.qid === c.qid || (Array.isArray(e.qids) && e.qids.includes(c.qid));
+  const paired = !!e.qid || (Array.isArray(e.qids) && e.qids.length > 0 && e.qids.every((q) => !!q));
+  if (c.qid && paired) return e.qid === c.qid || (Array.isArray(e.qids) && e.qids.includes(c.qid));
   if (typeof e.md === "string" && sameText(e.md, c.md)) return true;
   return Array.isArray(e.blocks) && e.blocks.some((b) => typeof b === "string" && sameText(b, c.md));
 }
