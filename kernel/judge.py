@@ -11144,6 +11144,8 @@ def _latch_ask_anchors(fsid, session, store):
 
 em.register_whole_read_passthrough(parsed_session, parse_cached, _parse_store)   # the judges' parse family: a whole read through
 #                                                                                   them names the walker beyond (T384)
+em.register_hydrate_text_reader(_unit_text, _prompt_text, _atom_text)   # the judges' shared text readers: a hydration through them is
+#                                                                          attributed with the walker that called them (T377, T384)
 
 
 def _plan_session(fsid, path, now):

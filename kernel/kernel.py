@@ -15156,15 +15156,28 @@ def _agent_landed_after(events, msgs, seen):
     return any(m["who"] == "agent" and m["t"] > seen for m in msgs)
 
 
+def _echo_holdable(e):
+    """Whether a live echo is one the comments frame can hold: it carries a text key and is not a command, not dropped and not
+    landed. The ONE predicate for the landing floor and the held filter (T384 round three; the held filter adds its two dependent
+    clauses, a landing test and the overtaken test), so a clause added to one side cannot desynchronize the other again."""
+    return bool(sb.echo_text_key(e.get("_echo_text"))) and not e.get("command") and not e.get("dropped") and not e.get("_landed")
+
+
+def _echo_floor(live):
+    """The oldest send among the live echoes the frame can hold (`_echo_holdable`), or None with none: the floor below which the
+    comments frame reads no user text for an echo's landing (`_echo_landing_atoms`). The frame's alone: _merge_live_atoms floors
+    its text sets over EVERY echo with a text, because prune_live's by-text retirement and the chat's dedupe read the same sets
+    and must cover a dropped or landed echo too (T384 follow-up, round one)."""
+    return min((float(e.get("t") or 0) for e in live if _echo_holdable(e)), default=None)
+
+
 def _echo_landing_atoms(turns, live):
     """[(stamp, its texts)] for the user atoms an echo could have landed as: those at or after the oldest live echo's send
     (a text lands at or after its send, so no older atom can hold an echo's landing). The stamp is a scalar every lazy atom
     carries, so the atoms below the floor are never hydrated (T384: the comments frame read every user atom of a thread's
     whole parse for this, a body read of every pre-cut user message on every frame with a live echo)."""
-    since = min((float(e.get("t") or 0) for e in live                       # the floor over the echoes the frame can hold:
-                 if sb.echo_text_key(e.get("_echo_text")) and not e.get("command")   #  a dropped or landed one is never popped by the
-                 and not e.get("dropped") and not e.get("_landed")), default=None)   #  backend's prune and must not sink it (round two, low 4)
-    if since is None:
+    since = _echo_floor(live)                             # over the echoes the frame can hold: a dropped or landed one is never popped
+    if since is None:                                     #  by the backend's prune and must not sink it (round two, low 4)
         return []
     return [(float(a.get("t") or 0), set(_atom_user_texts(a)))
             for tr in turns for a in (tr.get("atoms") or [])
@@ -15268,9 +15281,7 @@ def _comments_frame(sid, live_map=None):
                 floor = _human_turn_floor({"turns": turns}) if turns else 0
                 # `_landed` on the atom: the backend's boot/spawn scan read the landing off the transcript
                 # itself (sdk_backend._mark_dropped_echoes) — delivered, so nothing is held for it
-                held = [a for a in live if sb.echo_text_key(a.get("_echo_text")) and not a.get("command")
-                        and not a.get("dropped") and not a.get("_landed") and not _landed(a)
-                        and not _echo_overtaken(a, floor)]
+                held = [a for a in live if _echo_holdable(a) and not _landed(a) and not _echo_overtaken(a, floor)]
                 queued = max(queued, len(held))
         # the newest record the projection shows (or the transcript holds): the client's "did the transcript
         # move?" datum, independent of the 80-event / 40-message caps on the shipped projections
@@ -32363,6 +32374,9 @@ def _atom_user_texts(a):
     return tuple(out)
 
 
+
+em.register_hydrate_text_reader(_atom_user_texts)   # the kernel's shared user-texts reader: attributed with its caller (T384)
+
 def _echo_landed_in(text, tx_texts):
     """Is an echo's text among `tx_texts`, the keys _atom_user_texts built? Under either of its keys
     (sb.echo_keys: the plain key, and the command key when the echo is a slash send, whose record parses
@@ -32519,6 +32533,14 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     # The transcript-side sets come from the per-sid memo (_merge_tx_sets): a function of the parsed
     # session alone, which the parse cache hands back as the same object until the transcript changes,
     # and which every build of a cycle (chat, feed, timeline) used to derive again from every atom.
+    # The floor is the oldest send among EVERY live echo carrying a text, dropped, landed and command echoes included, and
+    # never `_echo_floor` (the comments frame's, over the holdable echoes alone): the text sets it floors are three consumers'
+    # inputs, the landing set below (`hide`), prune_live's by-text retirement (`tx_text_t`) and the chat's echo dedupe, and the
+    # last two must see the text of every live echo. An already-dropped echo's only automatic exit is the by-text prune
+    # (_mark_dropped_echoes skips it at boot), so a floor that skipped its send left a dropped send whose text landed in a
+    # pre-cut turn painted as a permanent never-delivered row beside the message that did land (T384 follow-up, round one).
+    # A dropped send older than the compaction therefore reads every pre-cut user text once per parse object; the pre-cut
+    # markers carry no exact text key (their hash is over the unstripped joined text alone), so no scalar road answers this.
     echo_floor = min((float(a.get("t") or 0) for a in live if a.get("_echo_text")), default=None)   # the oldest echo's send:
     tx_uuids, tx_text_uuids, tx_texts, tx_text_t, human_floor = _merge_tx_sets(session, sid, echo_floor)   # no text lands before it
     # A TEXTLESS disk twin must not land a texty live atom (the user 2026-07-28): on some model+tool
