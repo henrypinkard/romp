@@ -9983,8 +9983,12 @@ def _converge_checkpoints(now):
                 unhealed = em.drop_cold_cursors(p)
             if quiescent:                                  # the ASSEMBLY document from the same resident read, BEFORE the held drop
                 try:                                       #  pops the record entry (T376 round one, medium: the pop came first and
-                    _converge_assembly_leaf(p, leaf_sid.get(p), t0)   #  the assembly writer found no record entry for its offsets); a
-                except Exception:                          #  raise here must not discard the held drop or abort the cycle (round two)
+                    ent = em.asm_whole_entry_for(p)        #  the assembly writer found no record entry for its offsets); the session
+                    if ent is not None:                    #  named by the parse in the cache (T382), else by the window's row; a
+                        _converge_assembly_leaf(p, ent[0], t0, human=ent[1])
+                    else:                                  #  raise here must not discard the held drop or abort the cycle (round two)
+                        _converge_assembly_leaf(p, leaf_sid.get(p), t0)
+                except Exception:
                     sys.stderr.write("assembly converge: %s\n" % traceback.format_exc())
         if unhealed:                                       # a fold the heal cannot rerun here (not one of the leaf's five): its
             em.converge_stat("unhealed", len(unhealed))    #  cursor and cold mark are dropped, the write leaves it out, its next
@@ -10019,8 +10023,10 @@ _ASM_STRUCTURAL = set(em._ASM_SKIP_STRUCTURAL) | {"noBoundary", "written", "rest
 def _converge_assembly(now, t0):
     """The converge pass's assembly step (T376): an idle session never settles, so its leaf never had an assembly document
     and the parse read it whole at every boot (31 of 60 leaves on the devbox, about 2.5 GB, the boot's remaining cost).
-    For every session leaf that is quiescent, has no assembly document on disk, and whose WHOLE assembly entry the boot's own
-    parse built is in memory beside the reader's whole record entry, the document is written from that entry through the
+    For every leaf the boot's own parse built a WHOLE assembly entry for (the assembly cache's unrestored entries, each with
+    its sid and flag: the enumeration is the boot's reads, not the discover window's rows, which leave every idle leaf older
+    than 48 hours out; T382) that is quiescent, has no assembly document on disk, and whose reader's whole record entry is
+    still resident beside it, the document is written from that entry through the
     settle's writer (`asm_checkpoint_write`, with the parse store's tree as the settle hands it): no read of records, a stat
     per file and the cut's guard. Charged to the cycle's byte budget (an estimate from the leaf's size, trued up), deferred
     over it; bounded by the pass's wall; off with the drop write (a zero budget). A leaf is looked at once per file state:
@@ -10034,14 +10040,13 @@ def _converge_assembly(now, t0):
     if not ASM_CONVERGE or not em.checkpoint_drop_writes_on():
         return 0
     n = 0
-    for s in _sessions(now):
-        leaf, sid = s.get("path"), s.get("sid")
-        if not leaf or not sid:
-            continue
+    for leaf, sid, human in em.asm_whole_entries():        # the parses the boot actually did, each with its sid and flag (T382: the
+        if not leaf or not sid:                            #  discover window's rows, 48 hours, left every older idle leaf out: 19 of
+            continue                                       #  the 25 boundary leaves without a document on the devbox)
         if time.monotonic() - t0 > CKPT_CONVERGE_MS / 1000.0:
             break                                          # the cycle's wall: the rest wait for the next one
         try:
-            r = _converge_assembly_leaf(str(leaf), sid, t0)
+            r = _converge_assembly_leaf(str(leaf), sid, t0, human=human)
         except Exception:                                  # one leaf's raise (a stat, a backend hook) leaves the rest their turn
             sys.stderr.write("assembly converge: %s\n" % traceback.format_exc()); continue
         if r is None:
@@ -10055,9 +10060,10 @@ def _release_oldest(table, cap=4096):
         table.pop(next(iter(table)))                       #  the table cleared (round one, low 6)
 
 
-def _converge_assembly_leaf(key, sid, t0):
+def _converge_assembly_leaf(key, sid, t0, human=None):
     """One leaf's assembly write for the pass (see _converge_assembly): True written, False not (done, refused, nothing to
-    write from), None when the budget refused it (the caller defers the rest)."""
+    write from), None when the budget refused it (the caller defers the rest). `human` is the flag of the parse in the cache
+    when the caller knows it (T382); else the display parse's answer."""
     if not ASM_CONVERGE or not sid or not em.checkpoint_drop_writes_on():
         return False
     for table in (_ASM_CONVERGE_DONE, _ASM_CONVERGE_BLIP, _ASM_CONVERGE_NOENTRY):
@@ -10073,7 +10079,7 @@ def _converge_assembly_leaf(key, sid, t0):
         return False
     if not em.file_quiescent(key):
         return False                                       # a live leaf: its settle writes the document
-    human = _display_sdk_human(sid)
+    human = _display_sdk_human(sid) if human is None else bool(human)
     if not em.asm_entry_whole(key, sid, human) or not em.entry_whole_resident(key):
         if _ASM_CONVERGE_NOENTRY.get(key) != st:           # no whole assembly entry, or the reader's record entry gone (the writer
             _ASM_CONVERGE_NOENTRY[key] = st; em.asm_converge_skip("noEntry")   #  needs both): nothing to write from, never a read

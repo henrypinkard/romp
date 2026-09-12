@@ -534,6 +534,24 @@ class ConvergeAssembly(Harness):
         self.assertEqual(em.checkpoint_stats()["restoredFolds"].get("bgJudge", 0), before + 1, "the fold document restores")
         self.assertLess(em.read_bytes_report().get(path, 0), size, "the next boot reads the tail")
 
+    def test_a_leaf_older_than_the_discover_window_is_written_from_the_boots_parse(self):
+        """T382: the step walked _sessions(now), the discover window's rows (48 hours), so an idle leaf older than that was never a
+        candidate although the boot had parsed it (19 of the 25 boundary leaves without a document on the devbox, 20 to 714
+        hours old). The candidates come from the assembly cache's whole unrestored entries, the parses the boot actually did,
+        each with its sid and flag; every other guard stands."""
+        path = self.idle_leaf("aged")
+        self.km._sessions = lambda now, **kw: []                       # no row in the window: the session is too old for discover
+        read0 = em.read_bytes_report().get(path, 0)
+        self.cycle(NOW + 600)
+        self.assertTrue(em._asm_ckpt_file(path).exists(), "written from the parse in the cache, whatever the session's age")
+        av = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual((av["writes"], av["candidates"], av["deferred"]), (1, 1, 0), "%s" % av)
+        self.assertLess(em.read_bytes_report().get(path, 0) - read0, 512, "no read of records")
+        self.cycle(NOW + 601); self.cycle(NOW + 602)
+        self.assertEqual(em.asm_checkpoint_stats()["converge"]["writes"], 1, "once")
+        tree, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"])
+
     def test_a_write_over_the_cycles_budget_is_deferred_to_the_next(self):
         path = self.idle_leaf("budget")
         self.km.CKPT_CONVERGE_BYTES = 1
