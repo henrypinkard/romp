@@ -1553,6 +1553,13 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `shrunk` and `upgrade`, and the first calling function outside the event
   model and the parse family), with `count` and `bytes`; a tail read, an
   append and a restore's tail read are not whole reads and are not counted.
+  The judges' incident scan used to read every dead episode file of a lineage
+  whole at every boot (`_per_file_rewound`, 542 MB on one devbox boot); its
+  verdict set per frozen file is now the fold `rewoundUuids` of that file's
+  fold document, written from the walk's own read at the quiescence drop and
+  restored at the next boot, so such a file is read whole once;
+  `checkpoints.rewoundMemo` counts the memo's answers (`served`), the walks it
+  took (`walked`) and the memos an append or rewrite retired (`stale`).
 - `asmCheckpoint`: the assembly documents since boot: `written`, `restored`,
   `fallbacks` per reason (`version`, `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason

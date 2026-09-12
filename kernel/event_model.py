@@ -1560,6 +1560,7 @@ def checkpoint_stats():
         out["oversizeFolds"] = dict(_CKPT_STATS["oversizeFolds"]); out["coldFolds"] = dict(_CKPT_STATS["coldFolds"])
         out["coldWrites"] = dict(_CKPT_STATS["coldWrites"]); out["converge"] = dict(_CKPT_STATS["converge"])
         out["refolds"] = {k: dict(v) for k, v in _CKPT_STATS["refolds"].items()}
+        out["rewoundMemo"] = dict(_REWOUND_STATS)
     d = _ckpt_dir()
     with _READ_BYTES_LOCK:
         out["documentBytes"] = sum(n for p_, n in _READ_BYTES.items() if d is not None and p_.startswith(str(d) + os.sep))
@@ -4243,6 +4244,47 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
         for u, v in ad.seed["verdicts"].items():
             verdicts.setdefault(u, v)
     return {u for u, v in verdicts.items() if v == "rewind"}
+
+
+_REWOUND_CACHE = {}               # path -> (count, gen, {"uuids": [...]}): file_rewound's verdict set over a FROZEN file, a registered
+#                                   fold (T391) the fold document carries and restores, so a dead episode file is read whole once
+_REWOUND_STATS = {"served": 0, "walked": 0, "stale": 0}   # the memo's answers, the walks it took, the memos an append or rewrite retired
+
+
+def rewound_uuids(path):
+    """`file_rewound(path)` for a file with no rompuuid road (a dead episode's transcript in a lineage, walked by the judges'
+    incident scan), memoized per FROZEN file as the fold `rewoundUuids` of its fold document (T391): the memo rides the
+    existing document, its witness (size, mtime, the cut's guard), its restore, its fold state cap and its counted fallbacks,
+    and the quiescence drop writes it from the walk's own read, so the file is read whole once and not at the next process.
+    fold_records consults it: a hit or a restore at the witness answers with no read; a file that grew or was rewritten steps
+    a `step` that retires the state (None), so the walk runs again and the memo is rewritten; an over-cap set is recorded as
+    such and walked again next time. The leaf road with a rompuuid never comes here."""
+    key = str(path)
+    had = _REWOUND_CACHE.get(key)
+    state = fold_records(_REWOUND_CACHE, key, lambda: None, lambda st, o: None, ckpt="rewoundUuids")
+    if isinstance(state, dict) and isinstance(state.get("uuids"), list):
+        with _CKPT_LOCK:
+            _REWOUND_STATS["served"] += 1
+        return set(state["uuids"])
+    if had is not None and isinstance(had[2], dict):
+        with _CKPT_LOCK:
+            _REWOUND_STATS["stale"] += 1                  # a state the step retired: the file moved under the memo
+    out = file_rewound(path)                              # the walk (a whole read of a frozen file: the record cache holds it)
+    with _JSONL_CACHE_LOCK:
+        ent = _JSONL_CACHE.get(key)
+    with _CKPT_LOCK:
+        _REWOUND_STATS["walked"] += 1
+    if ent is not None:                                   # the memo at the reader's witness, dirty; then the quiescence drop over this
+        _REWOUND_CACHE[key] = (ent[5] + len(ent[4]), ent[6], {"uuids": sorted(out)})   #  frozen file writes the document from the
+        with _CKPT_LOCK:                                  #  walk's own read and lets the records go (T362's drop, its budget and its
+            _FOLD_DIRTY.add(key)                          #  deferral); a file still changing keeps its entry and is written at its settle
+        _drop_quiescent_entry(key, ent, pop=True)
+    return out
+
+
+def rewound_memo_stats():
+    with _CKPT_LOCK:
+        return dict(_REWOUND_STATS)
 
 
 def _membership_of(adapter):
