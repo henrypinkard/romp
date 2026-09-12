@@ -4603,6 +4603,8 @@ def read_sdk_defaults(state_dir: Path) -> dict:
         return {}
 
 
+# the explicit machine default per state root, cached on sdk-defaults.json's (mtime, size): explicit_default_auth (T380)
+_EXPLICIT_DEFAULT_CACHE: dict = {}
 _defaults_lock = threading.Lock()   # serializes the read-modify-writes below: the kernel thread (set_model, the
 #                                     parked-op replay) and the SDK loop thread (_revert_model) both write the file
 
@@ -14121,19 +14123,21 @@ class SdkBackend:
 
     def explicit_default_auth(self) -> str:
         """The machine default the user set explicitly (sdk-defaults.json `auth` with `authExplicit` true), else
-        "". Read per status snapshot, so cached on the file's mtime and size: one stat per call."""
+        "". Read per status snapshot, so cached on the file's mtime and size: one stat per call. The cache is
+        module-level, keyed by the state root, not an attribute on the backend: the perf bench's stand-in backend
+        refuses any attribute it did not anticipate (CI, 2026-09-12)."""
         p = _defaults_path(self.state_dir)
         try:
             st = p.stat()
             key = (st.st_mtime_ns, st.st_size)
         except OSError:
             key = None
-        cache = getattr(self, "_explicit_default_cache", None)
+        cache = _EXPLICIT_DEFAULT_CACHE.get(str(self.state_dir))
         if cache is not None and cache[0] == key:
             return cache[1]
         d = read_sdk_defaults(self.state_dir) if key is not None else {}
         side = d.get("auth") if (d.get("authExplicit") and d.get("auth") in ("login", "key")) else ""
-        self._explicit_default_cache = (key, side)
+        _EXPLICIT_DEFAULT_CACHE[str(self.state_dir)] = (key, side)
         return side
 
     def auth_unavailable_why(self, side: str) -> str:
