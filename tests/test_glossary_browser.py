@@ -33,7 +33,7 @@ SID = "11111111-2222-3333-4444-555555555555"
 FIX = json.loads(Path(HERE, "fixtures", "glossary_grammar.json").read_text())
 REPLY = ("I tesselled the fixes from your review and pushed the tessel head; the quill was security, and the quill again. The keytoken previews whole. "
          "The spar on `tessel` stays as code, and docs/guide.md#tessel is a path, not a term. Two tessels landed. "
-         "The unverified docs/widget/tessel.md and the host example.com/tessel/y stay plain too.")
+         "The unverified docs/widget/tessel.md and the host example.com/tessel/y stay plain too. The write-up is at https://example.com/notes-api/readme for the curious, and [the guide](https://example.com/notes-api/guide) has the rest.")
 USER = "Did the tessel cover the second quill?"
 
 
@@ -64,6 +64,21 @@ const links = () => page.evaluate(() => Array.from(document.querySelectorAll("#c
 const out = { links: await links() };
 out.codeLinks = await page.evaluate(() => document.querySelectorAll("#content code .term-link, #content a .term-link, #content .file-uri-link .term-link").length);
 out.pathLink = await page.evaluate(() => { const a = document.querySelector('#content .file-uri-link[data-path="docs/guide.md"]'); return a ? { text: a.textContent, frag: a.dataset.frag } : null; });
+// three kinds of link in one message, at rest, in both themes: the computed colour and underline of a term, a
+// path and a bare URL must be one dress (T378, the user 2026-09-12: one light blue, one solid underline, never dotted)
+const dressOf = () => page.evaluate(() => {
+  const pick = (sel) => { const e = document.querySelector(sel); if (!e) return null; const cs = getComputedStyle(e);
+    const chain = []; let n = e.parentElement; for (let i = 0; n && i < 6; i++, n = n.parentElement) chain.push(n.className || n.tagName.toLowerCase());
+    return { tag: e.tagName.toLowerCase(), cls: e.className, color: cs.color, line: cs.textDecorationLine, style: cs.textDecorationStyle, chain }; };
+  return { term: pick('#content .term-link[data-term="tessel-head"]'), path: pick('#content .file-uri-link[data-path="docs/guide.md"]'),
+           url: pick('#content a[href*="notes-api/readme"], #content [data-url*="notes-api/readme"], #content .file-uri-link[data-path*="notes-api/readme"]'),
+           mdlink: pick('#content a[href*="notes-api/guide"]') };
+});
+await page.mouse.move(900, 700); await page.waitForTimeout(200);
+out.dressDark = await dressOf();
+await page.evaluate(() => document.body.classList.add("theme-light")); await page.waitForTimeout(200);
+out.dressLight = await dressOf();
+await page.evaluate(() => document.body.classList.remove("theme-light")); await page.waitForTimeout(200);
 // the hover on "tessel head" (the multi-word term): the glossary file's section at the term's heading, through the slice
 // route like any file link with a section (T375); no card of the term's own
 const before = requests; const filesBefore = fileUrls.length;
@@ -185,7 +200,25 @@ class ServedGlossary(unittest.TestCase):
             k.kill(); k.wait()
         shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
 
-    def test_terms_link_where_written_the_card_needs_no_request_and_a_click_lands_the_viewer_on_the_heading(self):
+    def test_a_term_a_path_and_a_url_link_compute_one_colour_and_one_solid_underline_in_both_themes(self):
+        r = self._result()
+        for theme in ("dressDark", "dressLight"):
+            d = r[theme]
+            for kind in ("term", "path", "url", "mdlink"):
+                self.assertIsNotNone(d[kind], "%s: the %s link is on the page: %r" % (theme, kind, d))
+            dress = {k: (d[k]["color"], d[k]["line"], d[k]["style"]) for k in ("term", "path", "url", "mdlink")}
+            self.assertEqual(set(dress.values()), {(d["url"]["color"], "underline", "solid")},
+                             "%s: a term, a path, a bare URL and a titled link wear one dress at rest, the bare URL's colour and a solid underline: %r" % (theme, d))
+        self.assertNotEqual(r["dressDark"]["url"]["color"], r["dressLight"]["url"]["color"], "the two themes differ (the measurement saw both): %r" % r)
+
+    _r = None
+
+    def _result(self):
+        """One driver run per class (the driver rewrites the glossary and appends a transcript record, so a second run
+        would read a different page); both tests read its measurements."""
+        cls = type(self)
+        if cls._r is not None:
+            return cls._r
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
             json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID, "glossary": self.glossary, "transcript": self.transcript,
@@ -200,7 +233,11 @@ class ServedGlossary(unittest.TestCase):
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + open(self.klog).read()[-1500:])
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
-        r = json.loads(line[len("RESULT:"):])
+        cls._r = json.loads(line[len("RESULT:"):])
+        return cls._r
+
+    def test_terms_link_where_written_the_card_needs_no_request_and_a_click_lands_the_viewer_on_the_heading(self):
+        r = self._result()
         texts = [(l["text"], l["term"]) for l in r["links"]]
         # the assistant's words: tesselled (alias), tessel head (longest first: one term), quill once (first), tessels (plural);
         # the user's words: tessel and quill (its own message, its own first)

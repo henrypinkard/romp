@@ -48981,7 +48981,7 @@ THEME_CSS = """@font-face{font-family:'Inter';src:url(/media/InterVariable.woff2
 --vscode-focusBorder:#007fd4;--vscode-input-background:#3c3c3c;--vscode-input-foreground:#cccccc;
 --vscode-input-border:#3c3c3c;--vscode-menu-background:#252526;--vscode-menu-foreground:#cccccc;
 --vscode-menu-selectionBackground:#094771;--vscode-menu-selectionForeground:#fff;
---vscode-scrollbarSlider-background:rgba(121,121,121,.4);--vscode-textLink-foreground:#3794ff;}
+--vscode-scrollbarSlider-background:rgba(121,121,121,.4);--vscode-textLink-foreground:#9cd2ff;}
 html,body{background:var(--vscode-editor-background);}
 body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-foreground);margin:0;padding:0;}"""
 
