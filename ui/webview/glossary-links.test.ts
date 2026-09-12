@@ -61,7 +61,7 @@ test("a linked term is a path link to the glossary's section and nothing more: n
   assert.ok(!/s\.title = e\.plainWords/.test(RENDER), "no native title beside the hover card: one mechanism");
   assert.match(TERM_SKIP_SELECTOR, /code, pre, a, \.file-uri-link, h1, h2, h3, h4, h5, h6, \.katex, svg, \.term-link, \.cmt-pop, \.file-preview-pop/);
   // the dress: a link like any link (the user 2026-09-12): the link colour token, a solid underline, the pointer
-  assert.match(CSS, /\.term-link \{ color: var\(--link\); text-decoration: underline solid; cursor: pointer; \}/);
+  assert.match(CSS, /\.term-link \{ color: var\(--link\); text-decoration: underline solid; text-underline-offset: 2px; cursor: pointer; \}/);
   assert.ok(!/\.term-link[^\n]*dotted/.test(CSS) && !/\.term-link[^\n]*cursor: help/.test(CSS), "no dotted underline, no help cursor");
   assert.ok(!/\.term-link\.term-retired \{ opacity/.test(CSS), "no distinct dress for a retired term either: only the link marks a term");
   assert.ok(!CSS.includes(".fp-term") && !CSS.includes(".fp-open"), "the card-only styling and the open control's rules are gone");
@@ -79,7 +79,7 @@ test("the wiring: the frame per session, the matcher per index, links at the two
   assert.doesNotMatch(RENDER, /querySelectorAll\("\.md"\)\)\) linkTerms/, "no relink over every .md");
   assert.equal((RENDER.match(/const full = el\("div", "nudge-full md"\);\s*\n\s*full\.innerHTML = md\(ev\.md\);\s*\n\s*linkTerms\(full\);/g) || []).length, 2,
                "the Continue-send and tagged-template bubbles link at render too (the review's low: built as nudge-full md with no linkTerms, they never linked)");
-  assert.match(CSS, /\.term-link \{ color: var\(--link\); text-decoration: underline solid; cursor: pointer; \}/, "the ordinary link dress (T375; the dress test above says the rest)");
+  assert.match(CSS, /\.term-link \{ color: var\(--link\); text-decoration: underline solid; text-underline-offset: 2px; cursor: pointer; \}/, "the ordinary link dress (T375; the dress test above says the rest)");
   // the kernel: the frame on the pusher's cycle beside the comments frame, on its own slot; the route; the byte cap and its /perf note
   assert.match(KERNEL, /gfr = _glossary_frame\(s\["sid"\]\)[\s\S]{0,400}?_send_client\(c, \("glossary", s\["sid"\]\), gfr\)/);
   assert.match(KERNEL, /if p\.startswith\("\/glossary\/"\):[\s\S]{0,300}?_glossary_lookup\(\(q\.get\("sid"\) or \[None\]\)\[0\], unquote\(p\[len\("\/glossary\/"\):\]\)\)/, "the route sits in the GET router beside the file route");

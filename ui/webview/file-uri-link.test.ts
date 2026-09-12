@@ -50,7 +50,7 @@ test("linkify works inside INLINE backticks (agents backtick paths), skips exist
   assert.match(CSS, /^pre code \.file-uri-link \{ color: var\(--accent\); \}/m, "the link keeps the accent over the highlight's token colour");
 });
 
-test(".file-uri-link is styled as a wrapping accent link", () => {
-  assert.match(CSS, /\.file-uri-link \{[\s\S]*?cursor: pointer[\s\S]*?color: var\(--accent\)/);
+test(".file-uri-link is styled as a wrapping link in the chat's one link dress (T378)", () => {
+  assert.match(CSS, /\.file-uri-link \{[\s\S]*?cursor: pointer[\s\S]*?color: var\(--link\)/, "the link token, as .md a and .term-link (T378)");
   assert.match(CSS, /\.file-uri-link:hover \{ text-decoration: underline; \}/);
 });
