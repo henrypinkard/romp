@@ -209,13 +209,14 @@ _STAGE_RING_LEN = [None]          # resolved once (the first cycle), like the ot
 
 
 def _stage_ring_len(mem_total=None):
-    """How many cycles' stage splits the pusher keeps (T397): ROMP_PERF_STAGE_RING when it names a positive integer, else one
-    per 64 MiB of the machine's memory floored at 16 (a 64 GB box keeps 1024 cycles, a 4 GB one 64; an entry is about
-    2.5 KB, so the largest ring is a few MB), never a literal count (the user's caches direction 2026-09-11). Resolved ONCE
+    """How many cycles' stage splits the pusher keeps (T397): ROMP_PERF_STAGE_RING when it names a positive integer (clamped to
+    the fraction), else one per 256 MiB of the machine's memory floored at 16 (a 64 GB box keeps 256 cycles, a 4 GB one 16; an
+    entry carries about thirty stages at about 10 KB, so the largest ring is a few MB), never a literal count (the user's
+    caches direction 2026-09-11). Resolved ONCE
     into a module slot at first use (the memory reader is defined below this class and read again at every snapshot
     otherwise; round one, low 5). `mem_total` computes the fraction for a given reading (tests) and resolves nothing."""
     if mem_total is not None:
-        return max(16, int(mem_total) // (64 * 1024 * 1024))
+        return max(16, int(mem_total) // (256 * 1024 * 1024))
     if _STAGE_RING_LEN[0] is None:
         raw = os.environ.get("ROMP_PERF_STAGE_RING", "")
         n = 0
@@ -223,7 +224,7 @@ def _stage_ring_len(mem_total=None):
             n = int(raw) if raw else 0
         except ValueError:
             n = 0
-        frac = max(16, _mem_total_bytes() // (64 * 1024 * 1024))
+        frac = max(16, _mem_total_bytes() // (256 * 1024 * 1024))
         _STAGE_RING_LEN[0] = min(n, frac) if n > 0 else frac   # the override never exceeds the fraction: a huge value made
     return _STAGE_RING_LEN[0]                                    #  deque(maxlen=) raise inside cycle() (round two, low 2)
 
@@ -327,7 +328,12 @@ class _PerfStats:
     # below the table itself). test_perf_stats pins it at 1.5x the literal count.
     HTTP_PATHS = 256
     SLOTS = 32
-    STAGES = ("jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send")
+    JOBS = ("beginCheckpointCycle", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
+            "autoNudge", "interruptBlock", "persistTickSeen", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
+            "kernelSample", "autoPauseOnLimit", "usagePoll", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
+            "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
+    STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst") \
+        + tuple("jobs." + j for j in JOBS)   # every stage a fresh snapshot lists at zero: the cycle's prelude, the containers, the sub-stages
     BUILDS = ("chat", "feed", "timeline", "feedJson", "thread")
     # builds.chat's bg_miss labels: _chat_build_sig's components, a tab with no cached build, and a tab whose
     # signature could not be taken
@@ -344,7 +350,7 @@ class _PerfStats:
             self.pusher = {"cycles": 0, "wakes": 0, "wakes_event": 0, "wakes_backstop": 0,
                            "cycle_ms_sum": 0.0, "cycle_ms_max": 0.0, "cycle_ms_last": 0.0,
                            "cycle_cpu_ms_sum": 0.0, "sends": 0,
-                           "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0}
+                           "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0, "splitFailed": 0}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
             # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes

@@ -1531,12 +1531,13 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the cards-first path. A plain GET carries the newest 16 splits and
   `stageRingLen` (how many splits the ring holds now, not how many were
   served); `GET /perf?ring=all` carries the whole ring, which holds
-  `stageRingMax` cycles: `ROMP_PERF_STAGE_RING` when set, else one per 64 MiB
+  `stageRingMax` cycles: `ROMP_PERF_STAGE_RING` when set, else one per 256 MiB
   of the machine's memory floored at 16, resolved once, never a literal
   count, and an override above the fraction is clamped to it. Under `jobs`
-  every tick job is a sub-stage (`jobs.<job>`, the glue between them
-  `jobs.other`), and `prelude` is the cycle's opening (the liveness snapshot,
-  the names), so the stages sum to `s`; `splitFailed` counts a split the
+  every tick job is a sub-stage (`jobs.<job>`), and the bytes read between
+  them go to `jobs.other`, which carries bytes only, never `ms` (the same for
+  `push.other`); `prelude` is the cycle's opening (the liveness snapshot, the
+  names), so the top stages sum to `s`; `splitFailed` counts a split the
   bookkeeping could not close. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
   stage without the kernel alive, and `parse`, the assembly's road counters at
@@ -1665,10 +1666,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (every hit). The acceptance number of the lazy-transcript work: a boot with
   no client connected reads `kernel` zero, and a connecting chat client adds
   at most its shown tabs.
-- `stages_ms`: `jobs` (the cycle's tick jobs outside the push), `push`, and
-  inside it `push.chat`, `push.feed`, `push.timeline`, `push.send`. The
-  `push.*` stages count every push, including the one a connecting page gets,
-  so they can add up to more than `push`.
+- `stages_ms`: `prelude` (the cycle's opening: the liveness snapshot and the
+  names), `jobs` (the cycle's tick jobs outside the push) and inside it one
+  `jobs.<job>` per tick job (`jobs.interruptBlock`, `jobs.autoNudge`,
+  `jobs.convergeCheckpoints` and the rest, T398), `push`, and inside it
+  `push.chat`, `push.feed`, `push.timeline`, `push.send`, `push.warm`,
+  `push.feedFirst`; a fresh snapshot lists every one at zero. The `push.*`
+  stages count every push, including the one a connecting page gets, so they
+  can add up to more than `push`.
 - `builds`: `chat`, `feed`, `timeline`, each with `cached`, `built`, `ms`.
   Every chat tab, the watched one included, is served from its cached build
   while one complete per-session signature holds: one component per input the

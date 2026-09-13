@@ -1568,9 +1568,8 @@ def checkpoint_sweep():
         if not keep:
             try:
                 cp.unlink(); gone += 1
-                if cp.name.endswith(".gz"):
+                if cp.name.endswith(".gz"):                # an assembly document: counted as removed, its sidecar with it
                     _asm_removed("sweep")
-                if cp.name.endswith(".gz"):
                     cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
             except OSError:
                 pass
@@ -4413,7 +4412,8 @@ _ASM_CACHE_MAX = 256
 _ASM_LOCK = threading.Lock()       # guards the cache dict + the per-key lock registry only
 _ASM_KEYLOCKS = {}                 # key -> Lock; never pruned (a Lock is tiny, and swapping a
 #                                    key's lock mid-flight would let two folds interleave)
-_ASM_STATS = {"full": 0, "fold": 0, "serve": 0, "bypass": 0, "fallback": 0}   # observability + tests
+_ASM_STATS = {"full": 0, "fold": 0, "serve": 0, "restore": 0, "bypass": 0, "fallback": 0}   # observability + tests (restore
+#                                                                                             seeded: a row without it means zero)
 _ASM_WARNED = [False]
 _TS_REPAIR_NOTED = set()     # file stems already warned about a garbled stamp — once per file;
 #                              the cap CLEARS and re-arms (an occasional repeat note beats silence)
@@ -5036,11 +5036,17 @@ def _asm_ckpt_file(leaf_path):
     return Path(d) / (hashlib.sha1(os.path.realpath(str(leaf_path)).encode("utf-8")).hexdigest()[:20] + ".asm.json.gz")
 
 
+_ASM_CKPT_REFUSED = {}            # realpath -> the reason a standing document was refused at this path's last restore: read
+#                                   by _assemble to book full:refused, since the note below unlinks the document before the
+#                                   parse decides its road (T398 round one, medium: a refused document read as none at all)
+
+
 def _asm_ckpt_note(path, reason, detail=""):
     with _ASM_CKPT_LOCK:
         _ASM_CKPT_STATS["fallbacks"][reason] = _ASM_CKPT_STATS["fallbacks"].get(reason, 0) + 1
         first = (str(path), reason) not in _ASM_CKPT_SAID
         _ASM_CKPT_SAID.add((str(path), reason))
+        _ASM_CKPT_REFUSED[os.path.realpath(str(path))] = str(reason)
     if first:
         try:
             sys.stderr.write("assembly checkpoint fallback (%s) for %s%s\n" % (reason, path, (": " + detail) if detail else ""))
@@ -5067,7 +5073,8 @@ def asm_checkpoint_stats():
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
         out["hydratedBy"] = dict(out["hydratedBy"]); out["removed"] = dict(out.get("removed") or {})
         cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
-    out["parse"] = dict(_ASM_STATS)                   # the parse's roads (T398): serve, fold, restore, full (with its reason), bypass,
+    with _ASM_CKPT_LOCK:
+        out["parse"] = dict(_ASM_STATS)               # the parse's roads (T398): serve, fold, restore, full (with its reason), bypass,
     return out                                        #  fallback, and every g:<reason> demotion, so a whole parse names its road
 
 
@@ -6066,20 +6073,26 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
             elif _CKPT_DIR_FN is not None:
                 served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
                 if served is not None:
-                    _ASM_STATS["restore"] = _ASM_STATS.get("restore", 0) + 1
+                    with _ASM_CKPT_LOCK:
+                        _ASM_STATS["restore"] += 1
                     _mode("restore")
                     return served
             # A full parse names its road (T398): an entry the gates DEMOTED (the g:<reason> beside it: the leaf's record
             # entry replaced by a from-zero read, a lineage file moved), a leaf with NO document file, a document that
             # stood but was REFUSED at the restore (its fallback reason counted beside), or no checkpoint directory at all.
+            with _ASM_CKPT_LOCK:
+                refused = _ASM_CKPT_REFUSED.pop(os.path.realpath(str(leaf_path)), None)   # the restore's own refusal, if any
             if entry is not None:
                 why = "demoted"
             elif _CKPT_DIR_FN is None:
                 why = "noDir"
-            else:
+            elif refused is not None:
+                why = "refused"                           # a document stood and did not verify (its reason under fallbacks); the
+            else:                                         #  note unlinked it, so the stat below would have read it as none
                 cp_ = _asm_ckpt_file(leaf_path)
                 why = "noDocument" if cp_ is None or not cp_.exists() else "refused"
-            _ASM_STATS["full:" + why] = _ASM_STATS.get("full:" + why, 0) + 1
+            with _ASM_CKPT_LOCK:
+                _ASM_STATS["full:" + why] = _ASM_STATS.get("full:" + why, 0) + 1
             _mode("full")
             return _asm_full(key, leaf_path, candidate_files, links, rompuuid,
                              postal_index, sdk_human)

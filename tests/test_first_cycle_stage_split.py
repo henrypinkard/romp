@@ -21,9 +21,9 @@ class StageSplitUnit(unittest.TestCase):
 
     def test_the_ring_is_a_fraction_of_memory_never_a_literal(self):
         km = self.km
-        self.assertEqual(km._stage_ring_len(64 * 1024 ** 3), 1024, "one cycle per 64 MiB: a 64 GB box keeps 1024")
-        self.assertEqual(km._stage_ring_len(4 * 1024 ** 3), 64)
-        self.assertEqual(km._stage_ring_len(512 * 1024 ** 2), 16, "the floor")
+        self.assertEqual(km._stage_ring_len(64 * 1024 ** 3), 256, "one cycle per 256 MiB: a 64 GB box keeps 256 (about 10 KB an entry)")
+        self.assertEqual(km._stage_ring_len(8 * 1024 ** 3), 32)
+        self.assertEqual(km._stage_ring_len(4 * 1024 ** 3), 16, "the floor")
         self.assertEqual(km._stage_ring_len(0), 16)
         self.assertGreaterEqual(km._stage_ring_len(), 16, "the machine's reading")
         # round one, low 5: resolved ONCE into a module slot, with an override
@@ -57,7 +57,12 @@ class StageSplitUnit(unittest.TestCase):
         self.assertEqual(snap["stageRing"][1]["stages"], {"jobs": {"ms": 1.0, "bytes": 0, "hydrated": 0}})
         self.assertEqual(snap["stageRingMax"], km._stage_ring_len())
         self.assertEqual(snap["stageRingLen"], 2)
-        self.assertIsNone(km._PerfStats().snapshot()["pusher"]["firstCycle"], "no cycle yet: no split")
+        fresh = km._PerfStats().snapshot()
+        self.assertIsNone(fresh["pusher"]["firstCycle"], "no cycle yet: no split")
+        self.assertEqual(fresh["pusher"]["splitFailed"], 0, "seeded at zero: a row without it means zero, not an older kernel")
+        self.assertEqual(fresh["stages_ms"]["prelude"], 0.0, "every stage listed at zero: %r" % sorted(fresh["stages_ms"])[:6])
+        self.assertIn("jobs.interruptBlock", fresh["stages_ms"])
+        self.assertEqual(len(km._PerfStats.JOBS), 24, "the 24 tick jobs by name")
 
     def test_a_stages_bytes_are_the_readers_bytes_since_the_previous_boundary(self):
         km = self.km
@@ -225,11 +230,15 @@ class LabBootFirstCycle(unittest.TestCase):
         stage, so prelude + jobs + push fit the wall."""
         km = self.km
         km._push_all = lambda live_map=None: time.sleep(0.003)
+        with km._clients_lock:                                             # a client, so the cycle pushes (any_client)
+            km._clients.append({"app": "feed", "wid": "lab", "send": lambda *a, **k: None, "alive": True})
+        self.addCleanup(lambda: [km._clients.remove(c) for c in list(km._clients) if c.get("wid") == "lab"])
         km._pusher_cycle()
         first = km._PERF_STATS.snapshot()["pusher"]["firstCycle"]
         self.assertIsNotNone(first)
         st = first["stages"]
         self.assertIn("prelude", st, "%r" % sorted(st))
+        self.assertGreaterEqual(st["push"]["ms"], 3.0, "the push ran (a client was connected): %r" % sorted(st))
         top = sum(v["ms"] for k, v in st.items() if k in ("prelude", "jobs", "push"))
         self.assertLessEqual(top, first["s"] * 1000.0 + 2.0, "the top stages fit the wall: %r vs %r" % (top, first["s"]))
         self.assertGreaterEqual(top, first["s"] * 1000.0 * 0.8, "and account for most of it: %r vs %r" % (top, first["s"]))
