@@ -164,7 +164,9 @@ class TheLineRuleTable(unittest.TestCase):
             self.assertIn(row, ts, "the webview pins the same row: %s" % row)
         # PRESENT is not EXECUTED (the manager's read of the merge): the rows must be driven through distillInputs by a
         # test that stands beside them, or a deleted test block with the array kept would leave this pin green
-        call = ts.index('test("distillInputs over the states the kernel\'s landing rule mirrors", () => {')
+        head = 'test("distillInputs over the states the kernel\'s landing rule mirrors", () => {'
+        self.assertIn(head, ts, "the webview TEST that drives the table exists (present rows are not executed rows)")
+        call = ts.index(head)
         self.assertGreater(call, table, "the test stands beside the table it drives")
         block = ts[call:]
         self.assertIn("for (const [name, state, column, completed, blocked] of LINE_RULE_TABLE)", block, "the test walks the table")
