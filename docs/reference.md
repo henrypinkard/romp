@@ -1747,9 +1747,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
   (`hit`, `miss`, `populate`, `bypass`); `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
-  both stand (`served`, `derived`, and `failed`: the derivations that raised
-  and waved nothing through, zero on a healthy box; a healthy quiet box serves
-  almost every cycle); `cleared` is the feed's clear set, parsed once per state of
+  both stand (`served`, `derived`, and `failed`: the derivations that raised;
+  the except leg answers NOT unplanned, so the walk skips the planner-queue
+  hold and proceeds on the closer gate alone, and a non-zero `failed` means
+  nudges were waved PAST the planner gate, not held; zero on a healthy box, and
+  a healthy quiet box serves almost every cycle); `cleared` is the feed's clear set, parsed once per state of
   `cleared.jsonl` (its stat, taken before the read) and served while the file
   stands (`served`, `derived`); `courierSkip` is the courier's change gate
   (`skipped`, `scanned`, `recorded`: a session whose parse, store, journal,
