@@ -557,6 +557,18 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    opening dots (the loading-state rule; the working dot above stays solid on purpose — that rule is about
    real work, this one is about a load in progress). */
 .tab-dot.opening { background: var(--accent); animation: opening-line-pulse 1.2s ease-in-out infinite; }
+/* the dot widget's option (T379): a quiet grey dot when idle instead of the hidden slot, so a tab always shows its dot */
+.tab-dot.idle { background: var(--dim); opacity: 0.45; }
+/* the hot-key keycap widget (T379): the chord at its shortest after the name, a bordered chip in the dim tier, no width
+   beyond its glyphs. ONE rule text, agreed with the tab hot keys pull request (2026-09-12): this file owns .tab-key, and
+   that change drops its copy when it lands on this one */
+.tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); border: 1px solid var(--box-border);
+  border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
+/* the tab-widgets gear (T379): one glyph button at the strip's right end, in the tag box, the tag button's dress */
+.tab-widgets-gear { flex: 0 0 auto; display: inline-flex; align-items: center; margin-left: 4px; padding: 4px 6px; cursor: pointer;
+  background: transparent; border: 1px solid var(--card-border); border-radius: 6px; color: var(--dim);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
+.tab-widgets-gear:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 /* Vertical context gauge right of the name (the user 2026-08-08): the statusline battery rotated
    upright — fills bottom-up with the context-used %, in the SAME global-colormap colour (fill set
    inline by tabCtxGauge, render.ts), no % text. A faint track so an empty gauge still reads as

@@ -1,4 +1,5 @@
 import { effectiveDefaultBackend } from "./backend-names";
+import { tabWidgetPrefs, tabCtxOfPrefs, type TabWidgetPrefs } from "./tab-widgets";
 // Shared, persisted webview settings (the user 2026-06-14): one global settings store, surfaced via a
 // gear → modal. localStorage-backed so same-origin views (the browser's /chat, /feed, /timeline tabs)
 // share ONE setting, and a `storage` event live-syncs a change across the other open tabs. Keep this
@@ -27,6 +28,7 @@ export interface RompSettings {
   theme: Theme;   // the OVERALL dashboard theme (the user 2026-08-27, promoting the tab-strip setting): "classic" = the pre-720 dark look; "yatharth" = dark + the contributed strip aesthetic (what chatTabTheme:"yatharth" was); "yatharth-light" = the warm light theme (body.theme-light + the yatharth strip). Migration: a store written before `theme` existed seeds it from chatTabTheme.
   panes: PaneSet;   // which OPTIONAL dashboard panes this browser shows at all (the user 2026-09-10): Sessions (key timeline), Outline (key fleet) and Feed. Per browser, like the rail's romp-panes toggle, but a different thing: the rail hides a loaded pane; a pane off HERE is not in the dashboard at all (no rail button, no phone tab, no palette command, its iframe never given a src, so no socket and nothing built for it). The chat is required and not listed; the Files pane keeps its rail toggle. The shell (_LANDING_COLLAPSE_JS) reads it at boot and on the storage event; the kernel keeps judging and tracking regardless, this is a view setting.
   denseChrome: boolean;   // chat page: COMPACT TABS AND AGENTS (the user 2026-09-08: on a phone, the tab strip and the background-work panel left about three lines of transcript in view). Density only, as a body class (dense-chrome.ts applyDenseChrome, run with the scheme and theme appliers): smaller tabs and group headers in the strip, tighter rows in the #bg-tasks panel with its list capped at about four rows. OFF by default: the strip and the panel are unchanged until the gear opts in. Distinct from `compact`, the transcript's own tidy-up (tool runs collapsed, thinking hidden).
+  tabWidgets: TabWidgetPrefs;   // the tab-title WIDGETS (T379, the user 2026-09-12): which of the registered marks a tab carries (the status dot, the context bar, the hot-key keycap), their order and their options, set from the gear's Tab widgets section on the Chat tab. `tabCtx` above stays the context bar's MIRROR: a store with no tabWidgets derives them from it, and every save writes it back from them (tab-widgets.ts).
 }
 // Solarized LIGHT is deliberately absent (the user allowed skipping it): its text tiers are designed
 // for a paper-light ground and invert into mud on romp's dark canvas — an unreadable preset is worse
@@ -73,7 +75,7 @@ export function tabCtxMode(v: unknown): TabCtxMode {
 // hand-written "why" as their line; they show the distiller's summary instead (the why demotes to a hover).
 // compact defaults ON (the user 2026-07-14): a fresh install reads the tidy transcript
 // (thinking hidden, tool runs folded); the gear opts back into the full stream.
-export const DEFAULT_SETTINGS: RompSettings = { compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: false, showSessionBadge: false, tabCtx: "over50", fileLinkPane: "chat", stripGroupRows: true, showFilesControl: false, chatScheme: "default", chatTabTheme: "classic", theme: "classic", denseChrome: false, panes: { timeline: true, fleet: true, feed: true } };
+export const DEFAULT_SETTINGS: RompSettings = { compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: false, showSessionBadge: false, tabCtx: "over50", fileLinkPane: "chat", stripGroupRows: true, showFilesControl: false, chatScheme: "default", chatTabTheme: "classic", theme: "classic", denseChrome: false, panes: { timeline: true, fleet: true, feed: true }, tabWidgets: { on: {}, order: [], opts: {} } };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {
@@ -94,6 +96,11 @@ export function loadSettings(): RompSettings {
       // from theme ever after (one axis of truth; older readers keep working off the alias).
       s.theme = theme("theme" in parsed ? parsed.theme : chatTabTheme(parsed.chatTabTheme));
       s.chatTabTheme = s.theme === "classic" ? "classic" : "yatharth";
+      // the tab-title widgets (T379): a store from before them derives the context bar's prefs from tabCtx (never ->
+      // the widget off; always -> its option), so the gauge setting survives; a store with them normalizes them and
+      // writes tabCtx back as their MIRROR, so the skeleton tab and every older reader keep their meaning
+      s.tabWidgets = tabWidgetPrefs("tabWidgets" in parsed ? parsed.tabWidgets : undefined, s.tabCtx);
+      s.tabCtx = tabCtxOfPrefs(s.tabWidgets);
       return s;
     }
   } catch { /* corrupt / unavailable → defaults */ }
@@ -102,6 +109,15 @@ export function loadSettings(): RompSettings {
 
 export function saveSettings(patch: Partial<RompSettings>): RompSettings {
   const next = { ...loadSettings(), ...patch };
+  if ("tabCtx" in patch && !("tabWidgets" in patch)) {
+    // an older writer setting the gauge mode alone: the context bar's prefs follow it (the mirror runs both ways
+    // for a legacy patch, so the widget row and the old mode can never disagree)
+    const mode = tabCtxMode(patch.tabCtx);
+    next.tabWidgets = tabWidgetPrefs({ ...next.tabWidgets, on: { ...next.tabWidgets.on, ctx: mode !== "never" },
+                                       opts: { ...next.tabWidgets.opts, ctx: { ...(next.tabWidgets.opts.ctx || {}), show: mode === "always" ? "always" : "over50" } } });
+  }
+  next.tabWidgets = tabWidgetPrefs(next.tabWidgets, next.tabCtx);
+  next.tabCtx = tabCtxOfPrefs(next.tabWidgets);   // the mirror follows the widgets on every save
   try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* ignore */ }
   return next;
 }
