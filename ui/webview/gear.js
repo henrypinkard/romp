@@ -513,22 +513,24 @@ function initGear(post, opts) {
     try { localStorage.setItem(TAB_KEY, t); } catch (e) {}
     return t;
   }
-  Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); selectTab(b.getAttribute('data-tab')); }); });
+  Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); selectTab(b.getAttribute('data-tab')); clearSectionScroll(); }); });   // a pill change starts its pane at the top with no section room left behind (the follow-up's round one, LOW 1)
   // a SECTION of the tab (the user 2026-09-12): an ask may name a section of the tab it opens (data-section on the section's
   // head; the strip's tab-widgets gear asks for chat / tabwidgets), and the card scrolls so that head sits at its top, under
   // the padding. Looked up in the SHOWN pane only, after the panel is displayed (rects exist only then). Set on the card,
   // the modal's one scroll box, never scrollIntoView, which would scroll the host document too.
   // the one pending section ask (round two, LOW 2): an observer registered for an unlaid-out ask is disconnected on close and
   // before a new ask, so a later open never fires a stale scroll; a plain open (no section) resets the card (LOW 7)
-  var sectionRO = null;
+  var sectionRO = null, sectionAsk = null;
   function clearSectionScroll() {
     if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
+    sectionAsk = null;
     var card = document.querySelector('#rsettings .rs-card');
-    if (card) card.scrollTop = 0;
+    if (card) { card.scrollTop = 0; card.removeAttribute('data-section-landed'); }
     Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-pane'), function (pn) { pn.style.paddingBottom = ''; });
   }
   function showSection(section) {
     if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
+    sectionAsk = null;
     if (typeof section !== 'string' || !section) return;
     var sec = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="' + section + '"]');
     var card = document.querySelector('#rsettings .rs-card');
@@ -539,20 +541,42 @@ function initGear(post, opts) {
       var cs = getComputedStyle(card), padT = parseFloat(cs.paddingTop) || 0, padB = parseFloat(cs.paddingBottom) || 0;
       // room at the pane's END so the head can reach the top even when the section is the last thing in the pane (round two,
       // LOW 1: the scroll used to stop at the card's end with the head far below the padding): the pane grows by what is
-      // missing below the section, cleared on close or a plain open
-      var missing = (card.clientHeight - padT - padB) - (pane.getBoundingClientRect().bottom - sec.getBoundingClientRect().top);
+      // missing below the section, cleared on close, a plain open or a pill change. The room is sized to the card's CAP
+      // (max-height, 88vh, a content box), not its current height: below the cap the card is content-driven and grows
+      // under any room added, so the head stopped short on tall windows (152px off at 1200px, measured by the review);
+      // sized to the cap, the card lands exactly there in one pass, whatever the window. A second measurement after the
+      // write takes up rounding, or a cap the computed style did not resolve to pixels.
+      var below = function () { return pane.getBoundingClientRect().bottom - sec.getBoundingClientRect().top; };
+      var capH = parseFloat(cs.maxHeight);
+      var content = isFinite(capH) && capH > 0 ? capH : (card.clientHeight - padT - padB);
+      var missing = content - below();
       pane.style.paddingBottom = missing > 0 ? Math.ceil(missing) + 'px' : '';
+      var short = (card.clientHeight - padT - padB) - below();
+      if (short > 0) pane.style.paddingBottom = Math.ceil(Math.max(missing, 0) + short) + 'px';
       card.scrollTop = card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - padT;
+      ask.top = card.scrollTop;   // what this ask set: a scroll event landing elsewhere is the user's, and ends the ask
+      card.setAttribute('data-section-landed', section);   // the landing's mark: what a lab waits for before it measures (never a delay)
     };
-    if (card.clientHeight > 0) { go(); return; }   // laid out already: an open panel, or a host that never hides this document
-    // Not laid out yet: in the shell this document sits in an iframe that is display:none until the shell hears the
-    // settings-open message feedFull just posted, and a scroll set on a box with no size clamps to zero (the served lab
-    // measured 0 on the first open). The card gaining a size IS the event that says the panel is visible, so the
-    // scroll rides it, once. No timer: a frame or a delay would guess at the shell's round trip.
+    var ask = { top: -1 };
+    sectionAsk = ask;
+    if (card.clientHeight > 0) go();   // laid out already: an open panel, or a host that never hides this document
+    // The ask STANDS until the user scrolls, a pill changes the pane, or the panel closes: the scroll re-lands the head
+    // whenever the pane's or the card's size changes. Two reasons, both events, never timers: in the shell this document
+    // sits in an iframe that is display:none until the shell hears the settings-open message feedFull just posted, and
+    // a scroll set on a box with no size clamps to zero (the served lab measured 0 on the first open), so the card
+    // gaining a size is the first landing; and a layout that settles AFTER that first size (a web font arriving, a list
+    // filling) moves everything above the section, so the head slid off the top on a slow runner (CI, 2026-09-13: neither
+    // at the top nor at the end). Only a size change re-lands it, so a picker opening over the pane moves nothing.
     if (typeof ResizeObserver !== 'function') return;
-    sectionRO = new ResizeObserver(function () { if (card.clientHeight > 0) { if (sectionRO) { sectionRO.disconnect(); sectionRO = null; } go(); } });
+    sectionRO = new ResizeObserver(function () { if (sectionAsk === ask && card.clientHeight > 0) go(); });
     sectionRO.observe(card);
+    sectionRO.observe(pane);
   }
+  // the user's own scroll ends a standing section ask (a scroll event that lands where the ask put it is the ask's own)
+  (function () {
+    var card = document.querySelector('#rsettings .rs-card');
+    if (card) card.addEventListener('scroll', function () { if (sectionAsk && Math.abs(card.scrollTop - sectionAsk.top) > 1) { if (sectionRO) { sectionRO.disconnect(); sectionRO = null; } sectionAsk = null; } });
+  })();
 
   // ── THE WIDGET ROWS (T379) ── one per registered widget: the live demo (a miniature tab rendering the widget over a
   // synthetic status through the SAME render the strip uses), the name and what it does, the sliding switch, and the
