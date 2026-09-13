@@ -38,9 +38,16 @@ test("the sections are the kinds, in the rows' display order, and no section of 
   assert.match(body, /for \(const g of sections\) \{\s*\n\s*if \(headers\) \{ const gh = el\("div", "bg-group-head"\); gh\.textContent = GROUP_TITLE\[g\.kind\] \|\| "Other"; list\.appendChild\(gh\); \}/);
   assert.match(body, /for \(const row of kept\) if \(row\.kind === g\.kind\) list\.appendChild\(bgRow\(row, sid\)\);/, "the kept rows of the kind follow its awaited rows");
   assert.doesNotMatch(RENDER, /BG_LEFTOVER_TITLE|"Also running"/, "the section and its title are gone");
-  assert.match(body, /lab\.textContent = "In the background · " \+ listBreakdown\(items, keptN\);/, "the working header counts every row it lists");
-  assert.match(body, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(items, keptN\);/, "…and the mixed idle header");
-  assert.match(body, /if \(keptN\) lab\.append\(" · " \+ keptWord\(keptN\)\);/, "…and the peer-named idle header");
+  assert.match(body, /const counted: AwaitRow\[\] = \[\.\.\.items, \.\.\.kept\.map\(\(row\) => \(\{ kind: row\.kind \|\| "commands", id: row\.id, label: row\.label \}\)\)\];/,
+    "every listed row is counted, the tracked tasks by kind (round two, medium: a box whose only row was a tracked task read a separator with nothing after it)");
+  assert.match(body, /lab\.textContent = "In the background · " \+ listBreakdown\(counted, keptN\);/, "the working header counts every row it lists");
+  assert.match(body, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(counted, keptN\);/, "…and the mixed idle header");
+  assert.match(body, /if \(kept\.length\) lab\.append\(" · " \+ listBreakdown\(kept\.map\(/, "…and the peer-named idle header counts the tracked rows below");
+  assert.doesNotMatch(body, /listBreakdown\(items, keptN\)/, "no header reads the kernel's rows alone");
+  const key = fn("awaitKey");
+  assert.match(key, /st\.awaitingTaskIds \|\| \[\], st\.bgServiceIds \|\| \[\], st\.awaitingItems \|\| \[\]/, "a verdict-only frame repaints the box (round two, low 1)");
+  assert.match(body, /const worst = tasks\.reduce\(\(w, t\) => \(BG_RANK\[t\.status\] \|\| 0\) > \(BG_RANK\[w\] \|\| 0\) \? t\.status : w, tasks\.length \? \(tasks\[0\]\.status \|\| "running"\) : "running"\);/,
+    "the header dot seeds from the tasks' own statuses: a completed-only box reads completed (round two, low 2)");
 });
 
 test("every row spec carries its kind, and a tracked task is kept only where the kernel's verdict names it a service, while it runs", () => {

@@ -13887,9 +13887,14 @@ function renderBgTasks() {
   const leftovers = tasks.filter((t) => !itemIds.has(t.id));   // tracked tasks the wait does not name (services)
   const kept = leftovers.map((t) => taskRowSpec(t, awaited.has(t.id), services.has(t.id)));   // …as rows of their KIND (T394): the judge's services dimmed, the verdict as a suffix
   const keptN = kept.filter((row) => row.kept).length;   // the header counts the rows that WEAR the verdict, none other (round one, medium 1)
+  // every row the list shows, by kind (round two, medium): the kernel's rows AND the tracked tasks they do not name, so a box
+  // whose only row is a placed command or a finished one reads "In the background · 1 command", never a separator with nothing after it
+  const counted: AwaitRow[] = [...items, ...kept.map((row) => ({ kind: row.kind || "commands", id: row.id, label: row.label }))];
   // the header dot: await-green while waiting, like the chip; otherwise the worst tracked status, so a
   // failed task is glanceable while collapsed (running-yellow when nothing tracked has failed)
-  const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, "running");
+  // seeded from the tasks' own statuses (round two, low 2): seeded "running", a completed-only box wore the running gold and
+  // the header's completed tint matched nothing
+  const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, tasks.length ? (tasks[0].status || "running") : "running");
   const head = el("div", "bg-fold-head " + (why ? "bg-await" : "bg-" + worst) + (open ? " open" : ""));
   head.dataset.act = "bg-fold"; head.dataset.id = sid;
   const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);   // ▸ closed → ▾ open (expands DOWNWARD beneath the header)
@@ -13913,9 +13918,9 @@ function renderBgTasks() {
         lab.appendChild(nm);
       });
       lab.append(" · " + why.replace(/^delegated to [^;]*;\s*/i, "").replace(/^(waiting on|awaiting)\s+/i, ""));
-      if (keptN) lab.append(" · " + keptWord(keptN));
+      if (kept.length) lab.append(" · " + listBreakdown(kept.map((row) => ({ kind: row.kind || "commands", id: row.id, label: row.label })), keptN));   // the tracked rows below, counted (round two)
     } else if (groups.length > 1) {
-      lab.textContent = "Awaiting " + word + " · " + listBreakdown(items, keptN);   // mixed kinds: the number, then the breakdown, then the kept rows
+      lab.textContent = "Awaiting " + word + " · " + listBreakdown(counted, keptN);   // mixed kinds: the number, then every listed row by kind, then the kept rows
     } else {
       lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "") + (keptN ? " · " + keptWord(keptN) : "");
     }
@@ -13923,7 +13928,7 @@ function renderBgTasks() {
     // WORKING (or idle with nothing awaited — a service the session keeps around): the same rows, worded
     // as what they are, no idle note. The header counts every row the list shows (T394): the in-flight rows by
     // kind, then the tracked tasks the kernel names no row for, apart, as the kept-running rows they are.
-    lab.textContent = "In the background · " + listBreakdown(items, keptN);
+    lab.textContent = "In the background · " + listBreakdown(counted, keptN);
   }
   head.appendChild(lab);
   host.appendChild(head);
@@ -17187,7 +17192,7 @@ function awaitChanged(sid: string): void {
 function awaitKey(st: Status | undefined): string {
   if (!st) return "";
   return JSON.stringify([st.state, st.awaitingWhy || "", st.awaitingKind || "", st.awaitingCount ?? null,
-                         st.awaitingTasks || [], st.awaitingTaskIds || [], st.awaitingItems || [],
+                         st.awaitingTasks || [], st.awaitingTaskIds || [], st.bgServiceIds || [], st.awaitingItems || [],   // the verdict repaints the box (round two, low 1)
                          (st.awaitingPeers || []).map((p) => [p.host || "", p.name || ""])]);
 }
 

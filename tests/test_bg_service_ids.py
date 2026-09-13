@@ -15,6 +15,9 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # Hermetic state BEFORE the loads — they resolve their state root at import time.
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)
+os.makedirs(os.path.join(os.environ["XDG_STATE_HOME"], "romp"), exist_ok=True)
+with open(os.path.join(os.environ["XDG_STATE_HOME"], "romp", "session-hosts"), "w") as _f:
+    _f.write("off")   # a state root of our own: no real host for any session (the Testing rule)
 load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
 load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
@@ -45,7 +48,7 @@ class BgServiceIds(unittest.TestCase):
 
     def test_the_status_ships_the_ids_in_every_turn_state(self):
         src = inspect.getsource(km.build_session)
-        self.assertIn('"bgServiceIds": _bg_service_ids(sid, sess["path"]),', src, "shipped unconditionally, beside the awaited ids")
+        self.assertIn('"bgServiceIds": _bg_service_ids(sid, sess["path"], live_map),', src, "shipped unconditionally, beside the awaited ids, over the build's own liveness snapshot")
         self.assertIn('"awaitingTaskIds": (_awaiting_task_ids(sid, sess["path"]) if awaiting_why else []),', src, "the awaited ids still ride a wait only")
 
 

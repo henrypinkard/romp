@@ -75,15 +75,26 @@ const probe = () => page.evaluate(() => {
   }
   const head = document.querySelector("#bg-tasks .bg-fold-label");
   return { header: head ? (head.textContent || "").trim() : null, sections: Array.from(document.querySelectorAll("#bg-tasks .bg-group-head")).map((e) => (e.textContent || "").trim()),
-           rows, tokens, theme: document.body.classList.contains("theme-light") ? "light" : "dark" };
+           rows, tokens, theme: document.body.classList.contains("theme-light") ? "light" : "dark",
+           headDot: (() => { const d = document.querySelector("#bg-tasks .bg-fold-head .bg-dot"); return d ? getComputedStyle(d).backgroundColor : null; })() };
 });
 const dark = await probe();
 await page.evaluate(() => document.body.classList.add("theme-light"));
 await page.waitForTimeout(250);
 const light = await probe();
+await page.evaluate(() => document.body.classList.remove("theme-light"));
+// round two: the states where the kernel names no rows. (i) a working session with a placed command the judge neither stamped nor
+// called a service: one row, no verdict, and the header must still count it; (ii) a verdict-only frame: the same, the placed command
+// now a service; (iii) a session whose one tracked task is finished: the header counts it and its dot is the completed tint
+const f0 = cfg.frame; const task = (id) => f0.bgTasks.tasks.find((t) => t.id === id);
+const only = (tasks, serviceIds, state) => ({ ...f0, status: { ...f0.status, state, awaitingItems: [], awaitingTaskIds: [], bgServiceIds: serviceIds }, bgTasks: { count: tasks.length, tasks } });
+const settle = async (f) => { await page.evaluate((x) => window.postMessage(x, "*"), f); await page.waitForTimeout(500); return probe(); };
+const placedOnly = await settle(only([task(cfg.placedId)], [], "working"));
+const placedKept = await settle(only([task(cfg.placedId)], [cfg.placedId], "working"));
+const doneOnly = await settle(only([task(cfg.doneId)], [], "idle"));
 if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/romp_chat-T394-bg-kinds-light-served.png" }); }
 await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ dark, light }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ dark, light, placedOnly, placedKept, doneOnly }) + "\n", () => process.exit(0));
 """
 
 
@@ -191,7 +202,8 @@ class ServedBgKinds(unittest.TestCase):
                          {"id": DONE_ID, "status": "completed", "summary": "Warm the docs cache", "command": "mkdocs build --dirty", "output": "done"}]}}
             cfg = os.path.join(self.lab, "cfg.json")
             with open(cfg, "w") as f:
-                json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "frame": frame, "shots": os.environ.get("BG_KINDS_SHOTS", "")}, f)
+                json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "frame": frame, "placedId": PLACED_ID, "doneId": DONE_ID,
+                           "shots": os.environ.get("BG_KINDS_SHOTS", "")}, f)
             driver = os.path.join(self.lab, "driver.mjs")
             with open(driver, "w") as f:
                 f.write(DRIVER)
@@ -215,8 +227,10 @@ class ServedBgKinds(unittest.TestCase):
                           ("Commands", "Run the parser test chunk"), ("Commands", "Warm the docs cache"), ("Watches", "the CI run on web")],
                          "each row under its kind; the tracked tasks after the awaited command: %r" % d["rows"])
         agent, cmd, svc, placed, done, watch = d["rows"]
-        self.assertEqual(d["header"], "In the background · 1 agent · 1 command · 1 watch · 1 kept running",
-                         "the header counts every row it lists and only the row wearing the verdict as kept (round one, medium 1 and low 1)")
+        # every listed row counted by kind (round two): the awaited command, the kept service, the placed command and the finished
+        # service are four commands; only the running service wears the verdict (round one, medium 1 and low 1)
+        self.assertEqual(d["header"], "In the background · 1 agent · 4 commands · 1 watch · 1 kept running",
+                         "the header counts every row it lists, the kept one apart: %r" % d["header"])
         for x, kind in ((agent, "agents"), (cmd, "commands"), (svc, "commands"), (placed, "commands"), (done, "commands"), (watch, "watches")):
             self.assertIn("bg-kind-" + kind, x["cls"].split(), "%s wears its kind: %r" % (x["label"], x["cls"]))
         self.assertIn("bg-kept", svc["cls"].split(), "the running service is the kept row: %r" % svc["cls"])
@@ -266,6 +280,27 @@ class ServedBgKinds(unittest.TestCase):
                 for x, tokname in ((agent, "working"), (cmd, "command"), (watch, "await")):
                     self.assertNotEqual(x["captionColor"], t[tokname], "cream: the caption word is the hue deepened, not the dot's colour: %r" % x)
         self.assertNotEqual(r["dark"]["tokens"]["command"], r["light"]["tokens"]["command"], "the command blue is a per-theme token")
+
+    def test_the_header_counts_a_tracked_task_the_kernel_names_no_row_for_and_never_ends_at_its_separator(self):
+        # round two, medium: a placed command mid-turn (no kernel row, no verdict) and a finished command on a dormant session both
+        # read "In the background · 1 command"; the verdict alone repaints the box and adds the kept count (round two, low 1)
+        r = self._result()
+        po = r["placedOnly"]
+        self.assertEqual([(x["section"], x["label"], x["kept"]) for x in po["rows"]], [(None, "Run the parser test chunk", None)], "one row, no verdict word: %r" % po["rows"])
+        self.assertEqual(po["header"], "In the background · 1 command", "the header counts the listed row: %r" % po["header"])
+        pk = r["placedKept"]
+        self.assertEqual([x["kept"] for x in pk["rows"]], [KEPT_WORD], "the verdict-only frame repainted the box: the row wears the suffix: %r" % pk["rows"])
+        self.assertEqual(pk["header"], "In the background · 1 command · 1 kept running", "…and the header counts it as kept: %r" % pk["header"])
+        do = r["doneOnly"]
+        self.assertEqual([(x["label"], x["caption"], x["kept"]) for x in do["rows"]], [("Warm the docs cache", "completed", None)], "the finished task, unmarked: %r" % do["rows"])
+        self.assertEqual(do["header"], "In the background · 1 command", "counted, never a separator with nothing after it: %r" % do["header"])
+
+    def test_a_completed_only_box_wears_the_dim_ink_on_its_header_dot(self):
+        # round two, low 2: the worst status seeds from the tasks, so a completed-only box reads completed, the dim ink, not the running gold
+        r = self._result()
+        do = r["doneOnly"]
+        self.assertEqual(do["headDot"], do["tokens"]["dim"], "the header dot is the completed tint, the dim ink: %r vs %r" % (do["headDot"], do["tokens"]))
+        self.assertEqual(r["placedOnly"]["headDot"], r["placedOnly"]["tokens"]["working"], "a running-only box keeps the running gold on its header: %r" % r["placedOnly"]["headDot"])
 
 
 if __name__ == "__main__":

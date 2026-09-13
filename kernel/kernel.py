@@ -25731,13 +25731,16 @@ def _awaiting_task_ids(sid, path):
     return [t["tid"] for t in awaited if t.get("tid")]
 
 
-def _bg_service_ids(sid, path):
+def _bg_service_ids(sid, path, live_map=None):
     """The live background tasks the judge classified as SERVICES (_bg_split's other half: the closer audited past
     the launch without a wait, so nobody waits on them), as launch ids, for the chat's box (T394, 2026-09-12): the
     box words that verdict on the row (kept running, not waited on) and dims it. Shipped in EVERY turn state, unlike
     awaitingTaskIds (a wait's rows): the verdict is the judge's, and the box must never infer it from a task the rows
-    happen not to name (mid-turn the rows enumerate pending launches only). [] when nothing runs or nothing is furniture."""
-    _, services = _bg_split(sid, path, _bg_live_norm(sid, path))
+    happen not to name (mid-turn the rows enumerate pending launches only). [] when nothing runs or nothing is furniture.
+    `live_map`: the build's own liveness snapshot, served to the nested reads (_serve_live) so a build handed one takes no
+    fresh registry sweep (tests/test_kernel_pusher_snapshot.py holds the working path to that)."""
+    with _serve_live(live_map):
+        _, services = _bg_split(sid, path, _bg_live_norm(sid, path))
     return [t["tid"] for t in services if t.get("tid")]
 
 
@@ -34439,7 +34442,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   "awaitingTaskIds": (_awaiting_task_ids(sid, sess["path"]) if awaiting_why else []),
                   # …and the launch ids the JUDGE called services (kept running, nobody waiting), in every turn state, so the
                   # box words that verdict only where the judge gave it (T394 round one)
-                  "bgServiceIds": _bg_service_ids(sid, sess["path"]),
+                  "bgServiceIds": _bg_service_ids(sid, sess["path"], live_map),
                   "apiTooLong": bool(aerr and aerr.get("tooLong")),
                   # a spend cap is on-you like tooLong (red tab, "raise your cap") AND never auto-retried:
                   # the client's apiRetryTick skips it, and the global pause it engages stops the loop too
