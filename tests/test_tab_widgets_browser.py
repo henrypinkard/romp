@@ -281,7 +281,8 @@ class ServedTabWidgets(unittest.TestCase):
             Path(state, "names", sid).write_text("%s\t%s\t%s\t%s\n" % (name, cwd, bg, fg))
             Path(state, "sdk", sid + ".json").write_text(json.dumps(
                 {"sid": sid, "name": name, "cwd": cwd, "mode": "auto", "effort": "high", "lastSid": sid, "alive": True,
-                 "model": "claude-opus-5", "liveModel": "Opus 5"}))
+                 "model": "claude-opus-5", "liveModel": "Opus 5",
+                 **({"liveCtx": 62} if name == "web" else {})}))   # web carries a context percentage, so the context bar has something to show (round two, LOW 6)
             recs = [{"type": "user", "timestamp": iso(t0 + i), "uuid": "u1", "parentUuid": None, "promptSource": "typed", "sessionId": sid,
                      "message": {"role": "user", "content": "what does the %s session do in notes-api?" % name}},
                     {"type": "assistant", "timestamp": iso(t0 + i + 5), "uuid": "a1", "parentUuid": "u1", "sessionId": sid,
@@ -366,7 +367,9 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertIsNotNone(web["key"], "web's hot key (the tab hot-key store) renders as a keycap" + table)
         self.assertEqual(web["key"]["text"], "⌃⇧1", table)
         self.assertGreater(web["key"]["w"], 10, table)
-        self.assertEqual(web["children"].index("tab-key"), web["children"].index("tab-label") + 1, "the keycap follows the name" + table)
+        self.assertTrue(web["ctx"], "web carries a context percentage (62): the bar shows from half full" + table)
+        self.assertEqual(web["children"].index("tab-ctx"), web["children"].index("tab-label") + 1, "the bar follows the name" + table)
+        self.assertEqual(web["children"].index("tab-key"), web["children"].index("tab-ctx") + 1, "the keycap follows the bar (registration order)" + table)
         api = next(t for t in s["tabs"] if t["name"].endswith("api"))
         self.assertIsNone(api["key"], "no hot key assigned: no keycap" + table)
         self.assertIsNotNone(s["gear"], "the glyph is in the strip (the chat sits in the shell, so a gear can be reached)" + table)
@@ -382,11 +385,8 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertLess(sec["top"], sec["cardBottom"], "the head is inside the card's box" + table)
         if sec["overflow"] > 0:
             self.assertGreater(sec["scrollTop"], 0, "the card scrolled" + table)
-            at_top = abs(sec["top"] - (sec["cardTop"] + sec["pad"])) < 3
-            # the scroll rides the card's first size (the shell lifts the iframe after a message round trip); a late layout
-            # after that first size (fonts, the model lists filling) can grow the pane by a pixel or two, so the scroll end
-            # is read with that much slack (measured 198 of 200 on the first open, 200 of 200 on a re-ask)
-            self.assertTrue(at_top or sec["scrollTop"] >= sec["overflow"] - 4, "the head sits under the card's padding, or the card is at its scroll end" + table)
+            # round two, LOW 1: the head sits under the card's padding, always: the pane gains room at its end for it
+            self.assertLess(abs(sec["top"] - (sec["cardTop"] + sec["pad"])), 3, "the head sits under the card's padding" + table)
 
     def test_the_glyph_opens_the_settings_on_the_chat_tab_scrolled_to_the_tab_widgets_section_with_the_other_panes_hidden(self):
         r = self._run()
@@ -442,6 +442,7 @@ class ServedTabWidgets(unittest.TestCase):
             self.assertEqual((sc["panelBefore"]["checked"], sc["panelBefore"]["show"]), (checked, show), mode + ": the row reads the older setting" + table)
             self.assertEqual(sc["after"]["store"], {"tabWidgets": "absent", "tabCtx": mode, "compact": False}, mode + ": Compact saved; the widgets key still absent, the mirror untouched" + table)
             self.assertEqual(sc["after"]["ctx"], sc["before"]["ctx"], mode + ": the strip unchanged" + table)
+            self.assertEqual(any(sc["before"]["ctx"]), mode == "always", mode + ": the seeded percentage shows exactly when the older setting says so (the assertion above is not vacuous)" + table)
             self.assertEqual(sc["panelAfter"], sc["panelBefore"], mode + ": the row unchanged" + table)
 
     def test_a_switch_writes_the_prefs_and_the_mirror_and_the_strip_follows_live(self):
@@ -452,6 +453,7 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertEqual([x["sw"]["checked"] for x in a["panel"]["rows"]], ["true", "false", "true"], "the Context bar's switch is off" + table)
         self.assertEqual(a["strip"]["store"]["tabWidgets"]["on"], {"ctx": False}, "the store's prefs" + table)
         self.assertEqual(a["strip"]["store"]["tabCtx"], "never", "…and the older key mirrors it, for older readers" + table)
+        self.assertFalse(a["strip"]["web"]["ctx"], "the bar left web's tab live" + table)
         k = r["afterKeyOff"]["strip"]
         self.assertIsNone(k["web"]["key"], "the hot key widget off: the keycap left web's tab, live, through the storage event: " + json.dumps(k["web"]))
         self.assertEqual(k["store"]["tabWidgets"]["on"], {"ctx": True, "hotkey": False}, "the bar's flag was written back on, the hot key's off: " + json.dumps(k["store"]))
@@ -482,6 +484,8 @@ class ServedTabWidgets(unittest.TestCase):
         ro = r["reopen"]
         self.assertTrue(ro["open"], "the rail's gear reopened it")
         self.assertEqual([x["pane"] for x in ro["panes"] if x["display"] != "none"], ["chat"], "…on the remembered tab (Chat was picked last)")
+        # round two, LOW 2 and 7: a plain open (no section) starts at the card's top, and the earlier ask's observer never fires again
+        self.assertEqual(ro["section"]["scrollTop"], 0, "a plain open resets the card; no stale section scroll: " + json.dumps(ro["section"]))
 
 
 if __name__ == "__main__":
