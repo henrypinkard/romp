@@ -255,6 +255,9 @@ class RewoundMemo(Harness):
         entry, the parent's chain walk read the anchor whole once more in that process, by pass order. A file that is a
         registered session's own (<sid>.jsonl with a reg) is never dropped by another session's scan."""
         jd = kernel_module().jd
+        saved_owner = jd._SDK_OWNER_FN                                   # the registry road answers here (a kernel loaded earlier in
+        jd._SDK_OWNER_FN = None                                          #  the process leaves its backend hook, which knows no reg file)
+        self.addCleanup(setattr, jd, "_SDK_OWNER_FN", saved_owner)
         parent = "7a391000-2222-4333-8444-000000000393"; fork = "7a391000-2222-4333-8444-000000000394"
         td = Path(tempfile.mkdtemp()); (td / "state").mkdir()
         saved = jd.STATE; jd._rebind_state(td / "state")
