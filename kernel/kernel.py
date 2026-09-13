@@ -36555,6 +36555,9 @@ def _feed_session_entry(s, ctx):
     # (aerr) only fires once the session is idle-stalled, so without this a storm reads as plain
     # healthy Working for its whole life — nimbus's card said Working through an ~80-minute storm.
     sess_retrying = _session_retrying(fsid, tm)
+    _faults0 = _SUMMARY_ANCHOR_STATS["fault"]   # a body-read fault during this derivation (the landing tier) marks the
+    #                                             entry: build_feed then skips the memo put, so a degraded landing never
+    #                                             persists on an idle card until its inputs move (the verifier's third round)
     store = ctx["store"]                     # _feed_goals(fsid), read once in the key: a pre-pass snapshot while a judge
     #                                          pass is mid-flight → the card's
                                              # status never shows a half-applied intermediate (atomic visibility)
@@ -36637,11 +36640,15 @@ def _feed_session_entry(s, ctx):
     agent_open = _agent_open_set(nodes, children)   # authoritative-open subtree → never rendered 'done' (see helper)
     parked_rows = _parked_rows(nodes, children)     # leapfrogged open rows → the quiet "parked" row cue (see helper)
 
-    def _subtree(root):                          # all node ids at/under root (pre-order)
-        stack, acc = [root], []
-        while stack:
-            x = stack.pop(); acc.append(x); stack.extend(children.get(x, []))
-        return acc
+    _sub_memo = {}                               # root -> its subtree, once per build: the landing walks it per node
+    def _subtree(root):                          # all node ids at/under root (pre-order); callers only iterate the list
+        got = _sub_memo.get(root)
+        if got is None:
+            stack, acc = [root], []
+            while stack:
+                x = stack.pop(); acc.append(x); stack.extend(children.get(x, []))
+            got = _sub_memo[root] = acc
+        return got
 
     # VERDICTS ONLY (the user 2026-07-15; roll-UP removed — it painted an authored-looking ✓ on a
     # goal nobody ruled done, see build_session's _subtree_done twin): a node is "done" if it's
@@ -36737,6 +36744,10 @@ def _feed_session_entry(s, ctx):
         latest-prose walk over the subtree's trails; else that newest segment's last text atom; else the newest
         trail segment's work anchor (a landable atom, a tool group at worst). `quote` rides only with the cited
         atom's stored span or the tier's located span."""
+        mk = (nid, bool(completed), line or "")      # one resolve per node, bit and line within a build: the card and
+        got = _land_memo.get(mk)                     #   its top row ask with the same inputs and get the same answer
+        if got is not None:
+            return got
         nd = nodes[nid]
         sub = _subtree(nid)
         u, q, cited = None, None, nd.get("summaryAnchor")
@@ -36783,7 +36794,10 @@ def _feed_session_entry(s, ctx):
                         break
                 if u:
                     break
-        return u, (q or None)
+        _land_memo[mk] = (u, (q or None))
+        return _land_memo[mk]
+
+    _land_memo = {}                              # (nid, completed, line) -> (uuid, quote), per build
 
     def flatten(nid, out, ancestor_done=False, boundary=None):  # AskTreeNode flat list, root first; nest via children ids
         nd = nodes[nid]
@@ -36813,9 +36827,8 @@ def _feed_session_entry(s, ctx):
         # subtree (T388). A HANDOFF row gets none: its session is the peer's (whoSid) while any landing here would be
         # an atom of THIS session's parse, a foreign atom to the peer's chat; the row's line falls to goWork, whose
         # target the tracker's own row wears (the verifier's second round).
-        _nline = nd.get("blockSummary") if st == "question" else nd.get("summary")
-        _nline = _nline or nd.get("blockSummary") or nd.get("summary")
-        _nsa_u, _nsa_q = (None, None) if (_ho_sid or not _nline) else _brief_landing(nid, st == "done", _nline)
+        _ncompleted, _nline = _landing_inputs("completed" if st == "done" else "blocked" if st == "question" else None, nd)
+        _nsa_u, _nsa_q = (None, None) if (_ho_sid or not _nline) else _brief_landing(nid, _ncompleted, _nline)
         _born = nd.get("born") if isinstance(nd.get("born"), dict) else (healed.get(nid) or (None, None))[1]
         out.append({"id": nid, "kind": "handoff" if _ho_sid else "ask", "text": nd["text"],
                     "born": _born or None,   # T319: a step the session started on its own (why it sits here)
@@ -37325,10 +37338,9 @@ def _feed_session_entry(s, ctx):
         # ONE resolve for the card and its modal row (_brief_landing, above flatten): the completed pin, the cited
         # tier with the T153 outrun rule, the text-atom tier, the latest-prose walk, the stub, the work anchor, all
         # over the whole subtree's trails, so one brief never lands in two places by the surface clicked (T388).
-        _line = nodes[nid].get("blockSummary") if col in ("blocked", "awaiting") else nodes[nid].get("summary")
-        _line = _line or nodes[nid].get("blockSummary") or nodes[nid].get("summary")
+        _completed, _line = _landing_inputs(distill_state, nodes[nid])   # the line the card SHOWS (distillState, not the column)
         _cited = nodes[nid].get("summaryAnchor")
-        _sa_u, _sa_q = _brief_landing(nid, col == "completed", _line)
+        _sa_u, _sa_q = _brief_landing(nid, _completed, _line)
         if _sa_u is None and ps is None:
             # COLD-PARSE fallback (the user 2026-07-20): every tier above reads parse-derived maps,
             # and right after a kernel restart ps is None until _warm_fleet_bg — so for that window
@@ -37519,7 +37531,8 @@ def _feed_session_entry(s, ctx):
                                            count=sess_awaiting_count, items=sess_awaiting_items))
     return {"asks": ent_asks, "working": ent_working, "awaiting": ent_awaiting, "bgServices": ent_bg,
             "servingFolds": ent_folds, "heal": heal_total, "hidden": hidden_total, "cold": cold_parse,
-            "peers": sorted(peers_read), "reads": reads}
+            "peers": sorted(peers_read), "reads": reads,
+            "faults": _SUMMARY_ANCHOR_STATS["fault"] - _faults0}
 
 
 def _feed_fold_card(card, now, cmap):
@@ -37612,7 +37625,8 @@ def build_feed(now, live_map=None):
             entry = _feed_session_entry(s, ctx)
             key = _feed_key_with_deps(key, ctx, entry)   # the peers and reads THIS derivation recorded
             js = json.dumps(entry, default=_wire_default_in("_feed_memo"))   # str() of an unencodable value, said once
-            _feed_memo_put(fsid, key, js)
+            if not (entry or {}).get("faults"):      # a derivation that met a body-read fault is served but not kept:
+                _feed_memo_put(fsid, key, js)        #   the next build re-derives it (the anchor memo skipped it too)
             entry = json.loads(js)                   # the fold's objects come from the string on a miss too, so a hit and
             #                                          a miss hand the board the same shapes, byte for byte
         _heal, _hid, _cold = _feed_fold_entry(entry, now, cmap, s["name"], asks, working, awaiting, bg_services, serving_folds)
@@ -39896,6 +39910,20 @@ def _opening_sentence(line):
     m = re.search(r"[.!?](?=\s|$)", para[12:])
     sent = para[: 12 + m.end()] if m else para
     return sent[:200].strip()
+
+
+def _landing_inputs(state, nd):
+    """(completed, line): what a surface SHOWS for a node in `state` ("completed" | "blocked" | None), the client's
+    distillText rule: the decision brief for a blocked state, the takeaway for a completed one, nothing otherwise;
+    and the completed bit the landing's pin reads, from the same state. The card passes its distillState (the
+    genuine block: the needs-input floors too, not the column), the modal row its own status, so each surface
+    resolves the landing of the very line it shows (the verifier's third round on T388: a working top floored to
+    needs-input showed the brief and landed on the takeaway's sentence, the line the column named)."""
+    if state == "blocked":
+        return False, (nd.get("blockSummary") or None)
+    if state == "completed":
+        return True, (nd.get("summary") or None)
+    return False, None
 
 
 def _summary_outrun(nd, trails, seg_best):

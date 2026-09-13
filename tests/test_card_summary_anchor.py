@@ -147,8 +147,12 @@ class TheWiring(unittest.TestCase):
         self.assertLess(tier, walk, "the text-atom tier runs before the latest-prose walk")
         self.assertLess(walk, stub, "…the stub only after the walk")
         self.assertLess(stub, work, "…and the work anchor last")
-        self.assertIn('_sa_u, _sa_q = _brief_landing(nid, col == "completed", _line)', src, "the card takes the one resolve")
-        self.assertIn('_brief_landing(nid, st == "done", _nline)', src, "…and so does each row, from the same function")
+        self.assertIn("_completed, _line = _landing_inputs(distill_state, nodes[nid])", src,
+                      "the card's line and completed bit come from the state it SHOWS (distillState), not the column")
+        self.assertIn("_sa_u, _sa_q = _brief_landing(nid, _completed, _line)", src, "the card takes the one resolve")
+        self.assertIn('_ncompleted, _nline = _landing_inputs("completed" if st == "done" else "blocked" if st == "question" else None, nd)', src,
+                      "…and each row's from its own shown status, through the same function")
+        self.assertIn("_nsa_u, _nsa_q = (None, None) if (_ho_sid or not _nline) else _brief_landing(nid, _ncompleted, _nline)", src)
         self.assertIn('"summaryAnchorUuid": _nsa_u,', src, "every tree row carries the brief line's own landing")
         self.assertIn('"summaryAnchorQuote": _nsa_q,', src)
         self.assertIn("else (_sa_q or None)),", src, "the card's quote falls to the text-atom tier's span")
@@ -159,8 +163,9 @@ class TheWiring(unittest.TestCase):
         self.assertIn("focusEcho(ss); vscodeApi?.postMessage({ type: \"showOnTimeline\", itemId: node.id || it.turnId, sid: ss,", ts)
         self.assertIn("and not _summary_outrun(nd, [nodes[x].get(\"trail\") for x in sub], seg_best):", src,
                       "the cited tier applies the outrun rule over the whole subtree, once, for the card and the row alike")
-        self.assertIn("_nsa_u, _nsa_q = (None, None) if (_ho_sid or not _nline) else _brief_landing(nid, st == \"done\", _nline)", src,
-                      "a handoff row carries no landing: its session is the peer's")
+        self.assertIn("_land_memo[mk] = (u, (q or None))", src, "one resolve per node, bit and line within a build")
+        self.assertIn("got = _sub_memo[root] = acc", src, "one subtree walk per root within a build")
+        self.assertIn('if not (entry or {}).get("faults"):', src, "a derivation that met a body-read fault is not memoized as an entry")
         self.assertIn("summaryAnchorUuid?: string | null;                            // the brief/summary line's own landing", ts)
 
 

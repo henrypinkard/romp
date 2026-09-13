@@ -194,6 +194,56 @@ class TheBriefClickEndToEnd(unittest.TestCase):
         self.assertEqual(card["summaryAnchorUuid"], "t20", "the completed pin: the newest substantive tail across the subtree")
         self.assertEqual(row["summaryAnchorUuid"], card["summaryAnchorUuid"], "the row follows the card's pin, not the citation")
 
+    def test_a_working_top_floored_to_needs_input_lands_on_the_brief_it_shows(self):
+        # a live permission prompt floors a WORKING top to needs-input: the card shows its decision brief (the
+        # distill state is blocked), so the click must land on the brief's sentence (t20), never the takeaway's (t9)
+        # that the column's rule would name (the verifier's third round)
+        km._live_map = lambda: {SID: {"state": "permission", "since": NOW - 100, "model": "", "effort": "",
+                                     "context": None, "compactPct": None, "color": None}}
+        top = node(self.G1, "Land the history gaps change", trail=[self.segs[0]], mt=T0 + 900,
+                   summary="Four questions before I go on. The earlier completion left these standing.",   # its sentence: t9 only
+                   summaryAnchor=None, distilledMt=T0 + 700,
+                   blockSummary=BRIEF, briefedMt=T0 + 900)                                              # its sentence: t9 and t20
+        child = node(self.G2, "The child step", parent=self.G1, t=T0 + 1200, mt=T0 + 1260, trail=[self.segs[2]])
+        self._write({self.G1: top, self.G2: child}, {self.G1: "working"})
+        card = self._card()
+        self.assertEqual(card["column"], "needs_input", "the live prompt floors the working top")
+        self.assertEqual(card["distillState"], "blocked", "…and the card shows the decision brief")
+        self.assertEqual(card["summaryAnchorUuid"], "t20", "the landing follows the shown brief (its sentence in the newest segment), not the takeaway")
+        self.assertEqual(card["summaryAnchorQuote"], "Should the history budget follow the device or the setting?")
+
+    def test_a_faulted_build_is_served_but_not_memoized_so_the_next_build_recovers(self):
+        self._write({self.G1: self._blocked_top([self.segs[0]])}, {self.G1: "blocked"})
+        real = km.jd._atom_text
+        def boom(a):
+            if a.get("uuid") == "t9":
+                raise km.em.LazyBodyRead("no record at the offset")
+            return real(a)
+        km.jd._atom_text = boom
+        try:
+            first = self._card()
+        finally:
+            km.jd._atom_text = real
+        self.assertEqual((first["summaryAnchorUuid"], first["summaryAnchorQuote"]), ("t9", None), "the faulted build lands without the span")
+        second = self._card()                          # nothing on disk moved: only a non-memoized entry re-derives
+        self.assertEqual(second["summaryAnchorQuote"], "Should the history budget follow the device or the setting?",
+                         "the next build recovers the span: the faulted entry was not memoized")
+
+    def test_the_landing_is_resolved_once_per_node_and_line_within_a_build(self):
+        self._write({self.G1: self._blocked_top([self.segs[0]])}, {self.G1: "blocked"})
+        real, calls = km._summary_text_anchor, []
+        def counting(*a, **kw):
+            calls.append(a[2] if len(a) > 2 else kw.get("memo_key"))
+            return real(*a, **kw)
+        km._summary_text_anchor = counting
+        try:
+            card = self._card()
+        finally:
+            km._summary_text_anchor = real
+        row = self._row(card, self.G1)
+        self.assertEqual(row["summaryAnchorUuid"], card["summaryAnchorUuid"], "the card and its row carry the landing")
+        self.assertEqual(len(calls), 1, "…from ONE resolve of the tier for the node and its line, not one per surface")
+
     def test_a_handoff_row_carries_no_landing_of_its_own(self):
         # a handoff row's session is the peer's; an anchor resolved in this session's parse would be a foreign atom
         # to the peer's chat, so the row ships none and its line falls to the work anchor's click
