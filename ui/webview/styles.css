@@ -802,6 +802,15 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    pill and landed nearly flush under the tab row above, while a line the + shared had air (the
    user 2026-08-25). Inner centering keeps the pill and chips at their own sizes. */
 .tab-tagbox { display: inline-flex; align-items: center; flex-wrap: wrap; min-height: 31px; }
+/* THE TAB LOCK (T395, the user 2026-09-12): a little rounded box like the tags box, right after the + tab (the user says
+   the position may move later), with the same floor so a controls-only line stays as tall as one the + is on; the
+   padlock gray at rest, and locked it wears the menu vocabulary's current dress, the accent on the glyph and the
+   outline, never a colour fill. */
+.tab-lockbox { display: inline-flex; align-items: center; min-height: 31px; margin-left: 4px; }
+.tab-lock { display: inline-flex; align-items: center; background: transparent; border: 1px solid var(--box-border); border-radius: 6px; padding: 4px 6px; cursor: pointer; color: var(--dim); }
+.tab-lock:hover { color: var(--fg); }
+.tab-lock.on { color: var(--accent); border-color: var(--accent); }
+.tab-lock svg { display: block; }
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
 /* (The .tab-fleet pill was removed 2026-06-24 — Fleet/Chat are now the rotated toggles in the chat pane's
    vertical strip, so the tab-bar pill was redundant.) */
@@ -4345,6 +4354,7 @@ body.dense-chrome .tab-add { padding: 3px 8px; font-size: 1.1em; }              
    the 18px line + 2 x 3px dense padding + the 1px border; #tabs stretches every item on a row to the tallest, so
    without this the row holding the + and the tag control would stay 31px beside 25px rows */
 body.dense-chrome .tab-tagbox { min-height: 25px; }                                     /* 31px */
+body.dense-chrome .tab-lockbox { min-height: 25px; }                                    /* 31px; the lock box follows the tags box (T395) */
 body.dense-chrome .tab-group-head { gap: 4px; padding: 3px 5px; }                       /* 5px; 6px 7px — the dense tab's own padding, so the row keeps a tab's box here too (T322) */
 /* the untagged trail's divider (the inline layout, stripGroupRows off): its 1px line is the content area under fixed
    gutters, so the 8px gutters sized for the 32px row would leave a 9px line in the 25px row; 6px keeps the default's

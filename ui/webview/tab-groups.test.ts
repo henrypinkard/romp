@@ -223,7 +223,7 @@ test("executed + pinned: the section holding the ACTIVE tab folds like any other
   assert.ok(!head.includes("group-active"), "the no-op action is gone");
   assert.match(head, /if \(holdsActive\) head\.setAttribute\("aria-current", "true"\);/);
   assert.match(head, /\+ \(holdsActive \? " holds-active" : ""\)\);/);
-  assert.match(head, /head\.draggable = true;/, "it still drags to reorder the groups");
+  assert.match(head, /head\.draggable = !settings\.tabsLocked;/, "it still drags to reorder the groups, unless the tabs are locked (T395)");
   assert.equal(headWords("infra", 1, 0, false, true).title, "infra — 1 session; holds the tab you are reading; click to fold this group and see its sessions at a glance; drag to reorder the groups");
   assert.match(head, /const words = headWords\(name, total, hidden\.length, collapsed, holdsActive, back, shown\);\s*\n\s*head\.title = words\.title;/, "the words are the pure module's");
   assert.ok(!RENDER.includes('"group-active"'), "no delegate handler for a no-op either");
@@ -342,7 +342,7 @@ test("headers are click-safe: data-act on the node, the action on the stable #ta
 });
 
 test("dragging a header reorders tagOrder through the views path — the store the timeline's pill drag writes (source pins)", () => {
-  assert.match(RENDER, /head\.draggable = true;/);
+  assert.match(RENDER, /head\.draggable = !settings\.tabsLocked;/, "a header drags unless the tabs are locked (T395)");
   assert.match(RENDER, /draggedGroup = name;/);
   const drop = RENDER.slice(RENDER.indexOf('tabs.addEventListener("drop"'), RENDER.indexOf("tabDragCommitted = true;"));
   assert.match(drop, /if \(draggedGroup\) \{/);
@@ -447,7 +447,7 @@ test("executed + pinned: the one-group-per-row setting is on by default; off, th
   assert.match(drop, /const edge = \(n: Element\) => n\.classList\.contains\("tab-group-head"\) \|\| n\.classList\.contains\("tab-group-break"\) \|\| n\.classList\.contains\("tab-group-sep"\);/,
     "the divider bounds the trail for the drop's in-group neighbour walk, as the break does under the setting");
   // a gear flip repaints at once: the setting rides the strip's rebuild signature, and the settings listener calls renderTabs
-  assert.match(RENDER, /settings\.tabCtx, settings\.stripGroupRows, settings\.theme, settings\.colormap,/, "in the strip's signature");
+  assert.match(RENDER, /settings\.tabCtx, settings\.stripGroupRows, settings\.tabsLocked, settings\.theme, settings\.colormap,/, "in the strip's signature");
   assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\);/);
   // the gear's row: a checkbox like Show git branch's, checked by default, saved through the same save() and filled at open
   assert.match(GEAR, /<label class=rs-row><input type=checkbox id=rs-striprows checked>' \+\s*\n\s*'<span><b>One tag group per row in the tab strip<\/b>/);
@@ -592,7 +592,7 @@ test("the header's structure and gestures read as a label: the tag's chip, then 
   assert.match(CSS, /\n\.tab \{[^}]*padding: 6px 7px;/s, "…the tab's own");
   assert.doesNotMatch(CSS.match(/\n\.tab-group-head \{([^}]*)\}/)![1], /border:|background/, "no border, no fill: empty around the parts");
   assert.match(CSS, /\.tab-group-head:focus-visible \{ outline: 1px solid var\(--accent\); outline-offset: -1px; \}/);
-  assert.match(head, /head\.draggable = true;/, "still drags to reorder the groups");
+  assert.match(head, /head\.draggable = !settings\.tabsLocked;/, "still drags to reorder the groups, unless the tabs are locked (T395)");
   assert.match(head, /head\.dataset\.act = "toggle-group";/, "…and still folds through the delegate");
   // theme: every section rule resolves through tokens — no raw hex or rgba — so the light theme needs no
   // override, and the tokens are ones the strip already wears (theme-parity.test.ts checks --fg/--dim/
@@ -1744,7 +1744,7 @@ test("assistive tech hears a label: decoration is aria-hidden, the header's name
   assert.ok(!/chip\.setAttribute\("aria-hidden"/.test(MAKE_HEAD), "…and is words, never hidden decoration");
   assert.match(MAKE_HEAD, /pip\.setAttribute\("aria-hidden", "true"\);[^\n]*\n\s*spoken \+= "; " \+ pip\.title;/, "the pip too — its phrase rides the label instead");
   assert.match(MAKE_HEAD, /let spoken = words\.label;/, "the label starts as headWords' (name and count, in words — executed above)");
-  assert.match(MAKE_HEAD, /head\.setAttribute\("aria-label", spoken\);\s*\n\s*head\.draggable = true;/, "set once, after the pip; an aria-label outranks name-from-content, so the header says what was appended and nothing that leaked in");
+  assert.match(MAKE_HEAD, /head\.setAttribute\("aria-label", spoken\);\s*\n\s*head\.draggable = !settings\.tabsLocked;/, "set once, after the pip; an aria-label outranks name-from-content, so the header says what was appended and nothing that leaked in");
   assert.equal(headWords("archived", 2, 2, true, false).label + "; " + sectionPipTitle("blocked", ["api", "tests"]),
     "archived, 2 sessions folded; 2 sessions in this group are blocked or waiting on you: api, tests",
     "the spoken label of a folded header wearing the pip");
