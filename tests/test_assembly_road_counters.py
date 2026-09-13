@@ -2,6 +2,7 @@
 """T398 (2026-09-12): a boot parsed two documented live leaves whole with no fallback counted, and nothing on GET /perf named the
 road the parse took. The assembly's road counters (serve, fold, restore, full with its reason, bypass, the g:<reason> demotions)
 ride asmCheckpoint.parse and the boot-health row, beside asmCheckpoint.removed, the document files removed per reason."""
+import json
 import os
 import sys
 import unittest
@@ -65,9 +66,10 @@ class AssemblyRoadCounters(Harness):
         self.parse(path)
         parse = em.asm_checkpoint_stats()["parse"]
         self.assertEqual(parse.get("g:rewrite"), 1, "%s" % parse)
-        self.assertEqual(parse.get("full:demoted"), 1, "%s" % parse)
+        self.assertEqual(parse.get("restore:afterDemote"), 1, "the demoted entry falls to the restore road (T402): %s" % parse)
+        self.assertEqual(parse.get("full:demoted", 0), 0, "%s" % parse)
         row = self._boot_row_parse()
-        self.assertEqual((row.get("g:rewrite"), row.get("full:demoted")), (1, 1), "the boot row's values: %r" % row)
+        self.assertEqual((row.get("g:rewrite"), row.get("restore:afterDemote")), (1, 1), "the boot row's values: %r" % row)
 
     def test_a_refused_standing_document_is_booked_as_refused_not_as_none(self):
         """Round one, medium: the restore's refusal unlinked the document before _assemble decided the reason by a stat, so a
@@ -140,6 +142,31 @@ class AssemblyRoadCounters(Harness):
         self.assertEqual(em.asm_checkpoint_stats()["removed"], {"sweep": 1})
         self.assertFalse(em._asm_ckpt_file(path).exists())
 
+    def test_a_demoted_entry_falls_to_the_restore_road_not_a_whole_parse(self):
+        """T402: an entry the gates demoted (here descent: a tail record re-parented off the leaf, the rewind shape) went
+        straight to a whole parse, consulting no document; the first instrumented boot paid two of them inside the auto-nudge
+        tick. The document still stands for the pre-cut part, so the restore road is tried first: g:descent booked, a restore
+        taken (restore:afterDemote), no whole read; the whole parse only when the restore returns None."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("descent", records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        self.fresh(); tree = self.parse(path); self._reset()               # the entry stands, restored from the document
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReads"] = {}
+        atoms = [a for t in tree["turns"] for a in t["atoms"] if a.get("uuid") and a.get("type") in ("user", "assistant")]
+        old_leaf = atoms[-1]; anchor = atoms[-3]                          # a record chained onto an EARLIER atom: off the leaf
+        t_late = max(float(a.get("t") or 0) for a in atoms) + 60
+        with open(path, "a") as fh:
+            fh.write(json.dumps(G.uline(t_late, "a rewind off the leaf", "u_rewound_tail", anchor["uuid"])) + "\n")
+        em._read_jsonl_entry(path, tail_ok=True)                           # the entry grows; the gates see the delta
+        self.parse(path)
+        parse = em.asm_checkpoint_stats()["parse"]
+        self.assertEqual(parse.get("g:descent"), 1, "the descent check demoted the entry: %s" % parse)
+        self.assertEqual(parse.get("restore:afterDemote"), 1, "and the restore road was taken: %s" % parse)
+        self.assertEqual(parse.get("full:demoted", 0), 0, "no whole parse: %s" % parse)
+        self.assertEqual({k: v for k, v in em.record_cache_stats()["wholeReads"].items()}, {}, "no whole read")
+        self.fresh(); whole = self.parse(path)
+        self.assertEqual([len(t["atoms"]) for t in whole["turns"]], [len(t["atoms"]) for t in self.parse(path)["turns"]])
 
 if __name__ == "__main__":
     unittest.main()

@@ -4446,11 +4446,20 @@ _TS_REPAIRED_SEEN = set()    # record uuids already counted in ts-repair — dis
 #                              not parse volume; races only overcount by one, acceptable
 
 
+_ASM_DEMOTE_TL = threading.local()   # the calling thread's last demotion reason: what _assemble reads to pick the road after it
+_ASM_RESTORE_AFTER_DEMOTE = ("descent", "rewrite", "nonleaf")   # the demotions the document still stands for (T402): the tail
+#                                   moved (a spur, a rewind, a fork), the leaf's record entry was replaced, a lineage file moved; the
+#                                   load's own checks refuse a document that no longer fits. Every other reason (a new boundary or
+#                                   summary in the tail, a prompt id, a skill link, a stamp out of order, ...) keeps the whole parse.
+
+
 def _asm_demote(reason):
     """Count WHY a fold demoted to a full parse (g:<reason> in _ASM_STATS) and return None —
-    the hit-rate diagnosis this cache lives or dies by, in prod and in the corpus replay."""
+    the hit-rate diagnosis this cache lives or dies by, in prod and in the corpus replay. The reason is
+    left on the thread for _assemble, which tries the restore road for the reasons the document still stands for."""
     k = "g:" + reason
     _asm_stat(k)
+    _ASM_DEMOTE_TL.reason = reason
     return None
 
 
@@ -6188,6 +6197,7 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
                     _ASM_CACHE.pop(key, None)
                     _ASM_CACHE[key] = entry       # a served entry is a USED entry (LRU touch)
             if entry is not None:
+                _ASM_DEMOTE_TL.reason = None
                 got = _asm_gates(entry, leaf_path, candidate_files, links)
                 if got is not None:
                     delta, leaf_recs = got
@@ -6203,6 +6213,17 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
                         return served
                 with _ASM_LOCK:                   # gate/invariance demotion: the entry is stale
                     _ASM_CACHE.pop(key, None)
+                # A demoted entry falls to the RESTORE road before the whole parse (T402): for a descent (the delta does not
+                # chain the new leaf to the old: an api_error spur, a rewind, a /clear fork in the tail), a rewrite or a moved
+                # lineage file, the document still stands for the pre-cut part and its own load checks refuse it when it does
+                # not fit; the tail read from the cut covers the moved leaf. The first instrumented boot (T398) paid two whole
+                # parses under g:descent inside the auto-nudge tick where a restore would have read the tail.
+                if _CKPT_DIR_FN is not None and getattr(_ASM_DEMOTE_TL, "reason", None) in _ASM_RESTORE_AFTER_DEMOTE:
+                    served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
+                    if served is not None:
+                        _asm_stat("restore"); _asm_stat("restore:afterDemote")
+                        _mode("restore")
+                        return served
             elif _CKPT_DIR_FN is not None:
                 served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
                 if served is not None:

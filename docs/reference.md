@@ -1541,7 +1541,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   bookkeeping could not close. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
   stage without the kernel alive, and `parse`, the assembly's road counters at
-  the first cycle's end (T398): `serve`, `fold`, `restore`, `full` with
+  the first cycle's end (T398): `serve`, `fold`, `restore` (with
+  `restore:afterDemote`, the restores taken over an entry the gates demoted
+  instead of a whole parse, T402), `full` with
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
   `rewrite` when the leaf's record entry was replaced by a from-zero read
   under a new generation, `nonleaf` when a lineage file moved),
