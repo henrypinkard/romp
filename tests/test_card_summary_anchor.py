@@ -133,6 +133,35 @@ class TheTextAtom(unittest.TestCase):
         self.assertEqual(first[0], "t5")
 
 
+# The six states the verifier executed, one row each: (name, distillState, column, completed, blocked). The webview
+# test ui/webview/distiller-line.test.ts carries the SAME rows for distillInputs; TheLineRuleTable pins both sides.
+LINE_RULE_TABLE = [
+    ("stall floor", None, "needs_input", False, True),
+    ("permission floor", "blocked", "needs_input", False, True),
+    ("real block in recheck", "blocked", "working", False, False),
+    ("done confirming", None, "working", False, False),
+    ("completed", "completed", "completed", True, False),
+    ("plain working", None, "working", False, False),
+]
+
+
+class TheLineRuleTable(unittest.TestCase):
+    def test_the_kernel_mirrors_the_clients_distill_inputs_over_the_six_states(self):
+        nd = {"summary": "the takeaway", "blockSummary": "the brief"}
+        for name, state, column, completed, blocked in LINE_RULE_TABLE:
+            with self.subTest(name):
+                got_completed, line = km._landing_inputs(state, column, nd)
+                self.assertEqual(got_completed, completed, name)
+                self.assertEqual(line, "the brief" if blocked else ("the takeaway" if completed else None), name)
+
+    def test_the_webview_test_carries_the_same_table(self):
+        ts = open(os.path.join(ROOT, "ui", "webview", "distiller-line.test.ts"), encoding="utf-8").read()
+        for name, state, column, completed, blocked in LINE_RULE_TABLE:
+            row = '["%s", %s, "%s", %s, %s]' % (name, "null" if state is None else '"%s"' % state, column,
+                                                str(completed).lower(), str(blocked).lower())
+            self.assertIn(row, ts, "the webview pins the same row: %s" % row)
+
+
 class TheWiring(unittest.TestCase):
     def test_the_card_chain_tries_the_text_atom_before_the_latest_prose_walk_and_the_tree_rows_carry_it(self):
         src = open(os.path.join(ROOT, "kernel", "kernel.py"), encoding="utf-8").read()
@@ -147,11 +176,11 @@ class TheWiring(unittest.TestCase):
         self.assertLess(tier, walk, "the text-atom tier runs before the latest-prose walk")
         self.assertLess(walk, stub, "…the stub only after the walk")
         self.assertLess(stub, work, "…and the work anchor last")
-        self.assertIn("_completed, _line = _landing_inputs(distill_state, nodes[nid])", src,
-                      "the card's line and completed bit come from the state it SHOWS (distillState), not the column")
+        self.assertIn("_completed, _line = _landing_inputs(distill_state, column, nodes[nid])", src,
+                      "the card's line and completed bit come from distillInputs' terms: the state AND the column")
         self.assertIn("_sa_u, _sa_q = _brief_landing(nid, _completed, _line)", src, "the card takes the one resolve")
-        self.assertIn('_ncompleted, _nline = _landing_inputs("completed" if st == "done" else "blocked" if st == "question" else None, nd)', src,
-                      "…and each row's from its own shown status, through the same function")
+        self.assertIn('_ncompleted, _nline = _landing_inputs("completed" if st == "done" else "blocked" if st == "question" else None, "", nd)', src,
+                      "…and each row's from its own shown status, through the same function, with no column term")
         self.assertIn("_nsa_u, _nsa_q = (None, None) if (_ho_sid or not _nline) else _brief_landing(nid, _ncompleted, _nline)", src)
         self.assertIn('"summaryAnchorUuid": _nsa_u,', src, "every tree row carries the brief line's own landing")
         self.assertIn('"summaryAnchorQuote": _nsa_q,', src)

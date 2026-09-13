@@ -121,10 +121,13 @@ class TheBriefClickEndToEnd(unittest.TestCase):
             "rompUuid": SID, "seq": len(nodes), "lastNode": self.G1, "nodes": nodes, "placements": {}, "status": status}))
 
     def _blocked_top(self, trail):
-        return node(self.G1, "Land the history gaps change", trail=trail, mt=T0 + 900, blocked=True,
+        # the block lands AFTER the last user turn (u3 at T0 + 1200), so no plain reply follows it and the card
+        # stays in needs-input, where the client shows the brief and wires its click; a block with a later plain
+        # turn sits in the re-judging window, where no distiller line renders (the verifier's fourth round)
+        return node(self.G1, "Land the history gaps change", trail=trail, mt=T0 + 1300, blocked=True,
                     blockWhy="four questions the user must answer", blockSummary=BRIEF, summaryAnchor=None,
-                    briefedMt=T0 + 900,
-                    log=[{"ev_t": T0 + 850, "src": "closer", "kind": "block", "at": T0 + 850,
+                    briefedMt=T0 + 1300,
+                    log=[{"ev_t": T0 + 1300, "src": "closer", "kind": "block", "at": T0 + 1300,
                           "why": "four questions the user must answer"}])
 
     def _card(self, g=None):
@@ -140,6 +143,7 @@ class TheBriefClickEndToEnd(unittest.TestCase):
     def test_the_brief_click_lands_on_the_wrap_up_text_atom_not_the_tool_call(self):
         self._write({self.G1: self._blocked_top([self.segs[0]])}, {self.G1: "blocked"})   # the newest trail segment: the tool call only
         card = self._card()
+        self.assertEqual((card["column"], card["distillState"]), ("needs_input", "blocked"), "a displaying state: the brief shows and its click is wired")
         self.assertEqual(card["summaryAnchorUuid"], "t9", "the text atom that carries the brief's opening sentence (the base: a1, the tool call)")
         self.assertEqual(card["summaryAnchorQuote"], "Should the history budget follow the device or the setting?")
         row = self._row(card, self.G1)
@@ -244,6 +248,24 @@ class TheBriefClickEndToEnd(unittest.TestCase):
         row = self._row(card, self.G1)
         self.assertEqual(row["summaryAnchorUuid"], card["summaryAnchorUuid"], "the card and its row carry the landing")
         self.assertEqual(len(calls), 1, "…from ONE resolve of the tier for the node and its line, not one per surface")
+
+    def test_a_stall_floored_card_lands_on_the_brief_it_shows_not_the_tool_call(self):
+        # romp's nudge gate holds an idle working top (a stall record, no block verdict): the column floors to
+        # needs-input (the user's 2026-08-13 rule) while the distill state stays None, so the client shows the
+        # staller's brief through the column fallback; the kernel must resolve the landing from that same brief,
+        # else the newest tool-only segment hands the click the tool call (the defect this change opens with)
+        real = km._stalled_goals
+        km._stalled_goals = lambda: {self.G1: {"why": "the reviver is not retiring", "since": NOW - 100}}
+        try:
+            top = node(self.G1, "Land the history gaps change", trail=[self.segs[0]], mt=T0 + 900,
+                       blockSummary=BRIEF, summaryAnchor=None, briefedMt=T0 + 900)
+            self._write({self.G1: top}, {self.G1: "working"})
+            card = self._card()
+        finally:
+            km._stalled_goals = real
+        self.assertEqual((card["column"], card["distillState"]), ("needs_input", None), "the stall floor: needs-input with no distill state")
+        self.assertEqual(card["summaryAnchorUuid"], "t9", "the brief the client shows lands on its own sentence (the base: a1, the tool call)")
+        self.assertEqual(card["summaryAnchorQuote"], "Should the history budget follow the device or the setting?")
 
     def test_a_handoff_row_carries_no_landing_of_its_own(self):
         # a handoff row's session is the peer's; an anchor resolved in this session's parse would be a foreign atom

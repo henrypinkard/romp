@@ -36827,7 +36827,8 @@ def _feed_session_entry(s, ctx):
         # subtree (T388). A HANDOFF row gets none: its session is the peer's (whoSid) while any landing here would be
         # an atom of THIS session's parse, a foreign atom to the peer's chat; the row's line falls to goWork, whose
         # target the tracker's own row wears (the verifier's second round).
-        _ncompleted, _nline = _landing_inputs("completed" if st == "done" else "blocked" if st == "question" else None, nd)
+        _ncompleted, _nline = _landing_inputs("completed" if st == "done" else "blocked" if st == "question" else None, "", nd)
+        #                       ^ the modal row's status is its whole rule (distillText by status); no column term
         _nsa_u, _nsa_q = (None, None) if (_ho_sid or not _nline) else _brief_landing(nid, _ncompleted, _nline)
         _born = nd.get("born") if isinstance(nd.get("born"), dict) else (healed.get(nid) or (None, None))[1]
         out.append({"id": nid, "kind": "handoff" if _ho_sid else "ask", "text": nd["text"],
@@ -37338,7 +37339,7 @@ def _feed_session_entry(s, ctx):
         # ONE resolve for the card and its modal row (_brief_landing, above flatten): the completed pin, the cited
         # tier with the T153 outrun rule, the text-atom tier, the latest-prose walk, the stub, the work anchor, all
         # over the whole subtree's trails, so one brief never lands in two places by the surface clicked (T388).
-        _completed, _line = _landing_inputs(distill_state, nodes[nid])   # the line the card SHOWS (distillState, not the column)
+        _completed, _line = _landing_inputs(distill_state, column, nodes[nid])   # the line the card SHOWS: distillInputs' terms
         _cited = nodes[nid].get("summaryAnchor")
         _sa_u, _sa_q = _brief_landing(nid, _completed, _line)
         if _sa_u is None and ps is None:
@@ -39912,18 +39913,26 @@ def _opening_sentence(line):
     return sent[:200].strip()
 
 
-def _landing_inputs(state, nd):
-    """(completed, line): what a surface SHOWS for a node in `state` ("completed" | "blocked" | None), the client's
-    distillText rule: the decision brief for a blocked state, the takeaway for a completed one, nothing otherwise;
-    and the completed bit the landing's pin reads, from the same state. The card passes its distillState (the
-    genuine block: the needs-input floors too, not the column), the modal row its own status, so each surface
-    resolves the landing of the very line it shows (the verifier's third round on T388: a working top floored to
-    needs-input showed the brief and landed on the takeaway's sentence, the line the column named)."""
-    if state == "blocked":
-        return False, (nd.get("blockSummary") or None)
-    if state == "completed":
-        return True, (nd.get("summary") or None)
-    return False, None
+def _landing_inputs(state, column, nd):
+    """(completed, line): what a surface SHOWS for a node, the client's distillInputs(distillState, column) rule TERM
+    FOR TERM (ui/webview/distiller-line.ts, pinned against this by a shared table): a working column shows nothing;
+    else the state decides (completed: the takeaway; blocked: the decision brief); else the column's fallback (the
+    brief for needs_input, the takeaway for completed). The card passes its distillState and its wire column, so the
+    floors the state does not name (the STALL floor, the user's 2026-08-13 rule) still show the brief the client
+    shows and land on it; the modal row passes its own status as the state and no column (its status is its whole
+    rule). The completed bit the landing's pin reads comes from the same terms (the verifier's third and fourth
+    rounds on T388: a permission-floored card landed on the takeaway's sentence, a stall-floored one on a tool call
+    inside a collapsed group, the very defect this change opens with)."""
+    if column == "working":
+        completed, blocked = False, False
+    elif state == "completed":
+        completed, blocked = True, False
+    elif state == "blocked":
+        completed, blocked = False, True
+    else:
+        completed, blocked = column == "completed", column == "needs_input"
+    line = nd.get("blockSummary") if blocked else (nd.get("summary") if completed else None)
+    return completed, (line or None)
 
 
 def _summary_outrun(nd, trails, seg_best):
