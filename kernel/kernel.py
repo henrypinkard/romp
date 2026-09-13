@@ -42377,7 +42377,7 @@ def _dedup_sig(msg, s):
 # shipped as str() (_wire_default, one per encode). Bumped through _wire_bump, under a lock: the pusher and a
 # handler-thread connect push both split, and whichever sender thread first materializes a _LazyWire bumps its
 # counter, so a bare `+= 1` here would be a read-modify-write across threads (the tests assert exact counts).
-_wire_stats = {"split_hit": 0, "split_miss": 0, "feed_body": 0, "bars_body": 0, "feed_sig_fallback": 0,
+_wire_stats = {"split_hit": 0, "split_miss": 0, "feed_body": 0, "bars_body": 0, "feed_sig_fallback": 0, "feed_first": 0,
                "bars_sig_fallback": 0, "default_str": 0}
 _WIRE_STATS_LOCK = threading.Lock()
 _wire_default_said = set()   # type names _wire_default has written to stderr: a type is said once, not per value
@@ -46349,6 +46349,38 @@ def _chat_sig_ok(sid):
             _chat_sig_faults.pop(str(sid), None)
 
 
+def _feed_first(now, live_map, targets, connect):
+    """The cold kernel's first feed frame, built and sent to the feed panes among `targets` before the chat and timeline
+    builds of the same push (see the CARDS FIRST note in _push). The build goes through _cached_feed, so the push's own
+    feed section finds it warm; the wire tuple is built exactly as the send stage builds it and left in _feed_wire, so a
+    later frame with the same ledgers reuses it. Counted under _wire_stats feed_first and the push.feedFirst stage."""
+    global _feed_wire
+    _t0 = time.monotonic()
+    fsig = _fleet_view_sig(now, live_map)
+    feed_src = _cached_feed(now, live_map, fsig, connect)
+    if feed_src is None:
+        return False
+    feed = dict(feed_src)                            # the copy the send stage would make; no ledgers yet (no session build ran)
+    feed_parts = _delta_parts("feed", feed)
+    if feed_parts is not None:
+        feed_sig = _parts_sig(feed_parts)
+        feed_ms = _LazyWire(lambda f=feed: json.dumps(f, default=_wire_default_in("_push feed")), _parts_est(feed_parts), "feed_body")
+    else:
+        s_ = json.dumps(feed, default=_wire_default_in("_push feed"))
+        feed_ms, feed_sig = _LazyWire(None, len(s_), text=s_), _dedup_sig(feed, s_)
+        _wire_bump("feed_sig_fallback")
+    _feed_wire = (feed_src, feed.get("ledgers"), feed, feed_ms, feed_sig, feed_parts)
+    for c in targets:
+        if c["app"] == "feed":
+            try:
+                _send_slot(c, "feed", feed, feed_ms, feed_sig, feed_parts)
+            except Exception:
+                sys.stderr.write("push feed-first send: %s\n" % traceback.format_exc())
+    _wire_bump("feed_first")
+    _PERF_STATS.stage("push.feedFirst", time.monotonic() - _t0)
+    return True
+
+
 def _push(targets, connect=False, live_map=None):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
@@ -46371,6 +46403,18 @@ def _push(targets, connect=False, live_map=None):
     want_feed = _feed_audience(targets)          # the Sessions pane (app "fleet") rides the feed payload; chat needs feed["working"]
     want_tl = any(c["app"] == "timeline" for c in targets)
     chat_clients = [c for c in targets if c["app"] == "chat"]
+    # CARDS FIRST on a cold kernel (the user 2026-09-12: after a restart the sessions load fast now and the cards still
+    # wait): the first push after a boot builds every chat page (cold parses, ~25 s of a 37 s first cycle on the devbox)
+    # and the timeline before the feed frame leaves at the send stage. With no feed built since start and a feed pane
+    # among the targets, the feed is built and sent to those panes FIRST (_feed_first); the regular feed section below
+    # serves the same build from the cache with the ledgers attached, and the send stage's delta path carries only what
+    # that added. A warm kernel (a feed already built, or any cycle after the first) takes no extra step.
+    if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS and _PERF_STATS.pusher.get("cycles", 0) == 0
+            and any(c["app"] == "feed" for c in targets)):      # the boot's FIRST pusher cycle, and only it
+        try:
+            _feed_first(now, live_map, targets, connect)
+        except Exception:
+            sys.stderr.write("push feed-first: %s\n" % traceback.format_exc())
     try:
         chat_list = _chat_tab_sessions(now, live_map)   # live + explicitly kept-open (read-only reopened dead) — nothing else
         tab_order = [s["sid"] for s in chat_list]
