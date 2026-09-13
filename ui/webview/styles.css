@@ -99,6 +99,9 @@ body.scheme-solarized-dark {
      provisional wash and the peer-tinted ground (theme-parity.test.ts holds the contrast on all four), and
      postal-kind-ramp.test.ts holds the stops, the hue distances and the distance from the prose ink. */
   --postal-coordinate: #54b204;  --postal-delegate: #9088f0;  --postal-question: #42a9b0;
+  --peer-ink-l: max(l, 0.72);   /* a session's name in a postal head is inked in its identity colour, lifted to a lightness floor when the colour
+                                    is darker (T390 fold): a sweep of all sixty palette colours over the card grounds (the plain box and the
+                                    incoming card's wash at the peer's own hue) reads 4.9:1 at worst at this floor, 1.7:1 with no floor */
   --postal-wash-l: 0.263;  --postal-wash-c: 0.03;   /* the incoming card's tint: the peer's hue at the box ground's own
                                                        OKLab lightness (the page under the 3% box), a gentle chroma (T337b).
                                                        The lightness here is the shipped theme's FALLBACK: the chat measures
@@ -247,6 +250,8 @@ body.theme-light {
      at 4.6:1 or better on the cream page, the boxed card, the provisional wash and the peer-tinted ground at every hue
      (T371: the hues hold within a degree of the stops, OKLCH L about .49, chroma at the gamut's edge for the two vivid ones) */
   --postal-coordinate: #386f18;  --postal-delegate: #5f57ab;  --postal-question: #0d6d73;
+  --peer-ink-l: 0.46;   /* a session's name in a postal head, deepened on its own hue to read on the cream card (T390; the kind
+                           words above take the same rule by hand, OKLCH L about .49) */
   --postal-wash-l: 0.919;  --postal-wash-c: 0.045;  /* the cream under the 3% box; a stronger chroma: the cream's own hue
                                                        (71) sits near a warm peer's, and at .03 that tint read at less than half
                                                        a cool one's distance from the ground (T337c, the review of 2026-09-11) */
@@ -2519,9 +2524,16 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
 .notice-glyph .meta-dots i { background: var(--notice-rail, var(--accent)); }
 .notice-src { flex: 0 0 auto; font-size: 0.72em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--dim); white-space: nowrap; }
-/* the ONE coloured element in the vocabulary: the house session chip naming a peer (postal mail) */
-.notice-src-chip { display: inline-block; padding: 0 7px; border-radius: var(--radius-pill); letter-spacing: 0.02em;
-  text-transform: none; font-weight: 700; background: var(--peer-bg, var(--overlay-10)); color: var(--peer-fg, var(--fg)); }
+/* the ONE coloured element in the vocabulary: a session's NAME in a postal card's head, both ends (T390, the user
+   2026-09-12): the name itself, bold, inked in the session's identity colour, the way the awaiting fold names a peer; no
+   chip box, no fill. The identity colour arrives as --peer-bg (the session's own colour, chosen for a dark ground); the
+   ink is that colour's hue and chroma at the theme's lightness token (--peer-ink-l: the colour's own lightness in the
+   dark theme, a deepened one in cream, where a pastel identity colour would not read on the card's ground), the same
+   relative-colour rule the incoming card's tint uses. The muted host prefix is the tab's (.host-prefix). */
+.notice-src-end { letter-spacing: 0.02em; text-transform: none; font-weight: 700;
+  color: var(--peer-bg, var(--fg));   /* an engine without relative colour syntax keeps the identity colour itself */
+  color: oklch(from var(--peer-bg, var(--fg)) var(--peer-ink-l, l) c h); }
+.notice-src-end .host-prefix { font-weight: 400; }
 .notice-gist { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 0.92em; color: var(--fg); }
 /* where the gist shares the head with a long META and no actions, it keeps a legible floor: flex shrinks the two in
@@ -2586,7 +2598,8 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
    still show where the words would not fit */
 .notice-src-ends { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
 @container (max-width: 520px) {
-  .turn-postal-service .notice-src-self { width: 10px; height: 10px; padding: 0; border-radius: 50%; align-self: center; overflow: hidden; }
+  .turn-postal-service .notice-src-self { display: inline-block; width: 10px; height: 10px; padding: 0; border-radius: 50%; align-self: center; overflow: hidden;
+    background: var(--peer-bg, var(--overlay-10)); }   /* the dot is the one place the identity colour fills (T390) */
   .turn-postal-service .notice-src-self .notice-src-name { display: none; }
 }
 /* the DELIVERY STATE icon at the head's right edge (postal-state.ts for the map): dim for sent and delivered, the
