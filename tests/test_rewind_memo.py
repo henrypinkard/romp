@@ -407,6 +407,9 @@ class RewoundMemo(Harness):
         jd._per_file_rewound(fsid, [path])                                # the memo road: a cursor at the file's record count
         self.assertIn(path, em._REWOUND_CACHE)
         n0 = em._REWOUND_CACHE[path][0]
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="flipFold")   # a live fold beside it, as the settle's folds are
+        self.assertTrue(em.checkpoint_write(path), "the settle's write while the leaf is documentless: the memo reaches the disk")
+        self.assertIn("rewoundUuids", json.loads(em._ckpt_file(path).read_text())["folds"])
         recs = G.SINGLE_FILE["rewind_off_path"][0]()
         more = compacting_variant(recs, "flip")[len(recs):]                # the first compaction lands, with turns after it
         with open(path, "a") as fh:
@@ -417,11 +420,37 @@ class RewoundMemo(Harness):
         self.assertTrue(em.asm_checkpoint_write(path, fsid, tree=tree), em.asm_checkpoint_stats())
         jd._per_file_rewound(fsid, [path])                                # the leaf road now
         self.assertNotIn(path, em._REWOUND_CACHE, "the memo's cursor dropped at the flip")
-        em.fold_records({}, path, list, lambda st, r: st, ckpt="flipFold")   # a live fold at the file's record count: what the
-        self.assertTrue(em.checkpoint_write(path), "the next write")          #  settle's folds are on a live leaf
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="flipFold")   # the live fold steps to the file's record count
+        self.assertTrue(em.checkpoint_write(path), "the next write")
         d = json.loads(em._ckpt_file(path).read_text())
-        self.assertNotIn("rewoundUuids", d["folds"], "the next write omits the fold: %r" % sorted(d["folds"]))
-        self.assertGreater(d["count"], n0, "the cut follows the live folds past the old cursor: %d vs %d" % (d["count"], n0))
+        self.assertNotIn("rewoundUuids", d["folds"], "the next write omits the fold, though the document carried it: %r" % sorted(d["folds"]))
+        self.assertEqual(d["count"], d["folds"]["flipFold"]["count"], "the cut equals the live fold's count: %r" % d)
+        self.assertGreater(d["count"], n0, "past the old cursor: %d vs %d" % (d["count"], n0))
+        self.assertNotIn(path, em._RETIRED_FOLDS, "the retirement honoured is done")
+
+    def test_the_sidecar_says_whether_resume_links_joined_the_inputs_and_an_older_sidecar_is_refreshed(self):
+        """Round one, lows 1 and 2: the load refuses a document on its links too, so a one-file lineage whose document was written
+        with resume links among the inputs cannot seed either (`linked`); and a session that already carried a document kept
+        the old sidecar shape indefinitely, since the write skips a restored entry: the restore rewrites the sidecar alone."""
+        jd, fsid, path = self._own_leaf("linked", scenario="compaction_atom")
+        self.fresh_process()
+        tree = em.parse_session(path, rompuuid=fsid, name="impl", dir="/TESTDIR", candidate_files=[path], postal_log=[], now=NOW)
+        self.assertTrue(em.asm_checkpoint_write(path, fsid, tree=tree))
+        cp = em._asm_ckpt_file(path); meta = cp.with_name(cp.name + ".meta")
+        d = json.loads(meta.read_text()); self.assertEqual((d["files"], d["linked"]), ([fsid], False), "%r" % d)
+        self.assertTrue(em.asm_document_seeds(path))
+        d["linked"] = True; meta.write_text(json.dumps(d))
+        self.assertFalse(em.asm_document_seeds(path), "links among the inputs: the one-file walk cannot be seeded")
+        meta.write_text(json.dumps({"av": d["av"], "path": d["path"]}))          # an older sidecar, without the list
+        self.assertTrue(em.asm_document_seeds(path), "an older sidecar answers as the stat did")
+        before = em.checkpoint_stats()["documentBytes"]
+        self.fresh_process(); modes = []
+        em.parse_session(path, rompuuid=fsid, name="impl", dir="/TESTDIR", candidate_files=[path], postal_log=[], now=NOW, asm_mode_out=modes)
+        self.assertEqual(modes, ["restore"])
+        d2 = json.loads(meta.read_text())
+        self.assertEqual((d2.get("files"), d2.get("linked")), ([fsid], False), "the restore refreshed the older sidecar: %r" % d2)
+        em.asm_document_seeds(path)
+        self.assertGreater(em.checkpoint_stats()["documentBytes"], before, "the sidecar read is counted under documentBytes")
 
 
 if __name__ == "__main__":

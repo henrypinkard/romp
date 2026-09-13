@@ -1397,6 +1397,9 @@ def checkpoint_write(path, force=False):
     if not folds and not force:
         return False
     folds.update(_carry_forward_states(key, folds, base, count, size, mtime))   # the disk document's states for folds this process never ran
+    with _CKPT_LOCK:
+        retired = set(_RETIRED_FOLDS.get(key, ()))        # taken AFTER the cursor snapshot and the carry: a forget that raced the
+    omitted = {n for n in retired if folds.pop(n, None) is not None or n in retired}   #  snapshot still omits its fold here
     cut = min([f["count"] for f in folds.values()] or [count])   # the document's cut: the LOWEST written cursor (T359), so the
     moved = None                                          #  next process's tail read holds every record a lagging fold has
     if cut < count and len(ent) >= 8 and ent[7]:          #  yet to step (its append), bounded by the records this entry holds
@@ -1439,8 +1442,14 @@ def checkpoint_write(path, force=False):
         _CKPT_SEQ[key] = seq
         _CKPT_STATS["writes"] += 1
         _CKPT_DOC_FOLDS[key] = _doc_fold_shapes(folds)
-        if left_out:
-            _FOLD_DIRTY.add(key)                          # a lagging fold has no cursor in this document yet
+        if omitted:                                       # the retirements this document honoured are done; any that arrived
+            rem = _RETIRED_FOLDS.get(key)                 #  after the check above stay, and keep the path dirty for the next write
+            if rem is not None:
+                rem -= omitted
+                if not rem:
+                    _RETIRED_FOLDS.pop(key, None)
+        if left_out or _RETIRED_FOLDS.get(key):
+            _FOLD_DIRTY.add(key)                          # a lagging fold has no cursor in this document yet, or a retirement owed
         else:
             _FOLD_DIRTY.discard(key)
     return True
@@ -4996,24 +5005,68 @@ _HYDRATED_CAP = _env_or("ROMP_HYDRATED_CAP_MB", max(1024 ** 3, _machine_memory_b
 _LAZY_KINDS = ("a", "u", "c", "o", "k", "b")   # atom kinds whose message is lazy; boundary and refusal atoms carry no message
 
 
+def _asm_sidecar(doc):
+    """The document's sidecar ({"av", "path", "files", "linked"}): what the boot sweep and asm_document_seeds read, a few bytes,
+    never the document. `linked` says resume-fork links joined the inputs (the load refuses a document on its links too)."""
+    return {"av": _ASM_CKPT_V, "path": doc["path"], "files": sorted(doc["files"]), "linked": bool(doc.get("links"))}
+
+
+def asm_sidecar_refresh(leaf_path, doc):
+    """Rewrite an OLDER sidecar (one without the inputs list) beside a document just restored, so the scan's predicate stops
+    degenerating to the one-file lineage test for a session that already carried a document (round one, low 2): a write of
+    a few bytes, the document untouched."""
+    cp = _asm_ckpt_file(leaf_path)
+    if cp is None:
+        return False
+    meta = cp.with_name(cp.name + ".meta")
+    try:
+        d = json.loads(meta.read_text())
+        if isinstance(d, dict) and isinstance(d.get("files"), list) and "linked" in d:
+            return False
+    except (OSError, ValueError):
+        pass
+    try:
+        mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
+        mtmp.write_text(json.dumps(_asm_sidecar(doc)))
+        os.replace(mtmp, meta)
+        return True
+    except OSError:
+        return False
+
+
 def asm_document_seeds(leaf_path):
     """Whether the assembly document for `leaf_path` can SEED a one-file walk of the leaf: its inputs are the leaf alone. Read
     from the sidecar's `files` (a few bytes, never the document); a sidecar without the list (an older write) answers as
     asm_document_stands does, and the next write adds it. A cleared or resume-forked session's document is written over the
     leaf plus its lineage, so file_rewound's load refused it on the inputs comparison and the leaf was read whole at every
     process (T391 follow-up, round one, low 1): such a leaf takes the memo road."""
-    cp = _asm_ckpt_file(leaf_path)
-    if cp is None or not cp.exists():
+    if not asm_document_stands(leaf_path):
         return False
+    cp = _asm_ckpt_file(leaf_path)
     meta = cp.with_name(cp.name + ".meta")
     try:
-        d = json.loads(meta.read_text())
+        text = meta.read_bytes(); _count_read(str(meta), len(text))   # the one steady-state read this predicate adds: counted
+        d = json.loads(text.decode("utf-8"))
     except (OSError, ValueError):
         return True                                       # no readable sidecar: the document stands, its inputs unknown
     files = d.get("files") if isinstance(d, dict) else None
     if not isinstance(files, list):
         return True
-    return files == [Path(leaf_path).stem]
+    return files == [Path(leaf_path).stem] and not d.get("linked")   # the leaf alone, no resume links among the inputs
+
+
+_RETIRED_FOLDS = {}                # path -> {fold name}: folds a caller retired whose cursor may still sit in the on-disk document;
+#                                   checkpoint_write consults it AFTER its cursor snapshot and its carry, so the document omits them
+#                                   (T391 follow-up, round one, medium: the carry re-added the memo's cursor from the document)
+
+
+def _retire_fold(path, name):
+    """Retire fold `name` of `path` for the next write: the in-memory cursor goes now, and the write skips the name when it
+    carries the on-disk document's states forward, so the document omits the fold and the cut follows the live folds."""
+    key = str(path)
+    with _CKPT_LOCK:
+        _RETIRED_FOLDS.setdefault(key, set()).add(name)
+        _FOLD_DIRTY.add(key)
 
 
 def rewound_memo_forget(path):
@@ -5024,15 +5077,13 @@ def rewound_memo_forget(path):
     restore reading that much more tail for every fold. Forgotten here, the next write omits the fold and the cut follows the
     live folds."""
     key = str(path)
-    if _REWOUND_CACHE.pop(key, None) is not None:
-        with _CKPT_LOCK:
-            _FOLD_DIRTY.add(key)
+    _REWOUND_CACHE.pop(key, None)
+    _retire_fold(key, "rewoundUuids")                     # the write omits it even when the document still carries it
 
 
 def asm_document_stands(leaf_path):
     """Whether an assembly document file exists for `leaf_path` (a stat, no read; False with no checkpoint directory): the
-    judges' incident scan asks before taking the leaf road, whose seeded walk needs the document, and takes the memo road
-    for a leaf that has none (a leaf with no compaction boundary can never have one, and was read whole at every boot)."""
+    existence half of asm_document_seeds, the predicate the judges' incident scan asks before taking the leaf road."""
     cp = _asm_ckpt_file(leaf_path)
     return cp is not None and cp.exists()
 
@@ -5530,8 +5581,8 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             os.replace(tmp, cp)
             meta = cp.with_name(cp.name + ".meta")            # {"av", "path"}: what the boot sweep reads, never the document
             mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
-            mtmp.write_text(json.dumps({"av": _ASM_CKPT_V, "path": doc["path"], "files": sorted(doc["files"])}))   # the inputs'
-            #                                                                   fsids too: asm_document_seeds reads them, never the document
+            mtmp.write_text(json.dumps(_asm_sidecar(doc)))   # the inputs' fsids and whether resume links joined them: what
+            #                                                   asm_document_seeds reads, never the document
             os.replace(mtmp, meta)
         except OSError:
             return skip("write")
@@ -5838,6 +5889,7 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
     doc = _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
     if doc is None:
         return None
+    asm_sidecar_refresh(leaf_path, doc)                   # an older sidecar gains the inputs list here (round one, low 2)
     try:
         seed, landed = _seed_from_doc(doc)
         fsids = list(doc.get("fsids") or [])
