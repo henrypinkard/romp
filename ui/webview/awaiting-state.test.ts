@@ -117,7 +117,7 @@ test("the awaited tasks wear the chip's green outline — exact launch-id match;
   // whenever a tracked task is named awaited — one toggle since the one-renderer cut (2026-09-06; the
   // kernel ships the ids only with a wait, so mid-turn the box wears its neutral border under a Working chip)
   assert.match(RENDER, /host\.classList\.toggle\("bg-awaited", !!why \|\| tasks\.some\(\(t\) => awaited\.has\(t\.id\)\)\);/);
-  assert.match(RENDER, /leftovers\.map\(\(t\) => taskRowSpec\(t, awaited\.has\(t\.id\)\)\)/);   // the row spec carries the match (slice 2's one row renderer; the rows join their kind's section since T394)
+  assert.match(RENDER, /leftovers\.map\(\(t\) => taskRowSpec\(t, awaited\.has\(t\.id\), services\.has\(t\.id\)\)\)/);   // the row spec carries the match (slice 2's one row renderer; the rows join their kind's section since T394)
   assert.match(RENDER, /\(t\.awaited \? " bg-awaited" : ""\)/);
   // the outline is the chip's await-green — the border/outline only; the status DOT rules are untouched
   assert.match(STYLES, /#bg-tasks\.bg-awaited \{ border-color: var\(--st-awaitbg-bg\); \}/);

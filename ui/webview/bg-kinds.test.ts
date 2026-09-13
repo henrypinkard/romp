@@ -13,6 +13,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const FIXTURE = fs.readFileSync(path.resolve(process.cwd(), "..", "tools", "ui-verify", "fixtures", "awaiting-rows-chat.html"), "utf8");
 const fn = (name: string) => RENDER.slice(RENDER.indexOf("function " + name + "("), RENDER.indexOf("\n}\n", RENDER.indexOf("function " + name + "(")));
+const UI_RULES = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "CLAUDE.md"), "utf8");
 
 test("the header's words count the kept rows apart from the awaited breakdown, either alone when the other is empty", () => {
   const rows: AwaitRow[] = [{ kind: "agents", id: "a1", label: "Map the parser" }, { kind: "commands", id: "c1", label: "Build the docs" }, { kind: "watches", id: "w1", label: "the CI run" }];
@@ -29,22 +30,26 @@ test("the sections are the kinds, in the rows' display order, and no section of 
   const body = fn("renderBgTasks");
   assert.deepEqual([...ROW_KINDS], ["agents", "commands", "watches", "peer", "timer"]);
   for (const k of ["agents", "commands", "watches"]) assert.ok(GROUP_TITLE[k], "a title for " + k);
-  assert.match(body, /const kept = leftovers\.map\(\(t\) => taskRowSpec\(t, awaited\.has\(t\.id\)\)\);/, "the tracked tasks the kernel's rows do not name become rows of their kind");
+  assert.match(body, /const kept = leftovers\.map\(\(t\) => taskRowSpec\(t, awaited\.has\(t\.id\), services\.has\(t\.id\)\)\);/, "the tracked tasks the kernel's rows do not name become rows of their kind; the judge's verdict rides in");
+  assert.match(body, /const services = new Set<string>\(s\.status\.bgServiceIds \|\| \[\]\);/, "the kernel ships the judge's furniture verdict as launch ids (round one, medium 2)");
+  assert.match(body, /const keptN = kept\.filter\(\(row\) => row\.kept\)\.length;/, "the header counts the rows wearing the verdict, none other (round one, medium 1)");
   assert.match(body, /const sections: \{ kind: string; rows: AwaitRow\[\] \}\[\] = \[\.\.\.ROW_KINDS, "other"\]\s*\n\s*\.filter\(\(k\) => groups\.some\(\(g\) => g\.kind === k\) \|\| kept\.some\(\(row\) => row\.kind === k\)\)/,
     "a kind the rows bring, or one only a kept row brings, in display order");
   assert.match(body, /for \(const g of sections\) \{\s*\n\s*if \(headers\) \{ const gh = el\("div", "bg-group-head"\); gh\.textContent = GROUP_TITLE\[g\.kind\] \|\| "Other"; list\.appendChild\(gh\); \}/);
   assert.match(body, /for \(const row of kept\) if \(row\.kind === g\.kind\) list\.appendChild\(bgRow\(row, sid\)\);/, "the kept rows of the kind follow its awaited rows");
   assert.doesNotMatch(RENDER, /BG_LEFTOVER_TITLE|"Also running"/, "the section and its title are gone");
-  assert.match(body, /lab\.textContent = "In the background · " \+ listBreakdown\(items, kept\.length\);/, "the working header counts every row it lists");
-  assert.match(body, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(items, kept\.length\);/, "…and the mixed idle header");
-  assert.match(body, /if \(kept\.length\) lab\.append\(" · " \+ keptWord\(kept\.length\)\);/, "…and the peer-named idle header");
+  assert.match(body, /lab\.textContent = "In the background · " \+ listBreakdown\(items, keptN\);/, "the working header counts every row it lists");
+  assert.match(body, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(items, keptN\);/, "…and the mixed idle header");
+  assert.match(body, /if \(keptN\) lab\.append\(" · " \+ keptWord\(keptN\)\);/, "…and the peer-named idle header");
 });
 
-test("every row spec carries its kind, and a tracked task the wait does not name is kept unless the kernel names it awaited", () => {
+test("every row spec carries its kind, and a tracked task is kept only where the kernel's verdict names it a service, while it runs", () => {
   const task = fn("taskRowSpec"), aw = fn("awaitRowSpec"), spec = RENDER.slice(RENDER.indexOf("interface BgRowSpec {"), RENDER.indexOf("\n}\n", RENDER.indexOf("interface BgRowSpec {")));
   assert.match(spec, /kind\?: string \| null;/);
   assert.match(spec, /kept\?: boolean;/);
-  assert.match(task, /kind: t\.agentId \? "agents" : "commands", kept: !awaited,/, "an agent-shaped task is an agent; the rest are commands; kept running unless awaited");
+  assert.match(task, /kind: t\.agentId \? "agents" : "commands", kept: service && status === "running",/, "an agent-shaped task is an agent; the rest are commands; kept only on the judge's verdict, and only while running (round one, medium 2 and low 1)");
+  assert.match(RENDER, /function taskRowSpec\(t: BgTask, awaited: boolean, service: boolean\): BgRowSpec \{/);
+  assert.doesNotMatch(task, /kept: !awaited/, "never inferred from a missing row");
   assert.match(aw, /return \{ id, status: "running", caption: "running", kind: "agents",/);
   assert.match(aw, /return \{ id, status, caption: status, kind: "commands",/);
   assert.match(aw, /return \{ id, status: "armed", caption: "armed", kind: "watches",/);
@@ -72,12 +77,19 @@ test("the sheet: one hue per kind, status overriding for failed and completed, t
   assert.doesNotMatch(rules, /\.bg-task\.bg-completed \{ --bgt: var\(--st-ready-bg\); \}/, "the ready blue would collide with the command hue");
   // the kept rules sit AFTER the row label's own rule: the layout pin reads the first `.bg-sum {` as the label's (bg-tasks-layout.test.ts)
   assert.ok(CSS.indexOf(".bg-task.bg-kept .bg-sum {") > CSS.indexOf("\n.bg-sum {"), "the kept label rule follows the label rule");
-  assert.match(CSS, /\.bg-task\.bg-kept \.bg-dot \{ opacity: \.55; \}/);
+  assert.match(CSS, /\.bg-task\.bg-kept \.bg-dot \{ background: color-mix\(in srgb, var\(--bgt\) 45%, var\(--dim\)\); \}/, "the kept dot is a colour, the hue greyed toward the dim ink (round one, low 2), never element opacity");
+  assert.doesNotMatch(CSS, /\.bg-kept \.bg-dot \{[^}]*opacity/);
+  assert.match(CSS, /\.bg-fold-head\.bg-completed \{ --bgt: var\(--dim\); \}/, "the header's completed tint follows the rows (round one, low 4)");
   assert.match(CSS, /\.bg-task\.bg-kept \.bg-sum \{ color: var\(--dim\); \}/);
   assert.match(CSS, /\.bg-kept-word \{ flex: 0 0 auto; font-size: 0\.82em; color: var\(--dim\); white-space: nowrap; \}/);
   assert.doesNotMatch(CSS, /\.bg-task\.bg-kept \{[^}]*opacity/, "the row itself never dims by opacity: every caption would fall under 4.5:1");
   assert.match(CSS, /body\.theme-light \.bg-status \{ color: oklch\(from var\(--bgt\) 0\.46 c h\); \}/, "the T390 lightness rule for the caption word on cream");
   assert.match(CSS, /\.bg-status \{[^}]*color: var\(--bgt\); \}/, "…over the plain hue, which an engine without relative colours keeps");
+});
+
+test("the accent-is-never-a-status-colour rule names its one exception, in the sheet and the UI rules (round one, low 5)", () => {
+  assert.match(CSS, /ONE exception \(the user 2026-09-12, T394\): the background box's command rows wear it as their KIND hue/);
+  assert.match(UI_RULES, /ONE exception, the user's choice of 2026-09-12 \(T394\): the background box's COMMAND rows wear\nthe accent blue as their KIND hue/);
 });
 
 test("the fixture mirrors the builder: every row wears its kind class", () => {

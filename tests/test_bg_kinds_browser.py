@@ -6,7 +6,8 @@ section of its own whose title said nothing of why.
 
 The served lab drives the real /chat page over a hermetic kernel (the rescind lab's boot: a synthetic idle session) and sends the
 page one session frame by the shim's own door (window.postMessage, the T357 route): the session working, the kernel's rows (an
-agent, a command, a watch) and the tracked tasks (those two plus a service the rows do not name). It opens the box and reads every
+agent, a command, a watch) and the tracked tasks: those two, a service the judge called furniture (bgServiceIds names it), a
+placed command mid-turn the kernel named neither awaited nor a service, and a completed service. It opens the box and reads every
 row as the browser computes it, in the dark theme and then the cream one:
 
   1. the sections and the rows in them, the header's words, the suffix on the kept row, the Stop, Cancel, arrow and caret;
@@ -28,7 +29,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 from test_queued_rescind_browser import BIN, EXT, SID, _free_port, _lab, copy_dist, iso   # noqa: E402  the shared boot's pieces (never its TestCase)
 
-AGENT_ID, CMD_ID, WATCH_ID, SVC_ID = "tu_agent_1", "tu_cmd_1", "watch-1", "tu_svc_1"
+AGENT_ID, CMD_ID, WATCH_ID, SVC_ID, PLACED_ID, DONE_ID = "tu_agent_1", "tu_cmd_1", "watch-1", "tu_svc_1", "tu_placed_1", "tu_svc_done"
 KEPT_WORD = "· kept running, not waited on"
 
 DRIVER = r"""
@@ -49,7 +50,7 @@ await page.waitForTimeout(500);
 await page.evaluate((f) => window.postMessage(f, "*"), cfg.frame);
 await page.waitForSelector("#bg-tasks .bg-fold-head", { timeout: 15000 });
 await page.click("#bg-tasks .bg-fold-head");   // collapsed by default: open the list
-await page.waitForFunction(() => document.querySelectorAll("#bg-tasks .bg-list .bg-task").length >= 4, null, { timeout: 15000 });
+await page.waitForFunction(() => document.querySelectorAll("#bg-tasks .bg-list .bg-task").length >= 6, null, { timeout: 15000 });
 await page.waitForTimeout(200);
 const probe = () => page.evaluate(() => {
   const tok = (v) => { const d = document.createElement("div"); d.style.background = v; document.body.appendChild(d); const c = getComputedStyle(d).backgroundColor; d.remove(); return c; };
@@ -174,15 +175,20 @@ class ServedBgKinds(unittest.TestCase):
         if cls._r is None:
             now = int(time.time())
             frame = {"type": "session", "id": SID, "name": "web", "color": {"bg": "#9cd2ff", "fg": "#0c1a2e"},
-                     "status": {"state": "working", "sinceEpoch": now - 300, "awaitingTaskIds": [],
+                     "status": {"state": "working", "sinceEpoch": now - 300, "awaitingTaskIds": [], "bgServiceIds": [SVC_ID, DONE_ID],
                                 "awaitingItems": [
                                     {"kind": "agents", "id": AGENT_ID, "agentId": "agent-1", "label": "Map the notes-api parser", "since": now - 240},
                                     {"kind": "commands", "id": CMD_ID, "label": "Build the docs site", "since": now - 540},
                                     {"kind": "watches", "id": WATCH_ID, "watchId": WATCH_ID, "label": "the CI run on web", "detail": "gh run watch 1", "since": now - 1860}]},
-                     "bgTasks": {"count": 3, "tasks": [
+                     "bgTasks": {"count": 5, "tasks": [
                          {"id": AGENT_ID, "status": "running", "summary": "Map the notes-api parser", "agentId": "agent-1", "command": "Map the parser module by module"},
                          {"id": CMD_ID, "status": "running", "summary": "Build the docs site", "command": "mkdocs build", "output": "building…"},
-                         {"id": SVC_ID, "status": "running", "summary": "Serve the docs preview", "command": "mkdocs serve", "output": "serving on 8000"}]}}
+                         {"id": SVC_ID, "status": "running", "summary": "Serve the docs preview", "command": "mkdocs serve", "output": "serving on 8000"},
+                         # a placed command mid-turn: the rows do not name it (they enumerate pending launches) and the judge did not call it
+                         # a service; it lists under its kind with no verdict word and no count (round one, medium 2)
+                         {"id": PLACED_ID, "status": "running", "summary": "Run the parser test chunk", "command": "uv run pytest -q tests/test_parser.py", "output": "…"},
+                         # a service that finished: terminal, so no suffix and no count (round one, low 1); its dot the dim ink
+                         {"id": DONE_ID, "status": "completed", "summary": "Warm the docs cache", "command": "mkdocs build --dirty", "output": "done"}]}}
             cfg = os.path.join(self.lab, "cfg.json")
             with open(cfg, "w") as f:
                 json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "frame": frame, "shots": os.environ.get("BG_KINDS_SHOTS", "")}, f)
@@ -205,22 +211,27 @@ class ServedBgKinds(unittest.TestCase):
         d = r["dark"]
         self.assertEqual(d["sections"], ["Agents", "Commands", "Watches"], "the kinds, in display order, and no section of any other name: %r" % d["sections"])
         self.assertEqual([(x["section"], x["label"]) for x in d["rows"]],
-                         [("Agents", "Map the notes-api parser"), ("Commands", "Build the docs site"), ("Commands", "Serve the docs preview"), ("Watches", "the CI run on web")],
-                         "each row under its kind; the service after the awaited command: %r" % d["rows"])
-        agent, cmd, svc, watch = d["rows"]
-        self.assertEqual(d["header"], "In the background · 1 agent · 1 command · 1 watch · 1 kept running", "the header counts every row it lists, the kept one apart")
-        for x, kind in ((agent, "agents"), (cmd, "commands"), (svc, "commands"), (watch, "watches")):
+                         [("Agents", "Map the notes-api parser"), ("Commands", "Build the docs site"), ("Commands", "Serve the docs preview"),
+                          ("Commands", "Run the parser test chunk"), ("Commands", "Warm the docs cache"), ("Watches", "the CI run on web")],
+                         "each row under its kind; the tracked tasks after the awaited command: %r" % d["rows"])
+        agent, cmd, svc, placed, done, watch = d["rows"]
+        self.assertEqual(d["header"], "In the background · 1 agent · 1 command · 1 watch · 1 kept running",
+                         "the header counts every row it lists and only the row wearing the verdict as kept (round one, medium 1 and low 1)")
+        for x, kind in ((agent, "agents"), (cmd, "commands"), (svc, "commands"), (placed, "commands"), (done, "commands"), (watch, "watches")):
             self.assertIn("bg-kind-" + kind, x["cls"].split(), "%s wears its kind: %r" % (x["label"], x["cls"]))
-        self.assertIn("bg-kept", svc["cls"].split(), "the service is the kept row: %r" % svc["cls"])
+        self.assertIn("bg-kept", svc["cls"].split(), "the running service is the kept row: %r" % svc["cls"])
         self.assertEqual(svc["kept"], KEPT_WORD, "the judge's verdict beside the label")
-        for x in (agent, cmd, watch):
-            self.assertNotIn("bg-kept", x["cls"].split(), "%s is awaited, not kept: %r" % (x["label"], x["cls"]))
-            self.assertIsNone(x["kept"], "no suffix on an awaited row: %r" % x)
-        self.assertEqual([x["caption"] for x in d["rows"]], ["running", "running", "running", "armed"])
+        for x in (agent, cmd, watch, placed, done):
+            self.assertNotIn("bg-kept", x["cls"].split(), "%s wears no verdict: %r" % (x["label"], x["cls"]))
+            self.assertIsNone(x["kept"], "no suffix: %r" % x)
+        self.assertEqual([x["caption"] for x in d["rows"]], ["running", "running", "running", "running", "completed", "armed"])
+        self.assertIn("bg-completed", done["cls"].split(), "the finished service keeps its own status: %r" % done["cls"])
         # the affordances stay: the agent's arrow and Stop, the command's Stop and fold caret, the service's Stop, the watch's Cancel
         self.assertTrue(agent["arrow"] and agent["stop"], "agent: arrow and Stop: %r" % agent)
         self.assertTrue(cmd["stop"] and cmd["caret"], "command: Stop and the fold caret: %r" % cmd)
         self.assertTrue(svc["stop"] and svc["caret"], "service: Stop and the fold caret: %r" % svc)
+        self.assertTrue(placed["stop"] and not placed["kept"], "the placed command: Stop, no verdict word: %r" % placed)
+        self.assertFalse(done["stop"], "a finished task has no Stop: %r" % done)
         self.assertTrue(watch["cancel"] and not watch["stop"], "watch: Cancel, no Stop: %r" % watch)
         self.assertEqual(r["light"]["sections"], d["sections"], "the cream theme changes no words")
         self.assertEqual(r["light"]["header"], d["header"])
@@ -230,16 +241,19 @@ class ServedBgKinds(unittest.TestCase):
         for name in ("dark", "light"):
             m = r[name]
             t = m["tokens"]
-            agent, cmd, svc, watch = m["rows"]
+            agent, cmd, svc, placed, done, watch = m["rows"]
             ground = composite(t["box"], t["page"])
             self.assertEqual(agent["dot"], t["working"], "%s: the agent's dot is the working gold: %r" % (name, agent))
             self.assertEqual(cmd["dot"], t["command"], "%s: the command's dot is the command blue: %r" % (name, cmd))
-            self.assertEqual(svc["dot"], t["command"], "%s: the service is a command too: %r" % (name, svc))
+            self.assertEqual(placed["dot"], t["command"], "%s: the placed command's dot is the command blue, undimmed: %r" % (name, placed))
+            self.assertEqual(done["dot"], t["dim"], "%s: a completed row's dot is the dim ink, never the ready blue: %r" % (name, done))
             self.assertEqual(watch["dot"], t["await"], "%s: the watch's dot is the awaiting green: %r" % (name, watch))
             self.assertNotEqual(t["command"], t["working"], "%s: the command hue is not the agents': %r" % (name, t))
-            self.assertEqual(float(svc["dotOpacity"]), 0.55, "%s: the kept row's dot is dimmed: %r" % (name, svc))
-            for x in (agent, cmd, watch):
-                self.assertEqual(float(x["dotOpacity"]), 1.0, "%s: an awaited row's dot is full: %r" % (name, x))
+            # the kept dot is a COLOUR, the hue greyed toward the dim ink (round one, low 2): dimmer than the hue, still 3:1 on the box
+            self.assertNotEqual(svc["dot"], t["command"], "%s: the kept row's dot is not the full hue: %r" % (name, svc))
+            self.assertGreaterEqual(contrast(svc["dot"], ground), 3.0, "%s: the kept dot reads on the box: %r" % (name, svc))
+            for x in m["rows"]:
+                self.assertEqual(float(x["dotOpacity"]), 1.0, "%s: no dot dims by element opacity: %r" % (name, x))
             self.assertEqual(svc["labelColor"], t["dim"], "%s: the kept row's label is the dim ink: %r" % (name, svc))
             self.assertEqual(svc["keptColor"], t["dim"], "%s: …and so is the verdict: %r" % (name, svc))
             self.assertGreaterEqual(contrast(t["dim"], ground), 4.5, "%s: the dim ink reads on the box: %r" % (name, t))

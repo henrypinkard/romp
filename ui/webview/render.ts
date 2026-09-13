@@ -312,7 +312,7 @@ type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: stri
 // which billing sides this box can bill, and why not for the other (kernel _auth_avail, 2026-09-08): the
 // Billing submenu lists both and greys the unavailable one with the reason in its hover
 interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
-interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -13874,13 +13874,19 @@ function renderBgTasks() {
   // (awaitingTaskIds — an exact launch-id match; the ids' PRESENCE, never the chip state); the status DOT
   // keeps its own meaning (yellow = the row is running)
   const awaited = new Set<string>(s.status.awaitingTaskIds || []);
+  // the JUDGE's verdict on the tracked tasks, shipped (kernel _bg_split's services, bgServiceIds, in every turn state): a task
+  // the closer audited past its launch without a wait is furniture the session keeps running. Only that verdict earns the
+  // kept-running word (T394 round one: inferring it from a missing row called a placed task under a stamped top, and every
+  // agent, kept running mid-turn, when the kernel simply enumerates no rows for them then)
+  const services = new Set<string>(s.status.bgServiceIds || []);
   host.classList.toggle("bg-awaited", !!why || tasks.some((t) => awaited.has(t.id)));
   const open = openFolds.has("bgfold:" + sid);
   const groups = groupRows(items);
   const awPeers = s.status.awaitingPeers || [];
   const itemIds = rowIds(items);   // the rows AND what nests under them (an agent's own waits name their tasks too)
   const leftovers = tasks.filter((t) => !itemIds.has(t.id));   // tracked tasks the wait does not name (services)
-  const kept = leftovers.map((t) => taskRowSpec(t, awaited.has(t.id)));   // …as rows of their KIND, dimmed, the verdict as a suffix (T394)
+  const kept = leftovers.map((t) => taskRowSpec(t, awaited.has(t.id), services.has(t.id)));   // …as rows of their KIND (T394): the judge's services dimmed, the verdict as a suffix
+  const keptN = kept.filter((row) => row.kept).length;   // the header counts the rows that WEAR the verdict, none other (round one, medium 1)
   // the header dot: await-green while waiting, like the chip; otherwise the worst tracked status, so a
   // failed task is glanceable while collapsed (running-yellow when nothing tracked has failed)
   const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, "running");
@@ -13907,17 +13913,17 @@ function renderBgTasks() {
         lab.appendChild(nm);
       });
       lab.append(" · " + why.replace(/^delegated to [^;]*;\s*/i, "").replace(/^(waiting on|awaiting)\s+/i, ""));
-      if (kept.length) lab.append(" · " + keptWord(kept.length));
+      if (keptN) lab.append(" · " + keptWord(keptN));
     } else if (groups.length > 1) {
-      lab.textContent = "Awaiting " + word + " · " + listBreakdown(items, kept.length);   // mixed kinds: the number, then the breakdown, then the kept rows
+      lab.textContent = "Awaiting " + word + " · " + listBreakdown(items, keptN);   // mixed kinds: the number, then the breakdown, then the kept rows
     } else {
-      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "") + (kept.length ? " · " + keptWord(kept.length) : "");
+      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "") + (keptN ? " · " + keptWord(keptN) : "");
     }
   } else {
     // WORKING (or idle with nothing awaited — a service the session keeps around): the same rows, worded
     // as what they are, no idle note. The header counts every row the list shows (T394): the in-flight rows by
     // kind, then the tracked tasks the kernel names no row for, apart, as the kept-running rows they are.
-    lab.textContent = "In the background · " + listBreakdown(items, kept.length);
+    lab.textContent = "In the background · " + listBreakdown(items, keptN);
   }
   head.appendChild(lab);
   host.appendChild(head);
@@ -13997,15 +14003,17 @@ interface BgRowSpec {
   output?: string | null;     // the fold: a command's output tail (never an agent's — its output file IS the transcript; the arrow is the way in)
   peer?: PeerIdent | null;    // a peer row: the name in identity colour
   kind?: string | null;       // the row's kind (agents | commands | watches | peer | timer): its section, and the hue of its dot and caption (T394)
-  kept?: boolean;             // a tracked task nobody waits on (the judge audited its launch without a wait): dimmed, the verdict as a muted suffix (T394)
+  kept?: boolean;             // a tracked task the judge called a service (kernel bgServiceIds: audited past its launch without a wait), still running: dimmed, the verdict as a muted suffix (T394)
   sub?: "first" | "rest" | null;   // a NESTED row — what the agent above it waits on (2026-09-10): indented; "first" wears the "waiting on" label, "rest" its blank twin so the dots align
   deeper?: string | null;     // a nested row that has waits of its own: their count, said in the label ("waiting on 1 command") — the box draws one level
 }
 
-function taskRowSpec(t: BgTask, awaited: boolean): BgRowSpec {
+function taskRowSpec(t: BgTask, awaited: boolean, service: boolean): BgRowSpec {
   const status = t.status || "running";
+  // its kind's section; the kept-running word only on a task the judge called a service (the kernel's verdict, never inferred
+  // from a missing row) and only while it runs: a completed or failed task is finished, not kept (round one, medium 2 and low 1)
   return { id: t.id, status, caption: status, label: t.summary || "Background task", awaited,
-           kind: t.agentId ? "agents" : "commands", kept: !awaited,   // its kind's section; kept running unless the kernel names it awaited (T394)
+           kind: t.agentId ? "agents" : "commands", kept: service && status === "running",
            agentId: t.agentId || null, stopId: status === "running" ? t.id : null,
            command: t.command || null, output: t.agentId ? null : (t.output || "(no output captured)") };
 }
