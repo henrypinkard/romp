@@ -744,9 +744,19 @@ _READ_BYTES = {}                  # path -> bytes this process read from it thro
 _READ_BYTES_LOCK = threading.Lock()
 
 
+_READ_BYTES_TOTAL = [0]           # the reader's bytes off disk since the process began, one integer (T397: a stage mark)
+
+
 def _count_read(path, n):
     with _READ_BYTES_LOCK:
         _READ_BYTES[path] = _READ_BYTES.get(path, 0) + int(n)
+        _READ_BYTES_TOTAL[0] += int(n)
+
+
+def read_bytes_total():
+    """What the reader pulled off disk since the process began, as one number (the per-path table is read_bytes_report)."""
+    with _READ_BYTES_LOCK:
+        return _READ_BYTES_TOTAL[0]
 
 
 def read_bytes_report():

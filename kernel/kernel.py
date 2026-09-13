@@ -204,6 +204,14 @@ _CHAT_SIG_LABELS = ("transcript", "states", "store", "hold", "archive", "episode
 _CHAT_SIG_DEPS = ("taskout", "pathlink", "postal")
 
 
+def _stage_ring_len(mem_total=None):
+    """How many cycles' stage splits the pusher keeps (T397): one per 64 MiB of the machine's memory, floored at 16 (a
+    64 GB box keeps 1024 cycles, a 4 GB one 64; an entry is a few hundred bytes), never a literal count (the user's
+    caches direction 2026-09-11). `mem_total` overrides the machine's reading (tests)."""
+    total = _mem_total_bytes() if mem_total is None else int(mem_total)
+    return max(16, total // (64 * 1024 * 1024))
+
+
 class _PerfStats:
     """Always-on counters behind GET /perf (`romp perf`): where the kernel's threads spend their time,
     kept cheap enough to leave running. Every writer takes the lock and does a few dict operations;
@@ -323,6 +331,15 @@ class _PerfStats:
                            "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
+            # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes
+            # and the hydrated bytes since the previous stage boundary); cycle() keeps the boot's FIRST cycle's split for
+            # the process (firstCycleS alone could not name the stage a 59 s boot spent its time in, 2026-09-12) and
+            # appends every cycle's split to `stage_ring`, a deque sized as a fraction of memory (_stage_ring_len), made
+            # at the first cycle since the memory reader is defined below this class.
+            self.cycle_stages = {}
+            self.first_cycle = None
+            self.stage_ring = None
+            self._stage_mark = None
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0,
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
@@ -401,10 +418,58 @@ class _PerfStats:
             if ms > p["cycle_ms_max"]:
                 p["cycle_ms_max"] = ms
             self.ring.append(ms)
+            split = {"s": round(dt, 3), "t": time.time(), "stages": self.cycle_stages}
+            if self.first_cycle is None:
+                self.first_cycle = split
+            if self.stage_ring is None:
+                self.stage_ring = collections.deque(maxlen=_stage_ring_len())
+            self.stage_ring.append(split)
+            self.cycle_stages = {}
+            self._stage_mark = None
+
+    @staticmethod
+    def _byte_marks():
+        """(the reader's bytes off disk, the assembly cut's hydrated bytes) so far: the two byte counters a stage moves."""
+        try:
+            return em.read_bytes_total(), int(em.asm_checkpoint_stats().get("hydratedBytes") or 0)
+        except Exception:
+            return 0, 0
+
+    def stage_boundary(self):
+        """A stage boundary that closes no stage: the bytes read since the last boundary belong to the stage that closes
+        next (the pusher's jobs before the push: `_push` marks its own start so its first sub-stage does not carry them)."""
+        marks = self._byte_marks()
+        with self.lock:
+            prev = self._stage_mark
+            self._stage_mark = marks
+            if prev is not None:                            # the jobs before the push: to the cycle's `jobs` bucket
+                cs = self.cycle_stages.setdefault("jobs", {"ms": 0.0, "bytes": 0, "hydrated": 0})
+                cs["bytes"] += max(0, marks[0] - prev[0]); cs["hydrated"] += max(0, marks[1] - prev[1])
 
     def stage(self, name, dt):
+        marks = self._byte_marks()
         with self.lock:
             self.stages[name] = self.stages.get(name, 0.0) + dt * 1000.0
+            cs = self.cycle_stages.setdefault(name, {"ms": 0.0, "bytes": 0, "hydrated": 0})
+            cs["ms"] += dt * 1000.0
+            if name == "push":                              # the container: its bytes are its sub-stages' (already attributed)
+                cs["bytes"] = sum(v["bytes"] for k, v in self.cycle_stages.items() if k.startswith("push."))
+                cs["hydrated"] = sum(v["hydrated"] for k, v in self.cycle_stages.items() if k.startswith("push."))
+            else:
+                prev = self._stage_mark
+                if prev is not None:
+                    cs["bytes"] += max(0, marks[0] - prev[0]); cs["hydrated"] += max(0, marks[1] - prev[1])
+                self._stage_mark = marks
+
+    def cycle_begin(self):
+        """The cycle's first byte mark: what the stages below it are measured from."""
+        marks = self._byte_marks()
+        with self.lock:
+            self._stage_mark = marks
+
+    def first_cycle_split(self):
+        with self.lock:
+            return dict(self.first_cycle) if self.first_cycle is not None else None
 
     def parse_hit(self):
         """The kernel's _parse served from the shared store (T323 stage 2)."""
@@ -516,6 +581,9 @@ class _PerfStats:
         with self.lock:
             ring = sorted(self.ring)
             pusher = dict(self.pusher)
+            pusher["firstCycle"] = dict(self.first_cycle) if self.first_cycle is not None else None   # T397: the boot's
+            pusher["stageRing"] = list(self.stage_ring) if self.stage_ring is not None else []          #  first cycle's split
+            pusher["stageRingMax"] = self.stage_ring.maxlen if self.stage_ring is not None else _stage_ring_len()   # and the ring
             stages = dict(self.stages)
             builds = {k: dict(v) for k, v in self.builds.items()}
             builds["chat"]["bg_miss"] = dict(self.builds["chat"]["bg_miss"])   # the nested map: a copy too
@@ -23228,6 +23296,9 @@ def _boot_health_first_cycle(dt):
     _BOOT_HEALTH_DONE[0] = True
     row = {"t": int(time.time()), "pid": os.getpid(), "bootHealth": True, "firstCycleS": round(dt, 2),
            "boundS": BOOT_FIRST_CYCLE_BOUND_S, "slow": dt > BOOT_FIRST_CYCLE_BOUND_S}
+    split = _PERF_STATS.first_cycle_split()                # T397: the cycle's stage split rides the row (the ledger reader
+    if split is not None:                                  #  sees which stage a slow boot spent its time in without the kernel)
+        row["stages"] = split.get("stages")
     if row["slow"]:
         try:
             sys.stderr.write("boot health: the first pusher cycle took %.1f s (bound %.0f s): sessions and cards waited behind it; "
@@ -46431,6 +46502,7 @@ def _push(targets, connect=False, live_map=None):
         # The FEED's per-session Fleet ledger slice still rides along, attached AFTER the builds (want_chat —
         # we do NOT build all sessions just for a feed/fleet push: the user 2026-06-24 slow-load regression).
         chat_sessions = []
+        _PERF_STATS.stage_boundary()          # T397: the push's sub-stages measure their bytes from here, not from the cycle's start
         _t_stage = time.monotonic()                      # /perf stage clock: chat, then feed, then timeline
         if want_chat or want_fleet:   # the fleet needs every session's ledger slice (built below, attached to feed)
             # TABS-FIRST (the user 2026-06-26): ship name+color per tab so the client can paint the WHOLE strip
@@ -49341,6 +49413,7 @@ def _pusher_cycle():
 
 def _pusher_cycle_jobs(now, live_map, any_client):
     _t_jobs = time.monotonic()            # /perf: this function minus the _push_all below is the `jobs` stage
+    _PERF_STATS.cycle_begin()             # T397: the cycle's first byte mark, so the split's bytes start here
     try:                                  # the cycle's checkpoint byte budget, whole again, and the drops owed from the last one
         _begin_checkpoint_cycle()         # (T362): before the builds below, whose quiescence drops write against it
     except Exception:

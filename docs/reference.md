@@ -1626,6 +1626,15 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (every hit). The acceptance number of the lazy-transcript work: a boot with
   no client connected reads `kernel` zero, and a connecting chat client adds
   at most its shown tabs.
+  `firstCycle` and `stageRing` (T397): the boot's first cycle's stage split
+  and the last cycles' splits, each `{s, t, stages}` with, per stage, its wall
+  `ms`, the reader's `bytes` off disk and the assembly cut's `hydrated` bytes
+  since the previous stage boundary (the `push` container carries its
+  sub-stages' sums; the jobs before the push land in `jobs`); the ring holds
+  `stageRingMax` cycles, one per 64 MiB of the machine's memory floored at
+  16, never a literal count. The restart ledger's boot-health row carries the
+  first cycle's `stages` beside `firstCycleS`, so a slow boot names its stage
+  without the kernel alive.
 - `stages_ms`: `jobs` (the cycle's tick jobs outside the push), `push`, and
   inside it `push.chat`, `push.feed`, `push.timeline`, `push.send`. The
   `push.*` stages count every push, including the one a connecting page gets,
