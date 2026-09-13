@@ -2565,6 +2565,41 @@ def _tool_arg(name, inp):
 # where the outcome lives (the user 2026-07-14: a completed card's summary click landed on the
 # announcement stub instead of the wrap-up).
 CITE_MIN_CHARS = 80
+WHY_CUT_MARK = "…"      # the visible ellipsis a cut why ends with: the reader (and the brief judge) can tell a cut
+WHY_MAX = 300                # a verdict's why (a planner op's rationale, the closer's done, block or awaiting why): the
+#                              ceiling as before (tests/test_judge.py pins it), now reached at a boundary, never mid-word
+
+
+class _CutWhy(str):
+    """A why _cut_why shortened: a str that carries the fact, so record_verdict can store it on the row (whyCut) and
+    the fold can materialize blockWhyCut; a complete why that happens to end with an ellipsis is never mistaken for
+    a cut one (the verifier's first round on T388)."""
+    cut = True
+
+
+def _cut_why(why, cap):
+    """A verdict's why, whitespace-collapsed and cut to `cap` characters at a SENTENCE end (past half the cap) or
+    else a word boundary, with WHY_CUT_MARK appended when anything was cut; never mid-word. A why the raw slice cut
+    mid-word ("... Also say whether the d") read to the brief judge as a fifth, half-stated question the user had to
+    restate (the manager's T388 finding, 2026-09-12): the stump was the cap's, not the closer's, and nothing marked it."""
+    s = " ".join(str(why or "").split())
+    if len(s) <= cap:
+        return s
+    head = s[:cap]
+    cut = -1
+    for m in re.finditer(r"[.!?](?=\s)", head):     # the last sentence end that leaves at least half the cap
+        if m.end() >= cap // 2:
+            cut = m.end()
+    if cut < 0:
+        sp = head.rfind(" ")
+        cut = sp if sp >= cap // 2 else cap        # a word boundary, else the bare cap (one unbroken token)
+    return _CutWhy(head[:cut].rstrip() + WHY_CUT_MARK)
+
+
+def why_was_cut(why):
+    """Whether a why object carries the cut fact (a _CutWhy from _cut_why); a stored node reads blockWhyCut instead.
+    Never a suffix test on the ellipsis: a complete why may end with one."""
+    return bool(getattr(why, "cut", False))
 
 # a PR/commit/compare link in a tool result — the result class the anchor study convicted (T218):
 # the substance of "shipped it" IS the link, so the atom holding it must be citable
@@ -4128,7 +4163,7 @@ def _parse_plan(raw, menu_len, allow_extend=False):
         if not isinstance(o, dict):
             continue
         do = str(o.get("do", "")).strip().lower()
-        why = " ".join(str(o.get("why", "")).split())[:300]
+        why = _cut_why(o.get("why", ""), WHY_MAX)
         text = " ".join(str(o.get("text", "")).split())[:120]
         if not do and why.lower() == "skip":
             do = "skip"                            # the model sometimes answers {"why": "skip"} with no
@@ -9845,6 +9880,9 @@ def _reassert_blocks(store, seg_id, seg_t, items):
         if nd is None or nd.get("blocked") or nd.get("cleared") or nd.get("nodeComplete"):
             continue
         ev = max(seg_t or 0, _floor_of(store, nd) + 1)
+        src_rows = [e for e in (nd.get("log") or []) if e.get("kind") == "block" and str(e.get("why") or "") == str(why)]
+        if src_rows and src_rows[-1].get("whyCut"):    # the why comes back from a row the parser cut: the fact rides the new
+            why = _CutWhy(why)                         # row too, or the brief judge's note would vanish on the re-assert (T388)
         if record_verdict(store, nd, "planner", "block", ev, why=why, seg=seg_id):
             nd["mt"] = seg_t or ev
             if seg_id and seg_id not in (nd.get("trail") or []):
@@ -9974,6 +10012,7 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=Fals
         log = nd.setdefault("log", [])
         log.append({"ev_t": ev_t, "src": src, "kind": kind,
                     **({"why": why} if why else {}), **({"seg": seg} if seg else {}),
+                    **({"whyCut": True} if why_was_cut(why) else {}),   # the parser's cut, stored beside the text (T388)
                     **({"msg": True} if msg else {}),  # a user message rides this reopen (chip derivation)
                     **({"undo": True} if undo else {}),   # an undo-restore reopen: not a "not done" assertion
                     **({"lift": True} if lift else {}),   # an `awaiting` row that ENDS the wait, not asserts it
@@ -10089,6 +10128,7 @@ def _fold_node(nd):
     cur_settle, prev_settle = None, None
     awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None     # the live ⏳ stamp (see docstring); None = not awaiting
     done_why = block_why = None           # the landing verdicts' rationale (doneWhy/blockWhy derivation)
+    block_why_cut = False                 # the landing block's why was cut by the parser's cap (row whyCut, T388)
     held = pending = False                # held: an unanswered USER reopen pins the node open (no bottom-up
     #                                       re-completion); pending: an unanswered msg-reopen wears the chip.
     #                                       "Answered" = ANY later non-user event — the judges looked.
@@ -10146,7 +10186,8 @@ def _fold_node(nd):
         elif kind == "block":
             if src in ("user", "agent") or t > floor:
                 state = "blocked"
-                block_why = e.get("why") or block_why
+                if e.get("why"):
+                    block_why, block_why_cut = e["why"], bool(e.get("whyCut"))
                 reopen_snap = None
                 awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None
         elif kind == "unblock":
@@ -10191,7 +10232,7 @@ def _fold_node(nd):
             "awaitingAt": awaiting_at if state == "open" else None,
             "awaitingKind": awaiting_kind if state == "open" else None,
             "awaitingPeers": awaiting_peers if state == "open" else None,
-            "doneWhy": done_why, "blockWhy": block_why}
+            "doneWhy": done_why, "blockWhy": block_why, "blockWhyCut": block_why_cut}
 
 
 def _fold_node_state(nd):
@@ -10520,8 +10561,13 @@ def _materialize_node(nd):
         if st == "blocked":
             if f["blockWhy"]:
                 nd["blockWhy"] = f["blockWhy"]         # the landing block's rationale; a why-less event
+                if f.get("blockWhyCut"):               # the parser cut it: the brief's material says so (T388)
+                    nd["blockWhyCut"] = True
+                else:
+                    nd.pop("blockWhyCut", None)
         else:                                          # (legacy synth) keeps whatever text is already there
             nd.pop("blockWhy", None)                   # cache hygiene: the why goes with the block
+            nd.pop("blockWhyCut", None)
         if st == "done" and f["doneWhy"]:
             nd["doneWhy"] = f["doneWhy"]
         for key, val in (("followupAt", f["floor"]), ("settledAt", f["settledAt"]),
@@ -12153,7 +12199,7 @@ def _parse_group(raw, menu_len):
         if not isinstance(o, dict):
             continue
         do = str(o.get("do", "")).strip().lower()
-        why = " ".join(str(o.get("why", "")).split())[:300]
+        why = _cut_why(o.get("why", ""), WHY_MAX)
         text = " ".join(str(o.get("text", "")).split())[:120]
         if do in ("mint", "group"):
             # RETIRED (the user 2026-08-26, T101): the board's unit is the individual ask — no
@@ -13696,7 +13742,7 @@ def _parse_close(raw, menu_len):
             except (TypeError, ValueError):
                 continue
             if 1 <= n <= menu_len and n not in out and n not in skip:
-                why = " ".join(str(it.get("why", "")).split())[:300]
+                why = _cut_why(it.get("why", ""), WHY_MAX)   # the user-facing question, never cut mid-word
                 if kinds:
                     k = str(it.get("kind") or "").strip().lower()
                     out[n] = {"why": why, "kind": k if k in AWAIT_KINDS_JUDGED else None}   # a closer files a specific kind, never "mixed"
@@ -16356,6 +16402,8 @@ def _owed_why(nd):
     host still holds after the wait ended (relayCarried: carried on before it could be withdrawn, or the host
     unreachable; the third verdict)."""
     why = str((nd or {}).get("blockWhy") or "")
+    if (nd or {}).get("blockWhyCut"):               # the stored reason ends where the cap cut it: say so, or the brief
+        why += " (the recorded reason ends here; the rest was not kept)"   # reads the stump as an owed question (T388)
     notes = [s for s in (str((nd or {}).get(k) or "").strip() for k in ("relayRefusal", "relayCarried")) if s]
     return "%s (%s)" % (why, "; ".join(notes)) if notes else why
 
