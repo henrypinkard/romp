@@ -12796,7 +12796,7 @@ def _nudge_placement_gate(sid, turns, store):
     try:
         _live = {sg["id"] for tn in turns for sg in jd._segs(tn, store)}
         unplanned = any(not jd._placed_key(store.get("placements") or {}, jd._unit_key(u[0], u[1]), _live)
-                        for u in jd.plan_units({"turns": turns}, store))
+                        for u in jd.plan_units({"turns": turns}, store, lazy_text=True))   # keys alone (T396)
     except Exception:
         unplanned = False                        # minimal/legacy turn shapes → the closer gate stands alone,
         sys.stderr.write("auto-nudge placement gate (session %s): %s\n"   # but never SILENTLY (the user
