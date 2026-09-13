@@ -7838,6 +7838,11 @@ def _update_check():
     flipping the gear setting takes effect without a restart. A pass acts only when the discovered
     version CHANGES (new information): the same release re-found every few hours must not re-raise
     banners or re-file notices."""
+    if os.environ.get("ROMP_UPDATE_CHECK", "") == "off":
+        # a HERMETIC kernel (a served lab's, tests/test_ship_reship.py kernel_env): the check below reads the release
+        # remote's tags over the network, and a newer release than the checkout's raises the shell's update banner over
+        # the page under test (CI, 2026-09-13: the banner sat on the settings pills and took the lab's clicks)
+        return
     if _update_mode() == "off":
         return
     cur = _semver((_kernel_ver() or "").rstrip("+"))
