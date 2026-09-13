@@ -1515,6 +1515,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   longer wait between cycles would have skipped; a conservative undercount,
   since a wake set by another thread or a periodic repost of an unchanged
   frame marks a cycle busy).
+  `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
+  split and the newest cycles' splits, each `{s, t, stages}` with, per stage,
+  its wall `ms` (one decimal), the reader's `bytes` off disk and the assembly
+  cut's `hydrated` bytes ON THE PUSHER'S THREAD since the previous stage
+  boundary (another thread's reads in the window, the judges' first pass or
+  a boot warm, are not the pusher's; a dashboard's connect push, which runs
+  the same stages on the HTTP handler thread, feeds `stages_ms` and never the
+  split); the `push` container carries its sub-stages' sums, the jobs before
+  the push land in `jobs`, and the boundary sits at the push's entry, before
+  the cards-first path. A plain GET carries the newest 16 splits and
+  `stageRingLen`; `GET /perf?ring=all` carries the whole ring, which holds
+  `stageRingMax` cycles: `ROMP_PERF_STAGE_RING` when set, else one per 64 MiB
+  of the machine's memory floored at 16, resolved once, never a literal
+  count. The restart ledger's boot-health row carries the first cycle's
+  `stages` beside `firstCycleS`, so a slow boot names its stage without the
+  kernel alive.
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
@@ -1626,15 +1642,6 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (every hit). The acceptance number of the lazy-transcript work: a boot with
   no client connected reads `kernel` zero, and a connecting chat client adds
   at most its shown tabs.
-  `firstCycle` and `stageRing` (T397): the boot's first cycle's stage split
-  and the last cycles' splits, each `{s, t, stages}` with, per stage, its wall
-  `ms`, the reader's `bytes` off disk and the assembly cut's `hydrated` bytes
-  since the previous stage boundary (the `push` container carries its
-  sub-stages' sums; the jobs before the push land in `jobs`); the ring holds
-  `stageRingMax` cycles, one per 64 MiB of the machine's memory floored at
-  16, never a literal count. The restart ledger's boot-health row carries the
-  first cycle's `stages` beside `firstCycleS`, so a slow boot names its stage
-  without the kernel alive.
 - `stages_ms`: `jobs` (the cycle's tick jobs outside the push), `push`, and
   inside it `push.chat`, `push.feed`, `push.timeline`, `push.send`. The
   `push.*` stages count every push, including the one a connecting page gets,

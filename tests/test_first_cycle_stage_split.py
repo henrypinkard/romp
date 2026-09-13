@@ -3,10 +3,13 @@
 totals and a ring of whole-cycle durations, so nothing named the stage. The pusher keeps each cycle's stage split (wall, the
 reader's bytes, the hydrated bytes), the boot's first for the process under `pusher.firstCycle`, the last cycles in a ring
 sized as a fraction of memory under `pusher.stageRing`, and the restart ledger's boot-health row carries the first split."""
+import inspect
 import os
 import sys
+import threading
 import time
 import unittest
+from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 from test_asm_checkpoint import em, kernel_module   # noqa: E402
@@ -23,6 +26,17 @@ class StageSplitUnit(unittest.TestCase):
         self.assertEqual(km._stage_ring_len(512 * 1024 ** 2), 16, "the floor")
         self.assertEqual(km._stage_ring_len(0), 16)
         self.assertGreaterEqual(km._stage_ring_len(), 16, "the machine's reading")
+        # round one, low 5: resolved ONCE into a module slot, with an override
+        saved = km._STAGE_RING_LEN[0]
+        self.addCleanup(lambda: km._STAGE_RING_LEN.__setitem__(0, saved))
+        km._STAGE_RING_LEN[0] = None
+        with mock.patch.dict(os.environ, {"ROMP_PERF_STAGE_RING": "40"}):
+            self.assertEqual(km._stage_ring_len(), 40, "the override names the length")
+        with mock.patch.dict(os.environ, {"ROMP_PERF_STAGE_RING": "9000"}):
+            self.assertEqual(km._stage_ring_len(), 40, "resolved once: a later environment does not move it")
+        km._STAGE_RING_LEN[0] = None
+        with mock.patch.dict(os.environ, {"ROMP_PERF_STAGE_RING": "nonsense"}):
+            self.assertGreaterEqual(km._stage_ring_len(), 16, "a bad override falls to the memory fraction")
 
     def test_the_first_cycle_is_kept_and_every_cycle_rides_the_ring(self):
         km = self.km
@@ -42,6 +56,7 @@ class StageSplitUnit(unittest.TestCase):
         self.assertEqual(len(snap["stageRing"]), 2, "both cycles in the ring")
         self.assertEqual(snap["stageRing"][1]["stages"], {"jobs": {"ms": 1.0, "bytes": 0, "hydrated": 0}})
         self.assertEqual(snap["stageRingMax"], km._stage_ring_len())
+        self.assertEqual(snap["stageRingLen"], 2)
         self.assertIsNone(km._PerfStats().snapshot()["pusher"]["firstCycle"], "no cycle yet: no split")
 
     def test_a_stages_bytes_are_the_readers_bytes_since_the_previous_boundary(self):
@@ -60,6 +75,69 @@ class StageSplitUnit(unittest.TestCase):
         self.assertEqual(st["push.chat"]["bytes"], 250)
         self.assertEqual(st["push"]["bytes"], 250, "the container carries its sub-stages' bytes")
         self.assertEqual(st["jobs"]["bytes"], 1050, "the jobs before and after the push")
+
+    def test_the_split_is_the_pusher_threads_alone(self):
+        """Round one, medium: a dashboard's connect push runs _push on the HTTP handler thread through the same stage calls; its
+        whole build landed in the pusher cycle's split (a 5 ms cycle reporting a 20 s push.chat), in firstCycle and in the
+        boot-health row. The split records the thread that opened the cycle alone; the cumulative totals take every thread."""
+        km = self.km
+        ps = km._PerfStats()
+        ps.cycle_begin()
+        ps.stage("push.chat", 0.005); ps.stage("push", 0.005)
+        def connect_push():
+            ps.stage_boundary(); ps.stage("push.chat", 20.0); ps.stage("push", 20.0)
+        th = threading.Thread(target=connect_push); th.start(); th.join()
+        ps.stage("jobs", 0.001)
+        ps.cycle(0.006)
+        first = ps.snapshot()["pusher"]["firstCycle"]
+        self.assertEqual(first["stages"]["push.chat"]["ms"], 5.0, "the pusher's own push.chat, not the connect's 20 s")
+        self.assertLessEqual(sum(v["ms"] for k, v in first["stages"].items() if k in ("jobs", "push")), first["s"] * 1000.0 + 0.5,
+                             "the stages fit the cycle's wall with a second thread pushing mid-cycle")
+        self.assertAlmostEqual(ps.snapshot()["stages_ms"]["push.chat"], 20005.0, "the totals took both")
+
+    def test_a_push_in_the_gap_between_cycles_lands_in_no_cycle(self):
+        """A connect push between two cycles (on any thread) is not the next cycle's: cycle_begin empties the split."""
+        km = self.km
+        ps = km._PerfStats()
+        ps.cycle_begin(); ps.stage("jobs", 0.001); ps.cycle(0.002)
+        ps.stage("push.chat", 9.0); ps.stage("push", 9.0)      # in the gap, on the pusher's own thread even
+        ps.cycle_begin(); ps.stage("jobs", 0.002); ps.cycle(0.002)
+        ring = ps.snapshot()["pusher"]["stageRing"]
+        self.assertEqual(sorted(ring[1]["stages"]), ["jobs"], "the gap's push is in no cycle: %r" % ring[1])
+
+    def test_a_stages_bytes_are_the_pusher_threads_own(self):
+        """Round one, low 2: another thread's reads in the window (the judges' first pass, a boot warm) are not the pusher's."""
+        km = self.km
+        ps = km._PerfStats()
+        ps.cycle_begin(); ps.stage_boundary()
+        def other_reader():
+            em._count_read("/lab/judge.jsonl", 5000)
+        th = threading.Thread(target=other_reader); th.start(); th.join()
+        em._count_read("/lab/mine.jsonl", 70)
+        ps.stage("push.chat", 0.001); ps.stage("push", 0.001); ps.stage("jobs", 0.001); ps.cycle(0.003)
+        st = ps.snapshot()["pusher"]["firstCycle"]["stages"]
+        self.assertEqual(st["push.chat"]["bytes"], 70, "the pusher thread's own read alone: %r" % st)
+
+    def test_the_boundary_sits_at_the_pushs_entry_before_the_cards_first_path(self):
+        """Round one, low 1: on the boot's first cycle the cards-first feed closed push.feedFirst before the boundary, absorbing
+        the pre-push jobs' bytes; the boundary is the first thing _push does."""
+        src = inspect.getsource(self.km._push)
+        self.assertLess(src.index("_PERF_STATS.stage_boundary()"), src.index("_feed_first(now, live_map, targets, connect)"))
+        self.assertEqual(src.count("_PERF_STATS.stage_boundary()"), 1)
+
+    def test_a_plain_snapshot_carries_the_newest_splits_and_the_ring_on_request(self):
+        """Round one, low 3: the whole ring is up to a few MB of JSON on every GET /perf; a plain snapshot carries the newest
+        16 (the ring's floor) and the ring's length, `ring_all` the whole ring, and ms rounded to one decimal."""
+        km = self.km
+        ps = km._PerfStats()
+        for i in range(20):
+            ps.cycle_begin(); ps.stage("jobs", 0.0012345); ps.cycle(0.002)
+        plain = ps.snapshot()["pusher"]; whole = ps.snapshot(ring_all=True)["pusher"]
+        self.assertEqual(len(plain["stageRing"]), km._PerfStats.STAGE_RING_SERVED)
+        self.assertEqual((plain["stageRingLen"], len(whole["stageRing"])), (20, 20))
+        self.assertEqual(plain["stageRing"][-1]["stages"]["jobs"]["ms"], 1.2, "one decimal")
+        src = inspect.getsource(km)
+        self.assertIn('_PERF_STATS.snapshot(ring_all=(q.get("ring") or [""])[0] == "all")', src, "GET /perf?ring=all serves the ring")
 
 
 class LabBootFirstCycle(unittest.TestCase):
