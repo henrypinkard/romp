@@ -140,6 +140,32 @@ class AssemblyRoadCounters(Harness):
         self.assertEqual(em.asm_checkpoint_stats()["removed"], {"sweep": 1})
         self.assertFalse(em._asm_ckpt_file(path).exists())
 
+    def test_whole_reads_and_hydrations_are_counted_under_the_calling_threads_stage(self):
+        """T401: the first instrumented boot said jobs.autoNudge read 162.8 MB, and the callers' rows could not say which caller
+        inside that job read it. The kernel marks the thread's stage for each tick job and the push; the event model counts
+        every whole read and hydration under (stage, caller) too, `none` outside the cycle."""
+        km = kernel_module()
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("bystage", records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        self.fresh()
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReads"] = {}; em._RECORD_CACHE_STATS["wholeReadsByStage"] = {}
+        em._ASM_CKPT_STATS["hydratedByStage"] = {}
+        tree = km._job_stage("probe", lambda: self.parse(path))           # a restore inside a job: no whole read
+        km._job_stage("probe", lambda: em.hydrate([a for t in tree["turns"] for a in t["atoms"] if a.get("lazy") is not None][:2], by="probeReader"))
+        km._job_stage("probe", lambda: em._read_jsonl_entry(path, tail_ok=False))   # a whole read inside the job
+        st = em.record_cache_stats()
+        by_stage = st["wholeReadsByStage"]
+        self.assertTrue(any(k.startswith("jobs.probe:upgrade<-") for k in by_stage), "the whole read under its job: %r" % by_stage)
+        hb = em.asm_checkpoint_stats()["hydratedByStage"]
+        self.assertTrue(any(k.startswith("jobs.probe:probeReader") for k in hb), "the hydration under its job: %r" % hb)
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.pop(path, None)
+        em._read_jsonl_entry(path, tail_ok=False)                          # outside any stage
+        self.assertTrue(any(k.startswith("none:zero<-") for k in em.record_cache_stats()["wholeReadsByStage"]), "outside the cycle: none")
+        self.assertIsNone(km._current_read_stage(), "the mark returns after the job")
+
 
 if __name__ == "__main__":
     unittest.main()

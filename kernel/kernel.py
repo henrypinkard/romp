@@ -46767,6 +46767,7 @@ def _push(targets, connect=False, live_map=None):
     # build (want_chat), so opening the fleet alone showed an empty/loading screen until a chat push happened.
     _PERF_STATS.stage_boundary()                 # T397: the push's sub-stages measure their bytes from here (the cards-first
     #                                              path below included: round one, low 1), not from the cycle's start
+    _prev_stage = getattr(_STAGE_TL, "name", None); _STAGE_TL.name = "push"   # T401: the push's reads count under "push"
     want_fleet = any(c["app"] == "fleet" for c in targets)
     want_feed = _feed_audience(targets)          # the Sessions pane (app "fleet") rides the feed payload; chat needs feed["working"]
     want_tl = any(c["app"] == "timeline" for c in targets)
@@ -47220,6 +47221,7 @@ def _push(targets, connect=False, live_map=None):
                     bars_down = True
             sys.stderr.write("push send %s (%s): %s\n" % ("feed" if is_feed else "bars", c.get("app"), traceback.format_exc()))
     _PERF_STATS.stage("push.send", time.monotonic() - _t_stage)
+    _STAGE_TL.name = _prev_stage                 # the push's reads counted; the mark returns to the caller's (T401)
     # the cards' windows, ahead of a click (the warming, 2026-09-11): AFTER the send stage, so the feed frame of the cycle a
     # card moves never waits for the renders; only with a board to click on (a feed or fleet client among the targets;
     # want_feed counts the chat too, which cannot click a card) and a proto-2 chat client to serve pages to; its own stage key
@@ -49710,14 +49712,29 @@ def _pusher_cycle():
         _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
 
 
+_STAGE_TL = threading.local()     # the calling thread's current stage name (T401): set by _job_stage and the push, read by the
+#                                   event model's per-stage read and hydration rows through set_read_stage_provider
+
+
+def _current_read_stage():
+    return getattr(_STAGE_TL, "name", None)
+
+
+em.set_read_stage_provider(_current_read_stage)   # T401: the thread's stage mark, so reads and hydrations count per (stage, caller)
+
+
 def _job_stage(name, thunk):
     """One tick job as a sub-stage of `jobs` in the cycle's split (T398): the boot's first split said jobs 25 s with 224 MB read
     and nothing finer, so each job here closes its own `jobs.<name>` stage and the row names the job that read. The job is a
-    thunk (`lambda: _x_tick(now, live_map)`), so the call reads as before on its line and the tests that pin those lines hold."""
+    thunk (`lambda: _x_tick(now, live_map)`), so the call reads as before on its line and the tests that pin those lines hold.
+    The thread's stage mark is `jobs.<name>` for the job's duration (T401: the reads inside it count under it)."""
     _t = time.monotonic()
+    prev = getattr(_STAGE_TL, "name", None)
+    _STAGE_TL.name = "jobs." + name
     try:
         return thunk()
     finally:
+        _STAGE_TL.name = prev
         _PERF_STATS.stage("jobs." + name, time.monotonic() - _t)
 
 
