@@ -5,9 +5,13 @@ one boot through _unit_text<-_seam_text). The production callers now take the un
 the markers' scalars and the user bodies (_unit_nonempty), the text and the quote are read by _plan_session after its filters,
 through the placed-yield road T377 built. Synthetic transcripts only (the golden builders)."""
 import inspect
+import json
 import os
+import shutil
+import tempfile
 import sys
 import unittest
+from pathlib import Path
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 from test_asm_checkpoint import em, G, SID, NOW, Harness, kernel_module   # noqa: E402
@@ -128,12 +132,53 @@ class LazyUnitText(Harness):
         bare = {"type": "assistant", "uuid": "a", "t": 2.0, "message": {"role": "assistant", "content": "a bare string the CLI never writes"}}
         self.assertTrue(jd._unit_nonempty([bare]), "the blind spot: the scalar sees text")
         self.assertEqual(jd._unit_text([bare]), "", "the framing sees no block")
-        src = inspect.getsource(jd._plan_session)
-        i = src.index("text = unit_text_for(seg, phase)")
-        tail = src[i:i + 900]
-        self.assertIn("if not text:", tail)
-        self.assertIn('store["placements"][key] = None', tail, "an empty late read retires the unit")
-        self.assertLess(tail.index('store["placements"][key] = None'), tail.index("continue"), "retired before the continue")
+        self.assertIn("if not text:", inspect.getsource(jd._plan_session))
+
+    def test_an_empty_late_read_retires_that_units_own_key_and_the_next_unit_still_plans(self):
+        """Round four, medium: the retire wrote the collection loop's last-bound `key`, so a phantom unit's empty late read retired
+        some OTHER unit (the next prompt's) and left the phantom's key absent: the prompt never planned and the nudge gate read
+        the phantom as unplanned. Driven through the real _plan_session: plan_units stubbed to yield a phantom work unit (its
+        late text empty) then a real human prompt unit; the phantom's own key is the one retired, the prompt plans."""
+        km = kernel_module(); jd = km.jd
+        fsid = "7a396000-2222-4333-8444-000000000396"
+        td = Path(tempfile.mkdtemp()); (td / "state").mkdir()
+        saved_state = jd.STATE; jd._rebind_state(td / "state")
+        saved = (jd.plan_units, jd.unit_text_for, jd.opener_llm, jd._SDK_OWNER_FN)
+        def restore():
+            jd.plan_units, jd.unit_text_for, jd.opener_llm, jd._SDK_OWNER_FN = saved
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._rebind_state(saved_state); shutil.rmtree(td, ignore_errors=True)
+        self.addCleanup(restore)
+        jd._SDK_OWNER_FN = None
+        path = td / (fsid + ".jsonl")
+        human = []
+        for name in sorted(G.SINGLE_FILE):                                # a scenario with two human prompts
+            records, sent = G.SINGLE_FILE[name]
+            path.write_text("\n".join(json.dumps(r) for r in records()) + "\n")
+            self.fresh(); em._CKPT_DIR_FN = None; jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
+            try:
+                tree = jd.parsed_session(fsid, [str(path)], NOW)
+            finally:
+                em.set_checkpoint_dir(lambda: self.ck)
+            segs = [seg for t in tree["turns"] for seg in em.segments(t)]
+            human = [seg for seg in segs if jd._seg_human(seg) and jd._prompt_text(seg["atoms"])]
+            if len(human) >= 2:
+                break
+        self.assertGreaterEqual(len(human), 2, "a golden scenario with two human segments")
+        phantom, prompt = human[0], human[1]
+        real_plan, real_text = saved[0], saved[1]
+        def stub_units(session, store=None, floor=jd._UNSET_FLOOR, lazy_text=False):
+            return [(phantom["id"], "work", phantom["t"], None, True, None, jd._seg_anchor(phantom), None),
+                    (prompt["id"], "prompt", prompt["t"], jd._prompt_text(prompt["atoms"]), True, None, jd._seg_anchor(prompt), None)]
+        jd.plan_units = stub_units
+        jd.unit_text_for = lambda seg, phase: "" if (seg["id"] == phantom["id"] and phase == "work") else real_text(seg, phase)
+        calls = []
+        jd.opener_llm = lambda text, menu_text, sibling_num=None: (calls.append(text), "")[1]   # a blank plan: the coerced place
+        jd._plan_session(fsid, str(path), NOW)
+        store = jd.load_goals(fsid)
+        pk, uk = jd._unit_key(phantom["id"], "work"), jd._unit_key(prompt["id"], "prompt")
+        self.assertIn(pk, store["placements"]); self.assertIsNone(store["placements"][pk], "the phantom's OWN key retired")
+        self.assertEqual(len(calls), 1, "the prompt unit reached the opener once: %r" % calls)
+        self.assertIsNotNone(store["placements"].get(uk), "the prompt planned and placed: %r" % {k: v for k, v in store["placements"].items()})
 
     def test_the_nudge_gates_except_leg_is_counted_and_not_entered_by_a_widened_stub(self):
         """Round three, low 3: six test modules stubbed plan_units without the keyword; the gate's except swallowed the TypeError

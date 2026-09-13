@@ -11289,8 +11289,9 @@ def _plan_session(fsid, path, now):
                 # A unit the lazy gate yielded whose text reads empty (a shape the scalars cannot see: an assistant message
                 # whose content is a bare string; a blind spot of any later kind): RETIRE it, never skip it. Skipped, it
                 # wrote no placement and no retirement, and the nudge placement gate read its key as unplanned on every
-                # tick and silenced the session's escalation ladder (the 2026-08-16 wedge shape; round three, low 1).
-                store["placements"][key] = None
+                # tick and silenced the session's escalation ladder (the 2026-08-16 wedge shape; round three, low 1). The
+                # unit's OWN key: `key` here is the collection loop's last binding, not this unit's (round four, medium).
+                store["placements"][_unit_key(seg_id, phase)] = None
                 save_goals(fsid, store)
                 continue
             if vq is None:
