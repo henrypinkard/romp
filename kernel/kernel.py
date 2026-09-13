@@ -7951,6 +7951,16 @@ def _consume_update_report(running_only=False, _tries=3):
     return rep
 
 
+def _update_checks_off():
+    """ROMP_UPDATE_CHECK=off: a HERMETIC kernel (a served lab's, tests/test_ship_reship.py kernel_env) runs none of the
+    update loop's three checks. The release check reads the release remote's tags, the main-drift check the remote's
+    main (git ls-remote, both), and either raises the shell's update banner over the page under test; the converge
+    check reads the checkout. CI 2026-09-13: the banner sat on the settings pills and took a lab's clicks, first from the
+    release check on a PR run, then from the drift check on main's own runs (a clone ON main, with main moving while the
+    job ran), so the seam stands the whole loop down before its first pass, and each check besides for a direct caller."""
+    return os.environ.get("ROMP_UPDATE_CHECK", "") == "off"
+
+
 def _update_check():
     """ONE check pass: learn the newest release, then act per mode. Runs at boot and then on
     _update_check_loop's cadence — kernels outlive browser tabs by days or weeks (the user
@@ -7958,10 +7968,7 @@ def _update_check():
     flipping the gear setting takes effect without a restart. A pass acts only when the discovered
     version CHANGES (new information): the same release re-found every few hours must not re-raise
     banners or re-file notices."""
-    if os.environ.get("ROMP_UPDATE_CHECK", "") == "off":
-        # a HERMETIC kernel (a served lab's, tests/test_ship_reship.py kernel_env): the check below reads the release
-        # remote's tags over the network, and a newer release than the checkout's raises the shell's update banner over
-        # the page under test (CI, 2026-09-13: the banner sat on the settings pills and took the lab's clicks)
+    if _update_checks_off():
         return
     if _update_mode() == "off":
         return
@@ -8332,6 +8339,8 @@ def _dist_converge_check():
     One rebuild attempt per distinct source state (the in-memory latch): a failure stays visible in its
     notice and on stderr, retries on the next source change or the next boot — never a 5-minute storm.
     The ROMP_DIST_DIR seam disables it: a redirected dist is the test's own to control."""
+    if _update_checks_off():
+        return                                        # a hermetic kernel: the loop's third check stands down with the other two
     if os.environ.get("ROMP_DIST_DIR"):
         return
     newest = _dist_src_newest()
@@ -8558,6 +8567,8 @@ def _main_drift_check():
     """One origin/checkout/running comparison pass; fires the SAME banner as the release check (the
     shell's offer() renders the main-drift wording off kind:"main"). Re-fires only when the target sha
     CHANGES — new information, never a re-nag of the sha already offered or dismissed."""
+    if _update_checks_off():
+        return                                        # a hermetic kernel: no ls-remote, no banner of this kind either
     if _update_mode() == "off":
         return
     if not _main_tracking():
@@ -8848,6 +8859,8 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
 def _update_check_loop():
     """The daemon thread: one pass at boot, then one per cadence, forever. The cheap main-drift probe
     runs every pass; the release-tag check keeps its six-hour stride."""
+    if _update_checks_off():
+        return                                        # a hermetic kernel: no pass at all (each check is gated besides)
     last_release = 0.0
     while True:
         try:
@@ -12890,7 +12903,8 @@ def _nudge_response_ready(turns, store, rec, gid, now):
 
 
 _nudge_gate_memo = {}            # sid -> (parse key, the shared view object, clears-log stat, unplanned): the gate's answer while its inputs stand
-_NUDGE_GATE_STATS = {"served": 0, "derived": 0}   # /perf memos.nudgeGate: how often the walk re-derived the gate
+_NUDGE_GATE_STATS = {"served": 0, "derived": 0, "failed": 0}   # /perf memos.nudgeGate: how often the walk re-derived the gate,
+#                                                                  and how often the derivation raised (the except leg: waves nothing through)
 _NUDGE_GATE_MEMO_MAX = 512
 
 
@@ -12926,6 +12940,7 @@ def _nudge_placement_gate(sid, turns, store):
                         for u in jd.plan_units({"turns": turns}, store, lazy_text=True))   # keys alone (T396)
     except Exception:
         unplanned = False                        # minimal/legacy turn shapes → the closer gate stands alone,
+        _NUDGE_GATE_STATS["failed"] += 1         # counted, so a test can pin that this leg was never entered
         sys.stderr.write("auto-nudge placement gate (session %s): %s\n"   # but never SILENTLY (the user
                          % (sid, traceback.format_exc()))                 #  2026-07-21: a mute gate error
         return unplanned                         #  would wave nudges through); a failed derivation is not cached
@@ -25876,6 +25891,19 @@ def _awaiting_task_ids(sid, path):
     return [t["tid"] for t in awaited if t.get("tid")]
 
 
+def _bg_service_ids(sid, path, live_map=None):
+    """The live background tasks the judge classified as SERVICES (_bg_split's other half: the closer audited past
+    the launch without a wait, so nobody waits on them), as launch ids, for the chat's box (T394, 2026-09-12): the
+    box words that verdict on the row (kept running, not waited on) and dims it. Shipped in EVERY turn state, unlike
+    awaitingTaskIds (a wait's rows): the verdict is the judge's, and the box must never infer it from a task the rows
+    happen not to name (mid-turn the rows enumerate pending launches only). [] when nothing runs or nothing is furniture.
+    `live_map`: the build's own liveness snapshot, served to the nested reads (_serve_live) so a build handed one takes no
+    fresh registry sweep (tests/test_kernel_pusher_snapshot.py holds the working path to that)."""
+    with _serve_live(live_map):
+        _, services = _bg_split(sid, path, _bg_live_norm(sid, path))
+    return [t["tid"] for t in services if t.get("tid")]
+
+
 def _bg_service_descs(sid, path):
     """The live background-task descriptions the judge classified as SERVICES (_bg_split) — persistent
     processes the session keeps around, surfaced as the feed's neutral per-session chip (bgServices in
@@ -34583,6 +34611,9 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # …and the same tasks' launch ids, so the #bg-tasks box outlines exactly the awaited
                   # rows in the chip's await-green (the user 2026-08-19)
                   "awaitingTaskIds": (_awaiting_task_ids(sid, sess["path"]) if awaiting_why else []),
+                  # …and the launch ids the JUDGE called services (kept running, nobody waiting), in every turn state, so the
+                  # box words that verdict only where the judge gave it (T394 round one)
+                  "bgServiceIds": _bg_service_ids(sid, sess["path"], live_map),
                   "apiTooLong": bool(aerr and aerr.get("tooLong")),
                   # a spend cap is on-you like tooLong (red tab, "raise your cap") AND never auto-retried:
                   # the client's apiRetryTick skips it, and the global pause it engages stops the loop too
