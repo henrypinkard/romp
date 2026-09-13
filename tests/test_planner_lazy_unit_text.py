@@ -75,12 +75,87 @@ class LazyUnitText(Harness):
             self.assertEqual(jd.unit_text_for(seg, lu[1]), eu[3], "the consumer's late read equals the eager text")
 
     def test_the_production_callers_take_the_units_lazily(self):
+        """All three call sites, by source: the plan pass (its migration pre-pass and its loop), the fast-forward on unmute,
+        and the kernel's nudge placement gate (round three, low 4: the pin missed the fast-forward and rode a hasattr)."""
         km = kernel_module(); jd = km.jd
         src = inspect.getsource(jd._plan_session)
         self.assertEqual(src.count("plan_units(session, store, floor=floor, lazy_text=True)"), 2, "the migration pre-pass and the plan loop")
         self.assertIn("if text is None:", src, "the consumer reads the text after its filters (T377's road)")
-        self.assertIn("lazy_text=True", inspect.getsource(km._auto_nudge_unplanned) if hasattr(km, "_auto_nudge_unplanned") else
-                      open(km.__file__).read().split('jd.plan_units({"turns": turns}, store')[1][:40], "the nudge gate reads keys alone")
+        self.assertIn("plan_units(session, store, lazy_text=True)", inspect.getsource(jd.fast_forward_placements), "the fast-forward reads keys alone")
+        self.assertIn('jd.plan_units({"turns": turns}, store, lazy_text=True)', inspect.getsource(km._nudge_placement_gate), "the nudge gate reads keys alone")
+
+    def test_lazy_units_resolve_to_the_eager_units_in_every_field_over_every_golden_scenario(self):
+        """The whole-unit comparison: over every golden scenario, whole and restored, the lazy units equal the eager ones in
+        every field once the lazy text and quote are resolved as the plan pass resolves them (unit_text_for, _mint_quote)."""
+        jd = kernel_module().jd
+        store = {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}, "placementsV": jd.PLACEMENTS_V}
+        n = 0
+        for name in G.SINGLE_FILE:
+            records, sent = G.SINGLE_FILE[name]
+            path = self.write("units-" + name, records(), sent=sent)
+            for shape in ("whole", "restored"):
+                self.fresh()
+                if shape == "whole":
+                    em._CKPT_DIR_FN = None
+                    try:
+                        tree = self.parse(path)
+                    finally:
+                        em.set_checkpoint_dir(lambda: self.ck)
+                else:
+                    self.parse(path); self.doc(path); self.fresh(); tree = self.parse(path)
+                segs = {seg["id"]: seg for seg in _segments(tree)}
+                eager = jd.plan_units(tree, store)
+                lazy = jd.plan_units(tree, store, lazy_text=True)
+                self.assertEqual(len(lazy), len(eager), "%s/%s" % (name, shape))
+                for lu, eu in zip(lazy, eager):
+                    with self.subTest(scenario=name, shape=shape, unit=(lu[0], lu[1])):
+                        seg = segs[lu[0]]
+                        text = lu[3] if lu[3] is not None else jd.unit_text_for(seg, lu[1])
+                        quote = lu[7] if lu[7] is not None else jd._mint_quote(seg)
+                        self.assertEqual((lu[0], lu[1], lu[2], text, lu[4], lu[5], lu[6], quote), tuple(eu))
+                        n += 1
+        self.assertGreater(n, 40, "units compared: %d" % n)
+
+    def test_the_gates_blind_spots_and_the_consumers_retire(self):
+        """Round three, low 1: a tool call without a name is not a unit (as _unit_text frames it); an assistant message whose
+        content is a bare string is a blind spot the scalars cannot see (nt is computed from the normalized content), so the
+        gate says non-empty while the text reads empty, and the plan pass RETIRES such a unit instead of skipping it, so the
+        nudge placement gate never reads its key as unplanned forever."""
+        km = kernel_module(); jd = km.jd
+        nameless = {"type": "assistant", "uuid": "a", "t": 2.0, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "", "input": {}}]}}
+        self.assertFalse(jd._unit_nonempty([nameless]), "a nameless tool call is not framed")
+        self.assertEqual(jd._unit_text([nameless]), "")
+        bare = {"type": "assistant", "uuid": "a", "t": 2.0, "message": {"role": "assistant", "content": "a bare string the CLI never writes"}}
+        self.assertTrue(jd._unit_nonempty([bare]), "the blind spot: the scalar sees text")
+        self.assertEqual(jd._unit_text([bare]), "", "the framing sees no block")
+        src = inspect.getsource(jd._plan_session)
+        i = src.index("text = unit_text_for(seg, phase)")
+        tail = src[i:i + 900]
+        self.assertIn("if not text:", tail)
+        self.assertIn('store["placements"][key] = None', tail, "an empty late read retires the unit")
+        self.assertLess(tail.index('store["placements"][key] = None'), tail.index("continue"), "retired before the continue")
+
+    def test_the_nudge_gates_except_leg_is_counted_and_not_entered_by_a_widened_stub(self):
+        """Round three, low 3: six test modules stubbed plan_units without the keyword; the gate's except swallowed the TypeError
+        into a stderr trace and answered not unplanned, and those modules stayed green by accident. The leg is counted now
+        (memos.nudgeGate.failed), a widened stub never enters it, and a narrow one does."""
+        km = kernel_module(); jd = km.jd
+        saved = jd.plan_units
+        self.addCleanup(setattr, jd, "plan_units", saved)
+        km._NUDGE_GATE_STATS["failed"] = 0
+        turns = [{"id": "t1", "t": 1.0, "end": 2.0, "ended": True, "atoms": [], "trigger": None}]
+        jd.plan_units = lambda session, store, **kw: []
+        km._nudge_placement_gate(SID, turns, {"placements": {}})
+        self.assertEqual(km._NUDGE_GATE_STATS["failed"], 0, "a widened stub: the leg not entered")
+        jd.plan_units = lambda session, store: []
+        import io
+        err = io.StringIO(); saved_err = sys.stderr; sys.stderr = err
+        try:
+            self.assertFalse(km._nudge_placement_gate(SID, turns, {"placements": {}}))
+        finally:
+            sys.stderr = saved_err
+        self.assertEqual(km._NUDGE_GATE_STATS["failed"], 1, "a narrow stub: the leg entered and counted")
+        self.assertIn("lazy_text", err.getvalue())
 
 
 if __name__ == "__main__":

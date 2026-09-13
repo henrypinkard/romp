@@ -12763,7 +12763,8 @@ def _nudge_response_ready(turns, store, rec, gid, now):
 
 
 _nudge_gate_memo = {}            # sid -> (parse key, the shared view object, clears-log stat, unplanned): the gate's answer while its inputs stand
-_NUDGE_GATE_STATS = {"served": 0, "derived": 0}   # /perf memos.nudgeGate: how often the walk re-derived the gate
+_NUDGE_GATE_STATS = {"served": 0, "derived": 0, "failed": 0}   # /perf memos.nudgeGate: how often the walk re-derived the gate,
+#                                                                  and how often the derivation raised (the except leg: waves nothing through)
 _NUDGE_GATE_MEMO_MAX = 512
 
 
@@ -12799,6 +12800,7 @@ def _nudge_placement_gate(sid, turns, store):
                         for u in jd.plan_units({"turns": turns}, store, lazy_text=True))   # keys alone (T396)
     except Exception:
         unplanned = False                        # minimal/legacy turn shapes → the closer gate stands alone,
+        _NUDGE_GATE_STATS["failed"] += 1         # counted, so a test can pin that this leg was never entered
         sys.stderr.write("auto-nudge placement gate (session %s): %s\n"   # but never SILENTLY (the user
                          % (sid, traceback.format_exc()))                 #  2026-07-21: a mute gate error
         return unplanned                         #  would wave nudges through); a failed derivation is not cached
