@@ -1609,18 +1609,6 @@ def _entry_offsets_gen(path):
     return [(offs[i], offs[i + 1]) for i in range(0, len(offs), 2)], ent[6]
 
 
-def record_offsets(path, base):
-    """[(byte offset, byte length)] of the reader entry's held records for `path`, record `base` first (the entry's
-    base): the assembly checkpoint's record locations. None when the reader holds no entry or its base is later."""
-    with _JSONL_CACHE_LOCK:
-        ent = _JSONL_CACHE.get(str(path))
-    if ent is None or len(ent) < 8 or ent[5] > base:
-        return None
-    offs = ent[7]
-    start = (base - ent[5]) * 2
-    return [(offs[i], offs[i + 1]) for i in range(start, len(offs), 2)]
-
-
 def _read_jsonl_incremental(path, on_fail=None):
     """The parsed records of `path` (a list, NOT a generator), served append-incrementally per the cache
     contract above. Falls back to a full read on any surprise; [] on any error, like _read_jsonl. `on_fail`,
@@ -5270,8 +5258,12 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             # (round one, medium): its row would be a skip row proven by a stat alone, and a prior file that gained a record
             # after the parse (its own session resumed elsewhere, the case _asm_gates demotes as nonleaf) would be stamped
             # as wholly before the cut with the appended record missing from every restore of this leaf's kernel life.
-            src_gen = (getattr(ad, "_src_keys", {}) or {}).get(fp, (None,))[0]
-            if offs is None or len(offs) < len(recs) or (len(offs) > len(recs) and not (is_leaf and src_gen == ent_gen)):
+            src_gen, src_base = ((getattr(ad, "_src_keys", {}) or {}).get(fp, (None, None)) + (None, None))[:2]
+            # The prefix is accepted for the leaf under the tree's own generation AND from base zero: a seeded adapter that
+            # read the file from its cut (a degenerate document whose pre-cut part holds records but no atoms restores unseen
+            # as restored) holds records the entry's prefix does not begin with, so a whole reader upgrading the entry to
+            # base zero under the same generation must not lend it that prefix (round two, low 1).
+            if offs is None or len(offs) < len(recs) or (len(offs) > len(recs) and not (is_leaf and src_gen == ent_gen and src_base == 0)):
                 return skip("offsets")
             offs = offs[:len(recs)]                       # defensive: no row index below passes len(recs), so the extra
             file_offs[fp] = offs                          #  offsets of a grown entry are never read (round one, low 3)
