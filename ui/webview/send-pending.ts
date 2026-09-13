@@ -235,10 +235,11 @@ export const OVERLAY_KINDS: ReadonlySet<string> = new Set(["todo", "compacting",
 
 /** A kernel event a pending send can be anchored to: a TRANSCRIPT event with a uuid the kernel will keep. The client's own
  *  injections and the kernel's echo atoms are excluded — an echo is replaced by the landed atom (a new uuid) the moment
- *  its text lands, so it is not a stable place — and so are the kernel's overlay cards (T389, the user 2026-09-12): a send
- *  pressed while the API-error card stood at the tail anchored on that card, the kernel's queued group sits BEFORE the
- *  overlays, so the copy the kernel then listed for the send was never read as its cover, and the message drew twice
- *  (the kernel's copy in its group, ours at the tail) until it landed. */
+ *  its text lands, so it is not a stable place — and so are the kernel's overlay cards (T389, the user 2026-09-12): a second
+ *  send pressed while the first was still queued anchored on the kernel's QUEUED GROUP itself (uuid "queued", an overlay
+ *  kind, the last event of the tail then), or on the API-error card when one stood after it; the group's copy of the new
+ *  send sat at or before that anchor, so it was never read as the send's cover, and the message drew twice (the kernel's
+ *  copy in its group, ours at the tail) until it landed. */
 const stableUuid = (e: TailEvent): boolean => !!e.uuid && !isOptimisticUuid(e.uuid) && !isKernelEchoUuid(e.uuid) && !OVERLAY_KINDS.has(e.kind);
 
 /** The kernel's second for an event, off its ISO stamp (kernel.py `iso(t)`); null when it carries none. */

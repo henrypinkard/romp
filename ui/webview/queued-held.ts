@@ -31,6 +31,8 @@ export type HeldCopy = {
 export type HeldEvent = { kind: string; uuid?: string; md?: string; qid?: string; qids?: (string | null)[]; blocks?: string[]; undelivered?: boolean };
 export type HeldQueued = { md?: string; qid?: string; qts?: number; hiddenByPending?: boolean; optimistic?: boolean; landing?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; imgPaths?: string[] };
 
+import { OVERLAY_KINDS } from "./send-pending";   // the kernel's live overlay cards: never an anchor (T389)
+
 const sameText = (a: string, b: string): boolean => a.trim() === b.trim();
 const isEcho = (u?: string): boolean => !!u && u.startsWith("echo:");
 const isOptimistic = (u?: string): boolean => !!u && u.startsWith("optimistic:");
@@ -49,12 +51,16 @@ export function landsCopy(e: HeldEvent, c: { md: string; qid?: string }): boolea
   return Array.isArray(e.blocks) && e.blocks.some((b) => typeof b === "string" && sameText(b, c.md));
 }
 
-/** The uuid of the last KERNEL event that carries one (not our own bubble, not a queued group, not a uuid-less
- *  compacting/clearing marker), or null: the anchor a hold is judged against. */
+/** The uuid of the last KERNEL event that carries one (not our own bubble, not one of the kernel's live overlay cards, not a
+ *  uuid-less compacting/clearing marker), or null: the anchor a hold is judged against. The overlay cards (the queued group,
+ *  the to-do box, the API-error card and the rest, OVERLAY_KINDS: one set with the pending-send rule) sit after every
+ *  transcript event and wear word uuids; anchored on one, a hold read the events after it, which are none, and never saw
+ *  the record that landed its copy, so the landed row and the landing card stood side by side for the rest of the turn
+ *  (T389 review: a to-do card after the transcript). */
 export function lastKernelUuid(events: HeldEvent[]): string | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
-    if (e.kind === "queued" || !e.uuid || isOptimistic(e.uuid)) continue;
+    if (OVERLAY_KINDS.has(e.kind) || !e.uuid || isOptimistic(e.uuid)) continue;
     return e.uuid;
   }
   return null;

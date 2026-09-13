@@ -15,10 +15,17 @@ in this lab, and a copy the kernel holds leaves its queue only when the kernel f
 the transcript by hand lands nothing (the kernel keeps the copy, and the page rightly keeps the send provisional by its
 id). That transition is executed on the rule itself in ui/webview/send-pending-overlay.test.ts.
 
+The review's MEDIUM (a held copy under a to-do card released by its landing) is executed on the rule in
+ui/webview/queued-held.test.ts and not driven here: this boot's kernel has no Agent SDK, its session thread ends at the
+import, and the copy it lists survives only in the persisted queue mirror, which no door can take from (a cancel misses, no
+CLI feeds it), so a held copy cannot be produced on this page. Where the SDK is present the copy queues in memory and a
+cancel over the socket by its words releases it; that is the verifier's probe shape.
+
 Skips LOUDLY without the extension deps or a Playwright browser (CI installs none). All fixtures synthetic.
 """
 import json
 import os
+import subprocess
 import sys
 import unittest
 
@@ -92,6 +99,8 @@ await browser.close();
 // through the stream, drained before the exit: a single synchronous write past the pipe's 64 KiB buffer comes out truncated
 process.stdout.write("RESULT:" + JSON.stringify({ afterA, bAtOnce, afterB0, afterB1, afterB2, cAtOnce, afterC0, afterC1, sends }) + "\n", () => process.exit(0));
 """
+
+
 
 
 def _tail(rows, texts):

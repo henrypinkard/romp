@@ -70,6 +70,25 @@ test("the landing of the first changes the first alone: its record retires it by
   assert.equal(c.at!.after, "a2", "nor C's");
 });
 
+test("the echo half: an idle session's echo atom at the tail with an overlay card after it, then a second send: both covered by their echoes", () => {
+  // the verifier's probe at the head (T389 review, low 2): echoHide names both echo atoms, both sends read received, the base was wrong
+  const a = P("first, tighten the search index", "echo:" + "a".repeat(32));
+  const b = P("second, add the missing test", "echo:" + "b".repeat(32));
+  const tail: TailEvent[] = [{ kind: "user", md: "drop the unused import", uuid: "u2" }, { kind: "assistant", uuid: "a2" }];
+  reconcilePending(tail, [a]);                                                                          // A's press against the bare tail
+  const echoA: TailEvent = { kind: "user", md: a.text, uuid: a.qid };                                   // the kernel's echo atom wears A's id
+  const todo: TailEvent = { kind: "todo", uuid: "todo" };
+  reconcilePending([...tail, echoA, todo], [a]);                                                        // the push after A: its echo, the card last
+  reconcilePending([...tail, echoA, todo], [a, b]);                                                     // B's press against that frame
+  assert.equal(b.at!.after, "a2", "B anchors on the last transcript event: neither A's echo (replaced by A's record when it lands) nor the card");
+  const echoB: TailEvent = { kind: "user", md: b.text, uuid: b.qid };
+  const r = reconcilePending([...tail, echoA, echoB, todo], [a, b]);
+  assert.deepEqual(r.echoHide, [2, 3], "both echo atoms covered: hidden, ours drawn");
+  assert.deepEqual(r.inject, [a, b]);
+  assert.deepEqual(r.keep, [a, b]);
+  assert.equal(a.received && b.received, true, "both sends proven received by their echoes");
+});
+
 test("the same push before the fix's rule: anchored on the card, the copy sat before the anchor and never covered (the shape the lab saw)", () => {
   // stampBase with the card taken as stable puts `after` at the card; scanning from after it finds no queued copy
   const b = P("second, add the missing test", "echo:" + "b".repeat(32));

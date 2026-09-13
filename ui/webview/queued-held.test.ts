@@ -32,6 +32,23 @@ test("an identified copy that vanished from the queue is held until the atom wit
   assert.deepEqual(m2.held, []);
 });
 
+test("a held copy under the kernel's to-do card (or any overlay card) is released by its landing: the anchor is the last TRANSCRIPT uuid, never the card's", () => {
+  // T389 review (executed on the served page at the base): with a to-do card after the transcript, the hold anchored on the card's
+  // word uuid, read the events after it (none: the overlays are last), never saw the landing, and the landing card stood beside
+  // the landed row for the rest of the turn
+  const todo: HeldEvent = { kind: "todo", uuid: "todo" };
+  const withOverlay = [...base, todo];
+  assert.equal(lastKernelUuid(withOverlay), "a1", "the anchor skips the to-do card");
+  assert.equal(lastKernelUuid([...base, { kind: "apiError", uuid: "apiError" }]), "a1", "…and the API-error card");
+  assert.equal(lastKernelUuid([...base, { kind: "queued", uuid: "queued" }, todo]), "a1", "…and the queued group under it");
+  let m = reconcileHeld(fresh(), withOverlay, [{ md: mail, qid: "echo:m1", qts: 5, romp: true }]);
+  assert.equal(m.anchor, "a1");
+  m = reconcileHeld(m, withOverlay, []);                                                        // push 1: the copy left the queue, nothing landed → held
+  assert.deepEqual(m.held.map((h) => [h.qid, h.since]), [["echo:m1", "a1"]]);
+  m = reconcileHeld(m, [...base, { kind: "user", uuid: "am1", md: mail, qid: "echo:m1" }, todo], []);   // push 2: the record lands, the card still last
+  assert.deepEqual(m.held, [], "released: the landing sits after the transcript anchor, before the card");
+});
+
 test("a copy that vanishes and lands in the SAME push is released, never held (the anchor is the previous push's)", () => {
   const m = reconcileHeld(withCard("echo:m1"), [...base, { kind: "user", uuid: "am1", md: mail, qid: "echo:m1" }], []);
   assert.deepEqual(m.held, [], "its landing sits after the previous push's tail: released");
