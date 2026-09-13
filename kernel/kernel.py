@@ -11,6 +11,7 @@ zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no d
 
 Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
+import collections
 import copy
 import math
 import contextlib, json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid, tempfile, stat, gzip, collections, functools, fcntl, inspect, secrets, importlib.util
@@ -566,6 +567,7 @@ class _PerfStats:
                           ("intrMarks", _intr_marks_memo_report), ("statesOverlay", _states_overlay_report),
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
+                          ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
                           # the chat build's fixed-cost memos (2026-09-09): the live merge's transcript-side
                           # sets, the fold's sealed postal cards, the ledger's goal-tree walk, the task fold
                           ("chatMergeSets", _merge_sets_report), ("chatPostal", _chat_postal_report),
@@ -7836,6 +7838,11 @@ def _update_check():
     flipping the gear setting takes effect without a restart. A pass acts only when the discovered
     version CHANGES (new information): the same release re-found every few hours must not re-raise
     banners or re-file notices."""
+    if os.environ.get("ROMP_UPDATE_CHECK", "") == "off":
+        # a HERMETIC kernel (a served lab's, tests/test_ship_reship.py kernel_env): the check below reads the release
+        # remote's tags over the network, and a newer release than the checkout's raises the shell's update banner over
+        # the page under test (CI, 2026-09-13: the banner sat on the settings pills and took the lab's clicks)
+        return
     if _update_mode() == "off":
         return
     cur = _semver((_kernel_ver() or "").rstrip("+"))
@@ -36593,6 +36600,9 @@ def _feed_session_entry(s, ctx):
     # (aerr) only fires once the session is idle-stalled, so without this a storm reads as plain
     # healthy Working for its whole life — nimbus's card said Working through an ~80-minute storm.
     sess_retrying = _session_retrying(fsid, tm)
+    _faults0 = _SUMMARY_ANCHOR_STATS["fault"]   # a body-read fault during this derivation (the landing tier) marks the
+    #                                             entry: build_feed then skips the memo put, so a degraded landing never
+    #                                             persists on an idle card until its inputs move (the verifier's third round)
     store = ctx["store"]                     # _feed_goals(fsid), read once in the key: a pre-pass snapshot while a judge
     #                                          pass is mid-flight → the card's
                                              # status never shows a half-applied intermediate (atomic visibility)
@@ -36633,9 +36643,11 @@ def _feed_session_entry(s, ctx):
     # tags + the kind guard accepts as turn-user) lets it resolve BY ID instead of a kind-restricted
     # nearest-time landing (the user 2026-06-17). (Both are emitted .turn[data-uuid]s in the chat.)
     seg_uuid, seg_trig, seg_best, cite_uuids = {}, {}, {}, set()
+    seg_turn = {}                                    # seg key -> (turn, segment atoms): the text-atom resolve's input (T388)
     try:
         for turn in (ps["turns"] if ps else []):     # cached parse only; anchors fill in after _warm_fleet_bg
             for seg in _segs_seam(turn, store):
+                seg_turn[_seg_key(seg["id"])] = (turn, seg["atoms"])
                 w, r = _seg_anchors(seg["atoms"])
                 seg_uuid[_seg_key(seg["id"])] = r or _seg_jump(seg["atoms"])   # timestamp-invariant key; landable
                 #                                  anchors only — never a thinking-only uuid (SDK echo/real drift)
@@ -36673,11 +36685,15 @@ def _feed_session_entry(s, ctx):
     agent_open = _agent_open_set(nodes, children)   # authoritative-open subtree → never rendered 'done' (see helper)
     parked_rows = _parked_rows(nodes, children)     # leapfrogged open rows → the quiet "parked" row cue (see helper)
 
-    def _subtree(root):                          # all node ids at/under root (pre-order)
-        stack, acc = [root], []
-        while stack:
-            x = stack.pop(); acc.append(x); stack.extend(children.get(x, []))
-        return acc
+    _sub_memo = {}                               # root -> its subtree, once per build: the landing walks it per node
+    def _subtree(root):                          # all node ids at/under root (pre-order); callers only iterate the list
+        got = _sub_memo.get(root)
+        if got is None:
+            stack, acc = [root], []
+            while stack:
+                x = stack.pop(); acc.append(x); stack.extend(children.get(x, []))
+            got = _sub_memo[root] = acc
+        return got
 
     # VERDICTS ONLY (the user 2026-07-15; roll-UP removed — it painted an authored-looking ✓ on a
     # goal nobody ruled done, see build_session's _subtree_done twin): a node is "done" if it's
@@ -36761,6 +36777,73 @@ def _feed_session_entry(s, ctx):
         _bcmemo[nid] = res
         return res
 
+    def _brief_landing(nid, completed, line):
+        """(uuid, quote): where a node's brief or summary line lands, resolved ONCE for the card and its modal row from
+        one input set (the node's whole subtree's trails, the same column rule, the same tier order), so one brief
+        never lands in two places by the surface clicked (the verifier's second round on T388: the card read the
+        subtree while the row read its own trail, and a completed card pinned its recap while the row took the
+        citation). Tiers, in order: a COMPLETED node pins the newest substantive tail across its subtree (the
+        completion recap the user expects the summary to open on, the user 2026-07-14); else the node's validated
+        citation unless outrun (T153, _summary_outrun); else the text atom carrying the line's opening sentence in
+        the newest subtree segment's turn, or its newest substantive text atom (_summary_text_anchor); else the
+        latest-prose walk over the subtree's trails; else that newest segment's last text atom; else the newest
+        trail segment's work anchor (a landable atom, a tool group at worst). `quote` rides only with the cited
+        atom's stored span or the tier's located span."""
+        mk = (nid, bool(completed), line or "")      # one resolve per node, bit and line within a build: the card and
+        got = _land_memo.get(mk)                     #   its top row ask with the same inputs and get the same answer
+        if got is not None:
+            return got
+        nd = nodes[nid]
+        sub = _subtree(nid)
+        u, q, cited = None, None, nd.get("summaryAnchor")
+        if completed:
+            tail = None                                  # (seg_t, uuid) of the newest substantive tail
+            for x in sub:
+                tr = nodes[x].get("trail") or []
+                if tr:
+                    tu, tsub, tt = seg_best.get(_seg_key(tr[-1]), (None, False, 0))
+                    if tu and tsub and (tail is None or tt > tail[0]):
+                        tail = (tt, tu)
+            if tail:
+                u = tail[1]
+        if u is None and cited and cited in cite_uuids \
+                and not _summary_outrun(nd, [nodes[x].get("trail") for x in sub], seg_best):
+            u, q = cited, nd.get("summaryQuote")
+        sk, skt = None, -1                               # the newest trail segment across the subtree, by its time
+        if line:
+            for x in sub:
+                for s in (nodes[x].get("trail") or []):
+                    k = _seg_key(s)
+                    t = seg_best.get(k, (None, False, 0))[2] or 0
+                    if k in seg_turn and t >= skt:
+                        sk, skt = k, t
+        if u is None and line and sk is not None:
+            u, q = _summary_text_anchor(seg_turn.get(sk), line, memo_key=(fsid, nid, sk))
+        if u is None:
+            best = None                                  # (substantive, seg_t): prefer substantive, then latest
+            for x in sub:
+                for s in (nodes[x].get("trail") or []):
+                    bu, bsub, bt = seg_best.get(_seg_key(s), (None, False, 0))
+                    if bu and (best is None or (bsub, bt) > (best[0], best[1])):
+                        best = (bsub, bt, bu)
+            if best:
+                u = best[2]
+        if u is None and line and sk is not None:       # a text stub still beats the work anchor's tool group
+            u, q = _summary_text_anchor(seg_turn.get(sk), line, memo_key=(fsid, nid, sk), stub_ok=True)
+        if u is None:                                    # LAST RESORT (the user 2026-07-02): the newest segment's work anchor
+            for x in sub:
+                for s in reversed(nodes[x].get("trail") or []):
+                    wu = seg_uuid.get(_seg_key(s))
+                    if wu:
+                        u = wu
+                        break
+                if u:
+                    break
+        _land_memo[mk] = (u, (q or None))
+        return _land_memo[mk]
+
+    _land_memo = {}                              # (nid, completed, line) -> (uuid, quote), per build
+
     def flatten(nid, out, ancestor_done=False, boundary=None):  # AskTreeNode flat list, root first; nest via children ids
         nd = nodes[nid]
         kids = sorted(children.get(nid, []), key=_fsubmax, reverse=True)   # most-recent-first (matches the ledger)
@@ -36785,6 +36868,13 @@ def _feed_session_entry(s, ctx):
         _ho_sid = str(_ho.get("peer") or "") if _ho else ""
         if _ho_sid:
             peers_read.add(_ho_sid)              # a peer this row names (its registry entry is a dependency)
+        # The node's BRIEF or SUMMARY line lands where the card's does: _brief_landing, one resolve from the node's
+        # subtree (T388). A HANDOFF row gets none: its session is the peer's (whoSid) while any landing here would be
+        # an atom of THIS session's parse, a foreign atom to the peer's chat; the row's line falls to goWork, whose
+        # target the tracker's own row wears (the verifier's second round).
+        _ncompleted, _nline = _landing_inputs("completed" if st == "done" else "blocked" if st == "question" else None, "", nd)
+        #                       ^ the modal row's status is its whole rule (distillText by status); no column term
+        _nsa_u, _nsa_q = (None, None) if (_ho_sid or not _nline) else _brief_landing(nid, _ncompleted, _nline)
         _born = nd.get("born") if isinstance(nd.get("born"), dict) else (healed.get(nid) or (None, None))[1]
         out.append({"id": nid, "kind": "handoff" if _ho_sid else "ask", "text": nd["text"],
                     "born": _born or None,   # T319: a step the session started on its own (why it sits here)
@@ -36832,6 +36922,8 @@ def _feed_session_entry(s, ctx):
                     # landing on the user turn (no kind-restricted nearest-time needed). (2026-06-17.)
                     "anchorUuid": _wa,
                     "promptAnchorUuid": _pa,
+                    "summaryAnchorUuid": _nsa_u,   # the brief/summary line's own landing: the text that carries it (T388)
+                    "summaryAnchorQuote": _nsa_q,  # …and its located span, highlighted on landing (anchorQuote)
                     "summary": nd.get("summary"),                   # distiller's key takeaway — shown in the MODAL only — the user 2026-06-17
                     "blockSummary": nd.get("blockSummary"),         # block-distiller's DECISION BRIEF (MODAL); null until produced — the user 2026-06-18
                     "relayNote": nd.get("relayCarried") or None,    # a far host still holds a relayed question after its wait ended (relayCarried): its own line under the brief, never a brief paragraph (briefParts maps those)
@@ -37289,66 +37381,12 @@ def _feed_session_entry(s, ctx):
         # message across the goal's whole subtree trail (mint→resolution). Never the old
         # biggest-text-block pick: "longest ever" is monotone, so a long early analysis held the
         # anchor forever while the real outcome landed later (the user 2026-07-01).
-        _sa_u, _cited = None, nodes[nid].get("summaryAnchor")
-        if col == "completed":
-            # The newest trail TAIL across the SUBTREE, not just the top's own (the user 2026-07-15,
-            # the g91 click): a BOTTOM-UP-completed umbrella (all children done) has no done verdict
-            # of its own, so the DONE-ANCHOR never appended a completing segment to ITS trail —
-            # trail[-1] was still the MINT segment and the pin sent the summary click to the goal's
-            # oldest prose instead of the wrap-up the distiller correctly cited. A child's
-            # done-anchored tail IS its completing turn's segment, so the newest substantive tail is
-            # the completion recap for both shapes (an explicitly-done top's own tail stays newest).
-            _tail = None                             # (seg_t, uuid) of the newest substantive tail
-            for _x in _subtree(nid):
-                _tr = nodes[_x].get("trail") or []
-                if not _tr:
-                    continue
-                _u, _sub, _t = seg_best.get(_seg_key(_tr[-1]), (None, False, 0))
-                if _u and _sub and (_tail is None or _t > _tail[0]):
-                    _tail = (_t, _u)
-            if _tail:
-                _sa_u = _tail[1]
-        if _sa_u is None and _cited and _cited in cite_uuids:
-            # THE GROUNDING CAN BE OUTRUN (the user 2026-08-28, T153): the citation names what
-            # the summary was WRITTEN FROM — but a reply that reopens the card adds stretches
-            # the stored summary has never seen (no re-completion yet, so no re-distill event),
-            # and the click then lands in the stale FIRST stretch of a visibly two-stretch
-            # card. When the follow-up stamp or any subtree trail segment postdates the
-            # summary's own coverage stamp, the cited tier YIELDS to the most-current-
-            # substantive walk below, so the click follows the freshest evidence; the citation
-            # resumes authority the moment a re-distill lands (the stamp catches up).
-            # Display-only: no column implication.
-            _cov = max(int(nodes[nid].get("distilledMt") or 0),
-                       int(nodes[nid].get("briefedMt") or 0))
-            _outrun = bool(_cov) and (
-                (nodes[nid].get("followupAt") or 0) > _cov
-                or any((seg_best.get(_seg_key(_sid), (None, False, 0))[2] or 0) > _cov
-                       for _x in _subtree(nid) for _sid in (nodes[_x].get("trail") or [])))
-            if not _outrun:
-                _sa_u = _cited
-        if _sa_u is None:
-            _best = None                             # (substantive, seg_t): prefer substantive, then latest
-            for _x in _subtree(nid):
-                for _sid in (nodes[_x].get("trail") or []):
-                    _u, _sub, _t = seg_best.get(_seg_key(_sid), (None, False, 0))   # timestamp-invariant: resolve a drifted trail seg id
-                    if _u and (_best is None or (_sub, _t) > (_best[0], _best[1])):
-                        _best = (_sub, _t, _u)
-            if _best:
-                _sa_u = _best[2]
-        if not _sa_u:
-            # LAST RESORT (the user 2026-07-02: a completed card's summary was unclickable — the cited
-            # atom fell outside every segment, and no trail segment offered prose either). Fall back to
-            # the newest trail segment's WORK anchor (seg_uuid — the same target the modal's node rows
-            # nav to), so the summary still deep-links to roughly where the work concluded. Only a goal
-            # with NO resolvable trail at all ends up link-less.
-            for _x in _subtree(nid):
-                for _sid in reversed(nodes[_x].get("trail") or []):
-                    _u = seg_uuid.get(_seg_key(_sid))
-                    if _u:
-                        _sa_u = _u
-                        break
-                if _sa_u:
-                    break
+        # ONE resolve for the card and its modal row (_brief_landing, above flatten): the completed pin, the cited
+        # tier with the T153 outrun rule, the text-atom tier, the latest-prose walk, the stub, the work anchor, all
+        # over the whole subtree's trails, so one brief never lands in two places by the surface clicked (T388).
+        _completed, _line = _landing_inputs(distill_state, column, nodes[nid])   # the line the card SHOWS: distillInputs' terms
+        _cited = nodes[nid].get("summaryAnchor")
+        _sa_u, _sa_q = _brief_landing(nid, _completed, _line)
         if _sa_u is None and ps is None:
             # COLD-PARSE fallback (the user 2026-07-20): every tier above reads parse-derived maps,
             # and right after a kernel restart ps is None until _warm_fleet_bg — so for that window
@@ -37408,7 +37446,8 @@ def _feed_session_entry(s, ctx):
             # land elsewhere, where the span would highlight the wrong text); the landing scrolls to
             # and highlights it, and a null keeps today's whole-message behavior
             "summaryAnchorQuote": (nodes[nid].get("summaryQuote")
-                                   if _sa_u and _sa_u == nodes[nid].get("summaryAnchor") else None),
+                                   if _sa_u and _sa_u == nodes[nid].get("summaryAnchor") else (_sa_q or None)),
+            #                      …or the text-atom tier's located span (T388), the same field, the same landing
             # per-paragraph landings (T220, the user's ruling): each cited paragraph's own atom +
             # located span, aligned to the takeaway's paragraphs (None = that paragraph falls back
             # to the whole-summary landing). Gated exactly like the quote above: the cited tier
@@ -37538,7 +37577,8 @@ def _feed_session_entry(s, ctx):
                                            count=sess_awaiting_count, items=sess_awaiting_items))
     return {"asks": ent_asks, "working": ent_working, "awaiting": ent_awaiting, "bgServices": ent_bg,
             "servingFolds": ent_folds, "heal": heal_total, "hidden": hidden_total, "cold": cold_parse,
-            "peers": sorted(peers_read), "reads": reads}
+            "peers": sorted(peers_read), "reads": reads,
+            "faults": _SUMMARY_ANCHOR_STATS["fault"] - _faults0}
 
 
 def _feed_fold_card(card, now, cmap):
@@ -37631,7 +37671,8 @@ def build_feed(now, live_map=None):
             entry = _feed_session_entry(s, ctx)
             key = _feed_key_with_deps(key, ctx, entry)   # the peers and reads THIS derivation recorded
             js = json.dumps(entry, default=_wire_default_in("_feed_memo"))   # str() of an unencodable value, said once
-            _feed_memo_put(fsid, key, js)
+            if not (entry or {}).get("faults"):      # a derivation that met a body-read fault is served but not kept:
+                _feed_memo_put(fsid, key, js)        #   the next build re-derives it (the anchor memo skipped it too)
             entry = json.loads(js)                   # the fold's objects come from the string on a miss too, so a hit and
             #                                          a miss hand the board the same shapes, byte for byte
         _heal, _hid, _cold = _feed_fold_entry(entry, now, cmap, s["name"], asks, working, awaiting, bg_services, serving_folds)
@@ -39846,6 +39887,173 @@ def _seg_last_text(atoms):
             if n >= jd.CITE_MIN_CHARS:
                 last_sub = a["uuid"]
     return (last_sub or last_any), last_sub is not None
+
+
+def _summary_anchor_memo_bound():
+    """The memo's byte bound: ROMP_SUMMARY_ANCHOR_MEMO_BYTES when it names a positive integer, else a
+    two-hundred-fifty-sixth of the machine's memory (the _spend_tree_memo_bound idiom; 32 MB on an 8 GB box, ample
+    for entries of a few hundred bytes, one per brief per segment). Read once at import (SUMMARY_ANCHOR_MEMO_BYTES);
+    GET /perf reports it beside the memo's bytes and counters (memos.summaryAnchor). The user's caches rule
+    (2026-09-11): a byte bound as a fraction of memory with an override, never a count literal."""
+    raw = os.environ.get("ROMP_SUMMARY_ANCHOR_MEMO_BYTES", "")
+    try:
+        if raw and int(raw) > 0:
+            return int(raw)
+    except ValueError:
+        pass
+    return _mem_total_bytes() // 256
+
+
+SUMMARY_ANCHOR_MEMO_BYTES = _summary_anchor_memo_bound()
+_SUMMARY_ANCHOR_MEMO = collections.OrderedDict()   # key -> ((uuid, quote), size): the order is age, a hit moves to the end
+_SUMMARY_ANCHOR_STATS = {"hit": 0, "miss": 0, "evict": 0, "fault": 0, "entries": 0, "bytes": 0, "bound": SUMMARY_ANCHOR_MEMO_BYTES}
+#                          fault: a candidate atom whose body could not be read (a LazyBodyRead, a rotated file): skipped, counted
+#                          the key: (fsid, nid, seg key, the line's hash, the turn's end): one text read per brief per segment
+
+
+def _summary_anchor_memo_get(key):
+    hit = _SUMMARY_ANCHOR_MEMO.get(key)
+    if hit is None:
+        _SUMMARY_ANCHOR_STATS["miss"] += 1
+        return None
+    _SUMMARY_ANCHOR_MEMO.move_to_end(key)          # a hit is the newest again: an eviction takes a colder entry first
+    _SUMMARY_ANCHOR_STATS["hit"] += 1
+    return hit[0]
+
+
+def _summary_anchor_memo_put(key, out):
+    size = sum(2 * len(str(x)) for x in key) + sum(2 * len(str(x)) for x in out if x) + 64
+    old = _SUMMARY_ANCHOR_MEMO.pop(key, None)
+    if old is not None:
+        _SUMMARY_ANCHOR_STATS["bytes"] -= old[1]
+    _SUMMARY_ANCHOR_MEMO[key] = (out, size)
+    _SUMMARY_ANCHOR_STATS["bytes"] += size
+    while len(_SUMMARY_ANCHOR_MEMO) > 1 and _SUMMARY_ANCHOR_STATS["bytes"] > SUMMARY_ANCHOR_MEMO_BYTES:
+        _k, (_o, _s) = _SUMMARY_ANCHOR_MEMO.popitem(last=False)   # oldest first; sheds only the deficit, never the whole
+        _SUMMARY_ANCHOR_STATS["bytes"] -= _s
+        _SUMMARY_ANCHOR_STATS["evict"] += 1
+    _SUMMARY_ANCHOR_STATS["entries"] = len(_SUMMARY_ANCHOR_MEMO)
+
+
+def _summary_anchor_memo_report():
+    """The memo's counters with its occupancy and bound: GET /perf memos.summaryAnchor (entries, bytes, bound, hit,
+    miss, evict)."""
+    return dict(_SUMMARY_ANCHOR_STATS, entries=len(_SUMMARY_ANCHOR_MEMO), bound=SUMMARY_ANCHOR_MEMO_BYTES)
+
+
+def _text_atoms(atoms):
+    """The assistant TEXT atoms of `atoms`, in order: a landable text row, never a tool_use, a thinking block, an API
+    error or the machine-cut null settle. Scalars only until a body is needed (em.atom_has_text reads the marker)."""
+    return [a for a in atoms or [] if a.get("type") == "assistant" and a.get("uuid") and not a.get("isApiError")
+            and em.atom_has_text(a) and not em.atom_is_settle(a)]
+
+
+def _opening_sentence(line):
+    """The first sentence of a brief or summary: its first non-empty paragraph, a leading list number dropped, cut
+    at the first sentence end past twelve characters, at most two hundred characters. "" when there is none."""
+    para = next((p.strip() for p in re.split(r"\n\s*\n", str(line or "")) if p.strip()), "")
+    para = re.sub(r"^\s*(?:\d+[.)]|[-*])\s+", "", para).split("\n", 1)[0].strip()
+    m = re.search(r"[.!?](?=\s|$)", para[12:])
+    sent = para[: 12 + m.end()] if m else para
+    return sent[:200].strip()
+
+
+def _landing_inputs(state, column, nd):
+    """(completed, line): what a surface SHOWS for a node, the client's distillInputs(distillState, column) rule TERM
+    FOR TERM (ui/webview/distiller-line.ts, pinned against this by a shared table): a working column shows nothing;
+    else the state decides (completed: the takeaway; blocked: the decision brief); else the column's fallback (the
+    brief for needs_input, the takeaway for completed). The card passes its distillState and its wire column, so the
+    floors the state does not name (the STALL floor, the user's 2026-08-13 rule) still show the brief the client
+    shows and land on it; the modal row passes its own status as the state and no column (its status is its whole
+    rule). The completed bit the landing's pin reads comes from the same terms (the verifier's third and fourth
+    rounds on T388: a permission-floored card landed on the takeaway's sentence, a stall-floored one on a tool call
+    inside a collapsed group, the very defect this change opens with)."""
+    if column == "working":
+        completed, blocked = False, False
+    elif state == "completed":
+        completed, blocked = True, False
+    elif state == "blocked":
+        completed, blocked = False, True
+    else:
+        completed, blocked = column == "completed", column == "needs_input"
+    line = nd.get("blockSummary") if blocked else (nd.get("summary") if completed else None)
+    return completed, (line or None)
+
+
+def _summary_outrun(nd, trails, seg_best):
+    """THE GROUNDING CAN BE OUTRUN (the user 2026-08-28, T153): a stored citation names what the summary was WRITTEN
+    FROM, but a reply that reopens the card adds stretches the summary has never seen. When the follow-up stamp or
+    any segment of `trails` postdates the summary's coverage stamp (distilledMt or briefedMt), the cited tier yields
+    to the fresher evidence; it resumes authority the moment a re-distill lands. One rule for the card's chain and
+    the modal row's brief line, so one brief never lands in two places by the surface clicked (the verifier's first
+    round on T388)."""
+    cov = max(int(nd.get("distilledMt") or 0), int(nd.get("briefedMt") or 0))
+    if not cov:
+        return False
+    if (nd.get("followupAt") or 0) > cov:
+        return True
+    return any((seg_best.get(_seg_key(_s), (None, False, 0))[2] or 0) > cov for _tr in trails for _s in (_tr or []))
+
+
+def _summary_text_anchor(turn_seg, line, memo_key=None, stub_ok=False):
+    """(uuid, quote) — where a card's brief or summary click lands when the brief carries no validated citation
+    (T388, the manager's finding 2026-09-12): the assistant TEXT atom of the newest trail segment that carries the
+    line's opening sentence (the same locate the distiller's citation uses, jd._locate_quote), else the same search
+    over the whole turn the segment sits in (a seam-split turn keeps its wrap-up in a later segment), else the last
+    SUBSTANTIVE text atom (jd.CITE_MIN_CHARS, the latest-prose walk's own preference) of the segment, else of the
+    turn; never a tool_use or thinking atom, which the WORK anchor may be (a long turn's first assistant atom was a
+    shell call, and four landings filed pointer-exact on a collapsed tool group while the quoted questions were the
+    turn's last text atom, thirteen minutes later). With no located quote and no substantive atom the tier answers
+    (None, None) so the card's chain falls through to the walk; only a last-resort call (`stub_ok`) takes the last
+    text atom whatever its length, still ahead of a tool group (the verifier's first round: a paraphrased brief is
+    the common case, and the bare last-text pick handed a connective stub the landing over the analysis before it,
+    the very pick the walk exists to avoid). `quote` is the located span, sent as the click's anchorQuote so the
+    chat highlights it. Bodies are read only for the candidate text atoms of one turn, inside the same envelope the
+    build's other lazy reads use (a body that cannot be read is skipped and counted, never a raise that would abort
+    build_feed for every session), once per brief per segment (the byte-bounded memo)."""
+    if not turn_seg:
+        return None, None
+    turn, seg_atoms = turn_seg
+    key = None
+    if memo_key is not None:
+        key = tuple(memo_key) + (hash(str(line or "")), (turn or {}).get("end") or (turn or {}).get("t"), bool(stub_ok))
+        hit = _summary_anchor_memo_get(key)
+        if hit is not None:
+            return hit
+    faults0 = _SUMMARY_ANCHOR_STATS["fault"]           # a search that met an unreadable body is answered but not memoized:
+    #                                                    a transient fault must not pin a degraded landing until eviction
+    seg_texts = _text_atoms(seg_atoms)
+    turn_texts = [a for a in _text_atoms((turn or {}).get("atoms")) if not any(a is s for s in seg_texts)]   # the rest of the turn
+    opening = _opening_sentence(line)
+    out = (None, None)
+    if opening:
+        for cands in (seg_texts, turn_texts):
+            for a in reversed(cands):                  # newest first: the wrap-up, not an early restatement
+                try:
+                    if a.get("lazy") is not None:
+                        em.hydrate([a])                # a body before the assembly cut: read on demand (T323 stage 4a)
+                    text = jd._atom_text(a)
+                except Exception:                      # the build's envelope: a body that cannot be read is skipped
+                    _SUMMARY_ANCHOR_STATS["fault"] += 1   # and counted (memos.summaryAnchor.fault); never a raise
+                    continue
+                off, span = jd._locate_quote(text, opening)
+                if off is not None:
+                    out = (a["uuid"], str(span or "")[:300] or None)
+                    break
+            if out[0]:
+                break
+    if not out[0]:                                     # no located quote: the newest SUBSTANTIVE text atom, the walk's rule
+        for cands in (seg_texts, turn_texts):
+            sub_ = [a for a in cands if _atom_prose_chars(a) >= jd.CITE_MIN_CHARS]
+            if sub_:
+                out = (sub_[-1]["uuid"], None)
+                break
+    if not out[0] and stub_ok:                         # the last resort only: a stub still beats a tool group
+        last = (seg_texts or turn_texts or [None])[-1]
+        out = ((last or {}).get("uuid"), None)
+    if key is not None and _SUMMARY_ANCHOR_STATS["fault"] == faults0:
+        _summary_anchor_memo_put(key, out)
+    return out
 
 
 def _seg_jump(atoms):
