@@ -1160,7 +1160,11 @@ store already places is yielded with its key and scalars and no text or quote
 (no pre-cut body read), the rest read their text after the placement check;
 the lookup is an index built once per planner call with the episode floor
 taken once per pass, and a consumer that plans a unit yielded as placed reads
-its text then.
+its text then. The planner's own callers take every unit that way (T396): the
+emptiness gate that drops a textless segment is decided from the markers'
+scalars and the user bodies alone, and a work unit's text and quote are read
+by the plan pass after its own filters, so a unit that never reaches the model
+is never read (42.8 MB of assistant bodies per boot before).
 
 What the CLI itself does when its parent goes quiet was measured on Claude Code
 2.1.257 (2026-09-10, the restart-surviving sessions program's stage 3 probe, run
@@ -1550,7 +1554,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   of that file's fold document, written from the walk's own read at the
   quiescence drop and restored at the next boot, so such a file is read whole
   once (a live session's own files, its /clear anchor among them, stay
-  resident instead, since the chain walk reads them at every pass). The
+  resident instead, since the chain walk reads them at every pass; a leaf
+  with no assembly document, one with no compaction boundary, takes the memo
+  road too, since the leaf road's seeded walk had nothing to seed and read it
+  whole at every boot). The
   counters: the memo's answers (`served`), the walks it took (`walked`), the
   walks over a memo the file's growth or rewrite retired (`stale`; a file
   whose entry merely left memory and came back is walked, not stale) and the
@@ -1571,7 +1578,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `fallbacks` per reason (`version`, `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
-  `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`),
+  `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`;
+  `offsets` is no reader entry at all, a tail entry (one read from a
+  checkpoint's offset, its base above zero), or an entry holding fewer records
+  than the tree read, or more for a lineage file or under another generation
+  or over a base the tree's adapter did not read from zero: a LEAF entry that
+  merely grew since the settle's parse lends the prefix the tree read, so a
+  busy session's document is written between its appends; a lineage file's
+  skip row carries the stat of the records the tree was parsed from, so a
+  record it gained after the parse fails the next boot's check. The standing
+  residual, shared with the reader's grown path: an early record edited in
+  place at equal length plus an append passes the 64-byte guard, like a
+  same-size same-mtime rewrite),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
   a cut), `hydratedBy` (those bytes per calling function), and `converge`: the
   pass's writes of idle leaves' documents from the boot's own parse

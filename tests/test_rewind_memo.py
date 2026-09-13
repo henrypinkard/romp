@@ -99,7 +99,8 @@ class RewoundMemo(Harness):
         src = inspect.getsource(jd._per_file_rewound)
         self.assertIn("em.file_rewound(fp, rompuuid=fsid", src, "the leaf: the document's pre-cut verdicts and the tail")
         self.assertIn("em.rewound_uuids(fp, drop=fp not in lineage and not _sdk_owned(fp.stem))", src, "a dead file: the memo, its entry dropped; a lineage file or a registered session's own file resident")
-        self.assertLess(src.index("if fp == leaf:"), src.index("em.rewound_uuids(fp, drop="), "the leaf road decided first")
+        self.assertLess(src.index("if fp == leaf and em.asm_document_stands(fp):"), src.index("em.rewound_uuids(fp, drop="),
+                        "the leaf road decided first, and only for a leaf with an assembly document")
 
     def test_an_over_cap_set_is_recorded_as_such_and_walked_again(self):
         path = self.frozen("over")
@@ -161,11 +162,12 @@ class RewoundMemo(Harness):
             with em._JSONL_CACHE_LOCK:
                 resident.append(em._JSONL_CACHE.get(key) is not None)
         st = em.rewound_memo_stats()
-        self.assertEqual(st["walked"], 1, "the scan walked the anchor once: %s" % st)
+        # the anchor walked once and served twice; the leaf (no assembly document) takes the memo road too and, growing by one
+        # record per pass, is retired and re-walked over its resident records each pass (the leaf road walked it per pass too)
+        self.assertEqual((st["walked"], st["served"], st["stale"]), (4, 2, 2), "%s" % st)
         self.assertGreaterEqual(deltas[0], size, "the first pass read the anchor whole, the chain walk's read: %r" % deltas)
         self.assertEqual(deltas[1:], [0, 0], "no read of the anchor at the later passes: %r" % deltas)
         self.assertEqual(resident, [True, True, True], "the anchor's entry stays resident: %r" % resident)
-        self.assertEqual(st["served"], 2, "%s" % st)
 
     def test_the_memo_is_stored_at_the_walks_own_witness_not_the_caches_after_it(self):
         """Round one, low 1: the witness was re-fetched from the cache after the walk; an append and a refresh between the two
@@ -286,6 +288,68 @@ class RewoundMemo(Harness):
         jd._per_file_rewound(fork, [str(leaf)])
         with em._JSONL_CACHE_LOCK:
             self.assertIsNone(em._JSONL_CACHE.get(str(anchor)), "an unregistered file is dropped after its memo is written")
+
+    def _own_leaf(self, name, scenario="rewind_off_path"):
+        """A session's own leaf under a private sid, the judge's state rebound to a temp dir; returns (jd, fsid, path)."""
+        jd = kernel_module().jd
+        fsid = "7a391000-2222-4333-8444-0000000003%02d" % (95 + (hash(name) % 4))
+        td = Path(tempfile.mkdtemp()); (td / "state").mkdir()
+        saved = jd.STATE; jd._rebind_state(td / "state")
+        saved_owner = jd._SDK_OWNER_FN; jd._SDK_OWNER_FN = None
+        def restore():
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._rebind_state(saved); shutil.rmtree(td, ignore_errors=True)
+            jd._SDK_OWNER_FN = saved_owner
+        self.addCleanup(restore)
+        records, sent = G.SINGLE_FILE[scenario]
+        path = td / (fsid + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records()) + "\n")
+        old = time.time() - 600; os.utime(path, (old, old))
+        return jd, fsid, str(path)
+
+    def _leaf_whole_rows(self, path):
+        return {k: v["bytes"] for k, v in em.record_cache_stats()["wholeReads"].items() if k.endswith("<-_per_file_rewound")}
+
+    def test_a_leaf_with_no_assembly_document_takes_the_memo_road_and_is_not_read_whole_at_the_next_boot(self):
+        """The 104 MB row on the boot after the memo deployed: a leaf with no compaction boundary can never have an assembly
+        document, so the leaf road's seeded walk had nothing to seed and read it whole at every boot (upgrade<-_per_file_rewound,
+        n=1 per boot). Such a leaf takes the memo road: walked once, its verdicts in its fold document, served at the next
+        process with no whole read; the memo's witness retires it on growth like any other file's."""
+        jd, fsid, path = self._own_leaf("leafmemo")
+        self.fresh_process()
+        walked = em.file_rewound(path)                                  # the plain walk's verdicts: the reference
+        self.assertTrue(walked)
+        self.fresh_process()
+        out, fails = jd._per_file_rewound(fsid, [path])
+        self.assertEqual((fails, out), (0, walked))
+        self.assertTrue(self._leaf_whole_rows(path), "the first process reads the leaf whole, once: %s" % em.record_cache_stats()["wholeReads"])
+        em.checkpoint_write(path)                                       # the settle's fold document write (the memo rides it)
+        self.fresh_process()
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReads"] = {}
+        out2, fails2 = jd._per_file_rewound(fsid, [path])
+        self.assertEqual((fails2, out2), (0, walked), "served: the same verdicts")
+        self.assertEqual(self._leaf_whole_rows(path), {}, "no whole read of the leaf at the next process: %s" % em.record_cache_stats()["wholeReads"])
+        st = em.rewound_memo_stats(); self.assertEqual((st["served"], st["walked"]), (1, 0), "%s" % st)
+        with em._JSONL_CACHE_LOCK:
+            self.assertIsNotNone(em._JSONL_CACHE.get(path), "a session's own file: never dropped")
+
+    def test_a_leaf_with_an_assembly_document_keeps_the_leaf_road(self):
+        """The seeded walk over the document's pre-cut verdicts and the tail (T323 stage 4a) stays the leaf's road when a document
+        stands; the memo is for the leaf that has none."""
+        jd, fsid, path = self._own_leaf("leafdoc", scenario="compaction_atom")
+        self.fresh_process()
+        tree = em.parse_session(path, rompuuid=fsid, name="impl", dir="/TESTDIR", candidate_files=[path], postal_log=[], now=NOW)
+        self.assertTrue(em.asm_checkpoint_write(path, fsid, tree=tree), em.asm_checkpoint_stats())
+        self.assertTrue(em.asm_document_stands(path))
+        calls = []
+        real = em.file_rewound
+        em.file_rewound = lambda p, **kw: (calls.append(kw.get("rompuuid")), real(p, **kw))[1]
+        self.addCleanup(setattr, em, "file_rewound", real)
+        self.fresh_process(); em.set_checkpoint_dir(lambda: self.ck)
+        out, fails = jd._per_file_rewound(fsid, [path])
+        self.assertEqual(fails, 0)
+        self.assertEqual(calls, [fsid], "the leaf road, with the rompuuid: %r" % calls)
+        self.assertEqual(em.rewound_memo_stats()["walked"], 0, "the memo not consulted for a documented leaf")
 
 
 if __name__ == "__main__":
