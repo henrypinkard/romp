@@ -5008,6 +5008,14 @@ _HYDRATED_CAP = _env_or("ROMP_HYDRATED_CAP_MB", max(1024 ** 3, _machine_memory_b
 _LAZY_KINDS = ("a", "u", "c", "o", "k", "b")   # atom kinds whose message is lazy; boundary and refusal atoms carry no message
 
 
+def asm_document_stands(leaf_path):
+    """Whether an assembly document file exists for `leaf_path` (a stat, no read; False with no checkpoint directory): the
+    judges' incident scan asks before taking the leaf road, whose seeded walk needs the document, and takes the memo road
+    for a leaf that has none (a leaf with no compaction boundary can never have one, and was read whole at every boot)."""
+    cp = _asm_ckpt_file(leaf_path)
+    return cp is not None and cp.exists()
+
+
 def _asm_ckpt_file(leaf_path):
     d = _ckpt_dir()
     if d is None:

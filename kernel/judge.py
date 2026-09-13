@@ -6084,9 +6084,13 @@ def _per_file_rewound(fsid, files):
             # pre-cut verdicts and the tail read now instead of the whole file (T323 stage 4a). A non-empty
             # transcript that yields ZERO records raises OSError there (the incremental reader swallows a
             # permissions break into an empty list): a failed read, not an empty file, and it must count like one.
-            if fp == leaf:                                # the leaf road: the document's pre-cut verdicts and the tail read now
+            if fp == leaf and em.asm_document_stands(fp):   # the leaf road: the document's pre-cut verdicts and the tail read now
                 out |= em.file_rewound(fp, rompuuid=fsid, sdk_human=_sdk_owned(fsid))
-            else:                                         # a dead episode's frozen file: the walk once, its verdict set memoized in
+            else:                                         # a dead episode's frozen file, or a leaf with no assembly document (no
+                #                                           compaction boundary yet, or ever: its seeded walk had nothing to seed
+                #                                           and read the file whole at every boot, 104 MB on one): the walk once, its
+                #                                           verdict set memoized in the file's fold document and restored at the next
+                #                                           process; a leaf's memo is retired by its next append like any other's
                 out |= em.rewound_uuids(fp, drop=fp not in lineage and not _sdk_owned(fp.stem))   # the file's fold document,
             #     ^ restored at the next process (T391); a live session's anchor keeps its records resident, since the chain walk
             #       above reads it whole at every pass and a drop here made that a whole read per pass (round one, medium); so does
