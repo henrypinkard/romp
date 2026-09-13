@@ -109,7 +109,7 @@ import { dragSlotIndex } from "./dragslot";
 import { acceptDragEnter } from "./drag-accept";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, senderPrRepo, postalSenderHost } from "./pr-links";
-import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
+import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, writerIsReader, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
 import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey } from "./frame-listener";
 import { highlightHtml } from "./highlight-cache";
 import { wrapCodeLines, addCopyBtn } from "./code-block";   // a fence's per-line rows and Copy button, shared with the file viewer
@@ -11049,8 +11049,10 @@ function writeScroll(content: HTMLElement, top: number, writer: string, stick = 
   if (after !== before) lastScrollWriteAfter = after;   // a write that moved the view owes exactly one scroll event, its echo; one that did not move owes none, and must not eat a later gesture landing near its target (verifier low, round two)
   lastKnownSh = content.scrollHeight;
   if (after !== before) scrollDiagRow("scrollwrite", scrollWriteRow(activeId || "", writer, before, after, stick, content.scrollHeight, content.clientHeight));
-  // another writer moving the view while a landing settles is a sample for the settle rule, which re-lands (T386)
-  if (after !== before && landSettling && !landSettling.done && writer !== "land-on" && writer !== "land-realign") settleSample();
+  // a write of #content while a landing settles: the READER's own writers (the arrow keys, the wheel over a notch, the jump chip)
+  // are their takeover (round four: their writes read as another mover's and land-realign undid three arrow steps), every other
+  // writer's move is a sample for the settle rule, which re-lands (T386)
+  if (after !== before && landSettling && !landSettling.done && writer !== "land-on" && writer !== "land-realign") { if (writerIsReader(writer)) settleGesture(); else settleSample(); }
 }
 // EVERY mover of #content goes through writeScroll (T262j, the user 2026-09-08: an unwritten move the journal could
 // not name). scrollBy and scrollIntoView are scrollTop writes expressed differently, so they are expressed as such:
@@ -11358,6 +11360,10 @@ function settleInput(e: Event): void {
   settleLastInput = Date.now();
 }
 for (const ev of ["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchmove", "wheel", "keydown"]) window.addEventListener(ev, settleInput, { capture: true, passive: true });
+// a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round four, low 1): the hold ends
+// with the page's focus or visibility as well
+window.addEventListener("blur", () => { settleScrollerHeld = false; });
+document.addEventListener("visibilitychange", () => { settleScrollerHeld = false; });
 function settleEnd(s: NonNullable<typeof landSettling>): void {
   s.done = true; s.ro?.disconnect(); s.ro = null;
   for (const t of s.timers) clearTimeout(t);
@@ -11440,7 +11446,7 @@ function landOn(target: HTMLElement, flashKey?: string, alignOn?: HTMLElement | 
   // whose top goes to the viewport top when it is not the turn's own (the quoted span, or a turn's text below a tool
   // group); `quote` re-finds that span after a rebuild; the turn is still what flashes
   const at = alignOn ?? target;
-  settleLastInput = 0;   // the input that caused this landing (a click on a link in the scroller) is not evidence for taking it over (round three, low 4)
+  settleLastInput = 0; settleScrollerHeld = false;   // the input that caused this landing (a click on a link in the scroller) is not evidence for taking it over (round three, low 4); a hold whose release never reached the page (a press held across an alt-tab) does not outlive the landing (round four, low 1)
   const land = (writer: string) => { const c = document.getElementById("content"); if (c) scrollElInto(c, at, "start", writer); };
   land("land-on");
   // a landing is the reader's intent to be AT this message: follow mode ends unless the landing put them at the bottom

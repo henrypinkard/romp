@@ -47,6 +47,16 @@ export function scrollerGrab(targetIsScroller: boolean, offsetX: number, offsetY
   return targetIsScroller || offsetX >= clientWidth || offsetY >= clientHeight;
 }
 
+/** Writers of #content that are the READER's own hand (round four): the arrow keys' step (key-nav), the wheel over a scroll notch
+ *  (wheel-scale), the jump chip (jump-button). Their writes go through the write helper, so the scroll classifier reads them as
+ *  write echoes and never as gestures; for the settle they are the reader's takeover, not another writer's move to undo (three
+ *  arrow steps inside the window were each written back by land-realign). The landing's own writers (land-on, land-realign) and
+ *  the page's movers (a rewindow, a spacer, a fold, a restore) stay samples. */
+export const READER_WRITERS: ReadonlySet<string> = new Set(["key-nav", "wheel-scale", "jump-button"]);
+export function writerIsReader(writer: string): boolean {
+  return READER_WRITERS.has(writer);
+}
+
 export interface SettleSample { at: number; dist: number }   // at: ms since the landing write; dist: the target's top vs the viewport top, px
 
 export type SettleStep = "wait" | "realign" | "settled" | "unsettled" | "gave-up";

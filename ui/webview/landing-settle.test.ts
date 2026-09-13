@@ -49,6 +49,13 @@ test("a gesture needs the reader's input behind it (round two, medium): an input
   assert.equal(LS.scrollerGrab(false, 805, 100, 800, 600), true, "…or whose offset lies in the vertical scrollbar's gutter");
   assert.equal(LS.scrollerGrab(false, 100, 605, 800, 600), true, "…or the horizontal one's");
   assert.equal(LS.scrollerGrab(false, 100, 100, 800, 600), false, "a press on the content's children is a drag inside the content: the timed rule");
+  // round four: the reader's input that arrives as a WRITE of #content (the classifier never sees it as a gesture)
+  assert.deepEqual([...LS.READER_WRITERS].sort(), ["jump-button", "key-nav", "wheel-scale"], "the reader's own writers, one named set beside the landing's");
+  assert.equal(LS.writerIsReader("key-nav"), true, "an arrow key's step is the reader's takeover");
+  assert.equal(LS.writerIsReader("wheel-scale"), true);
+  assert.equal(LS.writerIsReader("land-realign"), false, "the landing's own writers are never a takeover");
+  assert.equal(LS.writerIsReader("rewindow"), false, "the page's movers are samples");
+  assert.equal(LS.writerIsReader("append-stick"), false);
 });
 
 test("the window's end files the landing as it stands: settled within the row, else unsettled, never held forever", () => {
@@ -79,7 +86,7 @@ test("the scroll clamp: how far short of the viewport top a target near the tail
 });
 
 test("render.ts wiring: landOn ends follow mode, feeds the rule from the page's own events, files the row at settle time, and the walk-forward waits", () => {
-  assert.match(RENDER, /import \{ SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, type SettleSample \} from "\.\/landing-settle";/);
+  assert.match(RENDER, /import \{ SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, writerIsReader, type SettleSample \} from "\.\/landing-settle";/);
   assert.match(RENDER, /if \(c && v\) v\.stick = atBottom\(c\); \}/, "a landing ends follow mode unless it put the reader at the bottom (the tail-shrink snap otherwise undoes it)");
   assert.match(RENDER, /const landSettle = \{ turn: target, at, uuid: flashKey \?\? null, quote: quote \?\? null, rowH: settleRowHeight\(at\), samples: \[\] as SettleSample\[\],/, "one settle in flight per landing, with what re-finds its target");
   assert.match(RENDER, /ro\.observe\(at\); if \(at !== target\) ro\.observe\(target\);/, "the aligned element's box, and the turn's");
@@ -89,7 +96,11 @@ test("render.ts wiring: landOn ends follow mode, feeds the rule from the page's 
   assert.match(RENDER, /if \(step === "realign"\) \{ settleLand\(s, "land-realign"\); return; \}/, "a re-land is a write of the landing's own, attributed");
   assert.match(RENDER, /settleFinish\(s, settleRowFields\(step, s\.samples, s\.rowH\)\);/);
   assert.match(RENDER, /if \(s\.row\) vscodeApi\?\.postMessage\(\{ \.\.\.s\.row, \.\.\.fields, \.\.\.\(s\.clamp \? \{ clamp: s\.clamp \} : \{\}\) \}\);/, "the deferred row goes out with the measurement and the clamp when one applied");
-  assert.match(RENDER, /if \(after !== before && landSettling && !landSettling\.done && writer !== "land-on" && writer !== "land-realign"\) settleSample\(\);/, "another writer's move during the settle is a sample, so the rule re-lands");
+  assert.match(RENDER, /if \(after !== before && landSettling && !landSettling\.done && writer !== "land-on" && writer !== "land-realign"\) \{ if \(writerIsReader\(writer\)\) settleGesture\(\); else settleSample\(\); \}/,
+    "the reader's own writers take the landing over; every other writer's move is a sample (round four)");
+  assert.match(RENDER, /settleLastInput = 0; settleScrollerHeld = false;/, "landOn clears the timed evidence and the hold (rounds three and four)");
+  assert.match(RENDER, /window\.addEventListener\("blur", \(\) => \{ settleScrollerHeld = false; \}\);\s*\n\s*document\.addEventListener\("visibilitychange", \(\) => \{ settleScrollerHeld = false; \}\);/, "the hold ends with the page's focus or visibility (round four, low 1)");
+  assert.match(RENDER, /if \(after !== before && landSettling && !landSettling\.done && writer !== "land-on" && writer !== "land-realign"\) \{/, "another writer's move during the settle is a sample, so the rule re-lands");
   assert.match(RENDER, /if \(scrolled && landSettling && !landSettling\.done && landTrail\[landTrail\.length - 1\] === "pointer-exact"\) \{ landSettling\.row = row; settleSample\(\); \}[^\n]*\n\s*else vscodeApi\?\.postMessage\(row\);/, "an exact landing's row waits for the settle; every other outcome files at once");
   assert.match(RENDER, /if \(landSettling && !landSettling\.done\) \{ afterSettle\.push\(\(\) => edgeCheckAfterWindow\(sid\)\); return; \}/, "the walk-forward of a detached window that fits waits for the landing to settle");
   assert.match(RENDER, /pendingAnchorT = ask\?\.t \?\? null; pendingAnchorKind = ask\?\.kind \?\? null;/, "the click's time and kind ride through the window's adoption");
@@ -107,7 +118,7 @@ test("render.ts wiring, round one: the gesture verdict ends the settle by any in
   assert.match(inp, /if \(e\.type === "pointermove" && !\(e as PointerEvent\)\.buttons\) return;/, "a hover is not a hand on the scroller; a drag inside the content is");
   assert.match(inp, /if \(e\.type === "pointerup" \|\| e\.type === "pointercancel"\) \{ settleScrollerHeld = false; return; \}/, "the release ends the hold (round three)");
   assert.match(inp, /if \(scrollerGrab\(e\.target === c, pe\.clientX - cr\.left, pe\.clientY - cr\.top, c\.clientWidth, c\.clientHeight\)\) settleScrollerHeld = true;/, "a press on the scroller itself or in its gutter starts the hold");
-  assert.match(RENDER, /settleLastInput = 0;   \/\/ the input that caused this landing/, "landOn clears the timed evidence: the click that landed is not a takeover (round three, low 4)");
+  assert.match(RENDER, /settleLastInput = 0; settleScrollerHeld = false;   \/\/ the input that caused this landing/, "landOn clears the timed evidence and the hold: the click that landed is not a takeover (rounds three and four)");
   assert.match(RENDER, /gesture: undefined, settled: false, superseded: true/, "a superseded row wears no takeover mark");
   assert.match(inp, /if \(!c \|\| !\(e\.target instanceof Node\) \|\| !c\.contains\(e\.target\)\) return;/, "on the scroller and its scrollbar only");
   assert.match(inp, /a\.tagName === "TEXTAREA" \|\| a\.tagName === "INPUT" \|\| \(a as HTMLElement\)\.isContentEditable/, "typing in a field scrolls the field, never #content");

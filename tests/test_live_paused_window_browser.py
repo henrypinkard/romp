@@ -70,7 +70,7 @@ const require = createRequire(process.env.EXT_PKG);
 const { chromium } = require("playwright");
 const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));
 let browser;
-try { browser = await chromium.launch(); }
+try { browser = await chromium.launch(cfg.launch || {}); }   // a lab may ask for classic scrollbars (the settle lab's drag road): Playwright hides them headless by default
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1000, height: 600 } });
 // every frame the page sends its kernel, by type: the window asks, the older asks and the re-attach ask are the evidence
