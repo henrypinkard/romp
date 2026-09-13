@@ -96,12 +96,19 @@ const placedKept = await settle({ type: "status", id: f0.id, status: { ...f0.sta
 const doneOnly = await settle(only([task(cfg.doneId)], [], "idle"));
 // the one-kind idle wait with tracked rows beyond it (round three, low 3): waiting on one command, a kept service and a finished
 // command listed too; every listed row counted, the kept subset after
+// round four: the peer-named idle header counts the peer row as a peer beside the tracked rows; an agent's own wait is a sub-row the
+// header never counts (the session waits on the agent, the agent on it)
+const peerIdle = await settle({ ...f0, status: { ...f0.status, state: "idle", awaitingWhy: "delegated to api; waiting on a reply", awaitingKind: "peer", awaitingCount: 1,
+                                                 awaitingPeers: [{ name: "api", host: "", color: null }], awaitingItems: [{ kind: "peer", id: "api", label: "api" }], awaitingTaskIds: [], bgServiceIds: [cfg.svcId] },
+                                bgTasks: { count: 1, tasks: [task(cfg.svcId)] } });
+const nested = await settle({ ...f0, status: { ...f0.status, state: "working", awaitingItems: [{ ...f0.status.awaitingItems.find((it) => it.kind === "agents"), waits: [{ kind: "commands", id: cfg.placedId, label: "Run the parser test chunk", stoppable: true }] }], awaitingTaskIds: [], bgServiceIds: [] },
+                              bgTasks: { count: 2, tasks: [task("tu_agent_1"), task(cfg.placedId)] } });
 const idleOne = await settle({ ...f0, status: { ...f0.status, state: "idle", awaitingWhy: "waiting on a background command: Build the docs site", awaitingKind: "commands", awaitingCount: 1,
                                                awaitingItems: f0.status.awaitingItems.filter((it) => it.kind === "commands"), awaitingTaskIds: [cfg.cmdId], bgServiceIds: [cfg.svcId, cfg.doneId] },
                                 bgTasks: { count: 3, tasks: [task(cfg.cmdId), task(cfg.svcId), task(cfg.doneId)] } });
 if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/romp_chat-T394-bg-kinds-light-served.png" }); }
 await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ dark, light, placedOnly, placedKept, doneOnly, idleOne }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ dark, light, placedOnly, placedKept, doneOnly, idleOne, peerIdle, nested }) + "\n", () => process.exit(0));
 """
 
 
@@ -311,6 +318,19 @@ class ServedBgKinds(unittest.TestCase):
         self.assertEqual([(x["label"], x["kept"]) for x in io["rows"]], [("Build the docs site", None), ("Serve the docs preview", KEPT_WORD), ("Warm the docs cache", None)], "the wait's row, the kept service, the finished command: %r" % io["rows"])
         self.assertEqual(io["header"], "Awaiting command · a background command: Build the docs site · 3 commands · 1 kept running",
                          "the wait's word and sentence, then every listed row by kind, then the kept subset: %r" % io["header"])
+
+    def test_the_peer_named_idle_header_counts_the_peer_row_as_a_peer_and_an_agents_own_wait_stays_a_sub_row(self):
+        # round four: the rule's sentence made true for every branch. A session idle on a delegated peer with a kept service listed
+        # counts the peer row as a peer; an awaited agent's own wait is drawn as a sub-row under it and the header never counts it
+        r = self._result()
+        pi = r["peerIdle"]
+        # the sections in the rows' display order (agents, commands, watches, peers, timers): the kept service, then the peer
+        self.assertEqual([(x["section"], x["label"], x["kept"]) for x in pi["rows"]], [("Commands", "Serve the docs preview", KEPT_WORD), ("Peers", "api", None)], "the kept service and the peer row: %r" % pi["rows"])
+        self.assertTrue(pi["header"].startswith("Awaiting api"), "the wait names the peer: %r" % pi["header"])
+        self.assertTrue(pi["header"].endswith(" · 1 command · 1 peer · 1 kept running"), "…then every listed row by kind, the peer as a peer, and the kept subset: %r" % pi["header"])
+        ne = r["nested"]
+        self.assertEqual([(x["label"], "bg-sub" in x["cls"].split()) for x in ne["rows"]], [("Map the notes-api parser", False), ("Run the parser test chunk", True)], "the agent, then its own wait as a sub-row: %r" % ne["rows"])
+        self.assertEqual(ne["header"], "In the background · 1 agent", "the header counts the top level only: the sub-row is the agent's: %r" % ne["header"])
 
     def test_a_completed_only_box_wears_the_dim_ink_on_its_header_dot(self):
         # round two, low 2: the worst status seeds from the tasks, so a completed-only box reads completed, the dim ink, not the running gold

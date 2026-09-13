@@ -148,7 +148,7 @@ test("the box groups the rows by kind, headers only when more than one group sho
   // the rows were there): each lists in its KIND's section, after the awaited rows, dimmed, the judge's verdict as a suffix
   assert.doesNotMatch(RENDER, /BG_LEFTOVER_TITLE|"Also running"|"Background tasks"/, "no section of its own, under either of its old names");
   assert.match(body, /for \(const row of kept\) if \(row\.kind === g\.kind\) list\.appendChild\(bgRow\(row, sid\)\);/);
-  // the header: mixed → "Awaiting <n> · <breakdown>" counting the kept rows apart; one kind → the sentence as before, the kept count after it
+  // the header: mixed → "Awaiting <n> · <breakdown of every listed row, then the kept subset>"; one kind → the sentence as before, the kept count after it
   assert.match(body, /\} else if \(groups\.length > 1\) \{\s*\n\s*lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(counted, keptN\);/);
   assert.match(body, /lab\.textContent = "Awaiting" \+ \(word \? " " \+ word : ""\) \+ " · " \+ why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\) \+ \(kept\.length \? " · " \+ listBreakdown\(counted, keptN\) : ""\);/);
   // the no-rows fallback still expands to the full sentence — never a dead end
@@ -261,7 +261,7 @@ test("the header follows the wait: idle → 'Awaiting …' + the idle note; work
   const body = RENDER.split("function renderBgTasks(")[1].split("\nfunction ")[0];
   assert.match(body, /if \(why\) \{[\s\S]*?const word = awaitWord\(s\.status\.awaitingKind, s\.status\.awaitingCount, items\);/, "idle: today's label, agreeing in number with the chip");
   assert.match(body, /\} else \{[\s\S]*?lab\.textContent = "In the background · " \+ listBreakdown\(counted, keptN\);/,
-    "working: the same rows, worded as what they are; the header counts every row the list shows, the kept rows apart (T394)");
+    "working: the same rows, worded as what they are; the header counts every top-level row the list shows, then the kept subset (T394)");
   // the idle note is appended under a wait only — once at the end of the list, once in the no-rows fallback
   assert.match(body, /if \(why\) list\.appendChild\(bgIdleNote\(\)\);/);
   assert.match(body, /det\.appendChild\(bgIdleNote\(\)\);/);
