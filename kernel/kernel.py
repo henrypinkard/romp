@@ -58668,8 +58668,12 @@ class Handler(BaseHTTPRequestHandler):
                 # whether a newer landing superseded this one before it settled. Absent on rows an older bundle posts, and on a
                 # miss (nothing to settle): the key is written only when the page said so, so `ok true, settled false` is the
                 # shape to search for and the fields are never invented
-                for _k in ("dist", "settled", "superseded", "clamp"):
-                    if _k in msg and msg.get(_k) is not None:
+                # …typed like the fields beside them (round two, low 2): the distances are numbers (a bool is not one), the marks bools
+                for _k in ("dist", "clamp"):
+                    if isinstance(msg.get(_k), (int, float)) and not isinstance(msg.get(_k), bool):
+                        rec[_k] = msg[_k]
+                for _k in ("settled", "superseded"):
+                    if isinstance(msg.get(_k), bool):
                         rec[_k] = msg[_k]
                 with open(jd.STATE / "locate-audit.jsonl", "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec) + "\n")

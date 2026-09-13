@@ -8,8 +8,12 @@
 
 /** The settle window: the span landOn already re-aligned within for the boxes above the transcript. */
 export const SETTLE_MS = 1200;
-/** Consecutive samples within the row before the landing counts as settled ahead of the window's end. */
-export const SETTLE_QUIET = 2;
+/** A reader's gesture needs its own evidence (round two, medium): an input event on the scroller (a pointer down or a drag,
+ *  a touch, a wheel, a key) at most this many ms before the scroll event it caused. The browser's own scroll anchoring moves
+ *  scrollTop with no write and no input (a node inserted or a spacer re-estimated above the viewport), and the classifier
+ *  reads that as a gesture too; without evidence such a scroll is a SAMPLE for the settle, never a takeover. A scroll follows
+ *  its input within a frame or two; the window only bounds staleness. */
+export const SETTLE_INPUT_MS = 120;
 /** The one early backstop sample beside the event samples: the first paint after the landing's own render, where a page
  *  that moves nothing settles on its two quiet samples instead of waiting for the window's end (round one, low 5). */
 export const SETTLE_FIRST_PAINT_MS = 250;
@@ -24,6 +28,12 @@ export const SETTLE_ROW_VIEWPORT_CAP = 0.25;
 export function reachableOffset(targetY: number, scrollHeight: number, clientHeight: number): number {
   const maxScroll = Math.max(0, scrollHeight - clientHeight);
   return Math.max(0, Math.round(targetY - maxScroll));
+}
+
+/** Whether a scroll at `scrollAt` (ms) has a reader's input behind it: one at `lastInputAt` within SETTLE_INPUT_MS before it.
+ *  0 or null = no input seen. */
+export function gestureEvidence(lastInputAt: number | null | undefined, scrollAt: number): boolean {
+  return !!lastInputAt && scrollAt - lastInputAt >= 0 && scrollAt - lastInputAt <= SETTLE_INPUT_MS;
 }
 
 export interface SettleSample { at: number; dist: number }   // at: ms since the landing write; dist: the target's top vs the viewport top, px
@@ -42,19 +52,15 @@ export function withinRow(dist: number, rowH: number): boolean {
  *    distance as it stood, settled false when it was off);
  *  - a sample outside the row before the window's end asks for a re-land ("realign"): the page moved the target, the
  *    landing puts it back;
- *  - SETTLE_QUIET consecutive samples within the row settle the landing early ("settled");
  *  - the window's end settles on the last sample ("settled" within the row, else "unsettled"), so a landing that never
- *    quietens is still filed, with its distance, rather than held forever;
+ *    quietens is still filed, with its distance, rather than held forever. Nothing settles EARLY (round two, low 1): two
+ *    adjacent quiet samples used to end the settle about 60 ms in, and a displacement later in the window (the tab bar
+ *    wrapping to a second row) was neither sampled nor corrected; quiet means the window ran out with the target on its row;
  *  - otherwise "wait". */
 export function settleStep(samples: readonly SettleSample[], rowH: number, gesture: boolean, now: number): SettleStep {
   if (gesture) return "gave-up";
   const last = samples.length ? samples[samples.length - 1] : null;
   if (last && !withinRow(last.dist, rowH) && now < SETTLE_MS) return "realign";
-  if (samples.length >= SETTLE_QUIET) {
-    let quiet = true;
-    for (let i = samples.length - SETTLE_QUIET; i < samples.length; i++) if (!withinRow(samples[i].dist, rowH)) quiet = false;
-    if (quiet) return "settled";
-  }
   if (now >= SETTLE_MS) return last && withinRow(last.dist, rowH) ? "settled" : "unsettled";
   return "wait";
 }

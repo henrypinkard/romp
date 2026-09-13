@@ -69,6 +69,18 @@ class LocateAuditSettleFields(unittest.TestCase):
             for k in ("dist", "settled", "superseded", "clamp"):
                 self.assertNotIn(k, r, "never invented: %r" % r)
 
+    def test_mistyped_settle_fields_are_not_copied(self):
+        # round two, low 2: the four fields are typed like the fields beside them; a bool is not a distance, a word is not a mark
+        self.post(dist="9", settled="yes", superseded=1, clamp=True)
+        self.post(dist=True, settled=None, clamp=2.5)
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        for k in ("dist", "settled", "superseded", "clamp"):
+            self.assertNotIn(k, rows[0], "a mistyped field is dropped, never written: %r" % rows[0])
+        self.assertNotIn("dist", rows[1], "a bool is not a distance: %r" % rows[1])
+        self.assertNotIn("settled", rows[1])
+        self.assertEqual(rows[1]["clamp"], 2.5, "a float distance is one: %r" % rows[1])
+
 
 if __name__ == "__main__":
     unittest.main()

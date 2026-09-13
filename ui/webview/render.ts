@@ -109,7 +109,7 @@ import { dragSlotIndex } from "./dragslot";
 import { acceptDragEnter } from "./drag-accept";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, senderPrRepo, postalSenderHost } from "./pr-links";
-import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
+import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
 import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey } from "./frame-listener";
 import { highlightHtml } from "./highlight-cache";
 import { wrapCodeLines, addCopyBtn } from "./code-block";   // a fence's per-line rows and Copy button, shared with the file viewer
@@ -11266,9 +11266,10 @@ function landNearestMoment(t: number): boolean {
 // one-shot: when a jump also switches tabs, the tab bar re-renders (possibly
 // wrapping to a SECOND row) and the ledger box for the new session appears — both
 // AFTER the scroll ran. #content shrinks by that growth and the landed turn drifts
-// off its mark. So: re-align whenever the bar/ledger actually resizes, plus two
-// timed retries for late layout (images, markdown), for ~1.2s — canceled the
-// moment the user wheel-scrolls so we never fight a real gesture.
+// off its mark. So the landing SETTLES (landing-settle.ts, the block below): for ~1.2 s every event that can move the
+// target is a sample (the target's or a spacer's box, the boxes above the transcript, any other writer, the first paint
+// and the window's end), a sample off the row re-lands, and the landing yields only to the reader's own gesture, a
+// scroll with their input behind it; the row is filed when the settle ends, with the measured distance.
 // The supporting SPAN (T218): the distiller quoted the sentence its takeaway rests on, the kernel
 // located it in the cited atom, and the landing highlights it INSIDE the (often long, multi-topic)
 // message — the study's most common partial was the right message with the claim buried deep. The
@@ -11331,10 +11332,25 @@ function highlightCiteSpan(target: HTMLElement, quote: string): HTMLElement | nu
 let landSettling: { turn: HTMLElement; at: HTMLElement; uuid: string | null; quote: string | null; rowH: number; samples: SettleSample[]; start: number;
                     gesture: boolean; row: Record<string, unknown> | null; ro: ResizeObserver | null; timers: number[]; done: boolean; clamp: number } | null = null;
 const afterSettle: (() => void)[] = [];   // what waits for the landing to settle (the window's edge check)
+/** When the reader last put a hand on the scroller (ms): a pointer down or a drag on it or its scrollbar, a touch, a wheel, or a
+ *  key outside an editable field. The scroll listener reads it: a gesture-classified scroll within SETTLE_INPUT_MS of it is the
+ *  reader's takeover; one without is the browser's anchoring or another mover, a sample (round two, medium). */
+let settleLastInput = 0;
+function settleInput(e: Event): void {
+  const c = document.getElementById("content");
+  if (e.type === "keydown") {
+    const a = document.activeElement;
+    if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" || (a as HTMLElement).isContentEditable)) return;   // typing scrolls the field, not #content
+  } else {
+    if (e.type === "pointermove" && !(e as PointerEvent).buttons) return;   // a hover is not a hand on the scroller; a drag is
+    if (!c || !(e.target instanceof Node) || !c.contains(e.target)) return;   // the scroller and its scrollbar (its own box), nothing else
+  }
+  settleLastInput = Date.now();
+}
+for (const ev of ["pointerdown", "pointermove", "touchstart", "touchmove", "wheel", "keydown"]) window.addEventListener(ev, settleInput, { capture: true, passive: true });
 function settleEnd(s: NonNullable<typeof landSettling>): void {
   s.done = true; s.ro?.disconnect(); s.ro = null;
   for (const t of s.timers) clearTimeout(t);
-  window.removeEventListener("keydown", settleGesture);
   if (landSettling === s) landSettling = null;
 }
 /** A newer landing takes over before this one settled: its deferred row is FILED, not dropped (round one, medium 2: the
@@ -11343,9 +11359,9 @@ function settleSupersede(s: NonNullable<typeof landSettling>): void {
   settleEnd(s);
   if (s.row) vscodeApi?.postMessage({ ...s.row, ...settleRowFields("gave-up", s.samples, s.rowH), settled: false, superseded: true, ...(s.clamp ? { clamp: s.clamp } : {}) });
 }
-/** The reader took over, by any input: the scroll classifier's gesture verdict (a wheel, a scrollbar drag, a touch swipe, a
- *  key), never a write's echo; the landing yields (round one, medium 1: only a wheel or a key ended it before, so a
- *  scrollbar drag during the settle was undone by the re-land). */
+/** The reader took over: a scroll the classifier calls a gesture (never a write's echo) WITH the reader's input behind it (a
+ *  wheel, a scrollbar drag, a touch swipe, a key; settleInput, round two): the landing yields (round one, medium 1: only a
+ *  wheel or a key ended it before, so a scrollbar drag during the settle was undone by the re-land). */
 function settleGesture(): void { const s = landSettling; if (s && !s.done) { s.gesture = true; settleTick(); } }
 /** The anchor's element by uuid in the active view: the selectors scrollToAnchor lands by. */
 function findTurnEl(uuid: string): HTMLElement | null {
@@ -11436,13 +11452,13 @@ function landOn(target: HTMLElement, flashKey?: string, alignOn?: HTMLElement | 
     if (v) for (const sp of Array.from(v.el.querySelectorAll(".tx-spacer"))) ro.observe(sp);
     landSettle.ro = ro;
   }
-  // a key is a gesture the scroll classifier never sees (it moves the view through a write); every other input reaches
-  // settleGesture through the classifier's verdict in the scroll listener
-  window.addEventListener("keydown", settleGesture);
-  // two bounded backstops beside the event samples (round one, low 5): the first paint after the landing's own render, where a
-  // page that moves nothing settles on its two quiet samples; and the window's end, where a landing still moving is filed
-  // as it stands. Every other sample is an event: a box resizing, another writer's move, the classifier's gesture
+  // the reader's takeover reaches settleGesture through the scroll listener: the classifier's gesture verdict with the reader's
+  // input behind it (settleInput: pointer, touch, wheel or key; round two)
+  // two bounded backstops beside the event samples (round one, low 5): the first paint after the landing's own render, and the
+  // window's end, where the landing is filed as it stands (settled on its row, else unsettled; nothing settles early, round two
+  // low 1). Every other sample is an event: a box resizing, another writer's move, a scroll with no input behind it
   landSettle.timers.push(window.setTimeout(settleSample, SETTLE_FIRST_PAINT_MS), window.setTimeout(settleSample, SETTLE_MS + 20));
+  settleSample();   // the landing's own first sample, at the write: a takeover in the first frames files the landing as it stood, never with no distance (round two)
 }
 
 
@@ -13313,7 +13329,10 @@ function updateReplyChips(): void {
     const cls = classifyScroll(c.scrollTop, lastScrollWriteAfter);
     const gv = activeId ? views.get(activeId) : null;
     if (gv) gv.gestureScroll = cls === "gesture";   // read once by the edge check this event runs next (T366): a write's echo is no gesture
-    if (cls === "gesture") settleGesture();          // the reader took over, by any input (a scrollbar drag, a touch swipe, a wheel): a settling landing yields (T386 round one, medium 1)
+    if (cls === "gesture") { if (gestureEvidence(settleLastInput, Date.now())) settleGesture(); else settleSample(); }          // the reader took over, by any input (a scrollbar drag, a touch swipe, a wheel): a settling landing yields (T386 round one, medium 1)
+    // …a gesture with a reader's input behind it (round two, medium): the browser's own scroll anchoring (a node inserted or a spacer
+    // re-estimated above the viewport) moves scrollTop with no write and no input, and the classifier calls that a gesture too; for
+    // the settle it is a sample, or the landing that was and stayed exact filed settled false
     lastScrollWriteAfter = null;   // one-shot: the first event after a write consumes its marker, echo or not (a gesture that lands within a pixel of an older write's target is a gesture)
     if (cls !== "write-echo") scrollDiagRow("scrollgesture", { sid: activeId || "", top: c.scrollTop, gesture: true, sh: c.scrollHeight, ch: c.clientHeight });
     lastKnownSh = c.scrollHeight;   // sh/ch: a clamp reads top == sh - ch after sh dropped (T262e)

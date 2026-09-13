@@ -128,8 +128,19 @@ const rowsBefore4 = (await rows()).length;
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(30), anchorT: cfg.base + 60 });
 try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(30), { timeout: 20000 }); }
 catch (e) { const st = await state(); console.error("the gesture road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
-await page.waitForTimeout(300);
-const moved4 = await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollTop + 900; return c.scrollTop; });
+// the reader's own wheel, right after the landing arrives, INSIDE the settle window (round two, low 3: a 300 ms pause used to
+// fall past the early settle at the base, so the road was green there); a real input event, as the settle now requires
+// (a wheel event on the scroller, then the scroll it causes: the pair the page sees from a real wheel; the headless mouse's own
+// wheel reached no scroller here)
+const rowsBeforeWheel = (await rows()).slice(rowsBefore4);   // the settle is still open: its row is not filed yet (the window's end is ~1.2 s away)
+const wheelAt = Date.now();
+const moved4 = await page.evaluate(() => { const c = document.getElementById("content");
+  c.dispatchEvent(new WheelEvent("wheel", { deltaY: 900, bubbles: true, cancelable: true })); c.scrollTop = c.scrollTop + 900; return c.scrollTop; });
+// the takeover files the row AT the gesture, long before the window's end: how soon the exact row appears after the wheel
+let rowAfterWheelMs = null;
+try { await page.waitForFunction((u) => window.__sent.some((m) => m.type === "locateDiag" && m.anchor === u && Array.isArray(m.trail) && m.trail[m.trail.length - 1] === "pointer-exact"), q(30), { timeout: 1500 }); rowAfterWheelMs = Date.now() - wheelAt; }
+catch (e) { /* rows4 says what happened */ }
+await page.waitForTimeout(250);
 await page.waitForTimeout(1400);
 const after4 = await page.evaluate(() => document.getElementById("content").scrollTop);
 const writes4 = (await ledger()).filter((w) => w.before === moved4 || w.after === moved4 || (Math.abs(w.before - moved4) < 4));
@@ -141,6 +152,24 @@ await page.waitForTimeout(120);
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(52), anchorT: cfg.base + 104 });
 await page.waitForTimeout(2500);
 const rows5 = (await rows()).slice(rowsBefore5);
+// ROAD 8 (round two, medium): the browser's own scroll anchoring during the settle. A 400 px node inserted ABOVE the viewport
+// in the landing's frame moves scrollTop with no write and no input; the classifier calls that a gesture, and the settle used to
+// end on it and file the landing settled false, dist null. With the reader's input as the evidence a gesture needs, it is a
+// sample: the landing stays exact and its row says settled. Last, since the node stays in the DOM.
+// The target sits INSIDE the run the earlier roads left resident and away from its edges: a landing at the run's end asks for the
+// newer side and a gap reply replaces the run with the tail; one outside the run asks the kernel for a window, and neither is this
+// road's subject (the windowing stage 2 reworks both). The page re-renders the resident run around the target on its own.
+const rowsBefore8 = (await rows()).length;
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(40), anchorT: cfg.base + 80 });
+try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(40), { timeout: 20000 }); }
+catch (e) { const st = await state(); console.error("the anchoring road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
+const shift8 = await page.evaluate(() => { const c = document.getElementById("content"); const before = c.scrollTop;
+  const d = document.createElement("div"); d.className = "lab-anchoring-probe"; d.style.height = "400px"; c.insertBefore(d, c.firstElementChild); return { before, after: c.scrollTop }; });
+try { await page.waitForFunction((u, n) => window.__sent.filter((m) => m.type === "locateDiag" && m.anchor === u && Array.isArray(m.trail) && m.trail[m.trail.length - 1] === "pointer-exact").length > 0, q(40), { timeout: 6000 }); }
+catch (e) { /* rows8 says what happened */ }
+await page.waitForTimeout(200);
+const rows8 = (await rows()).slice(rowsBefore8);
+const box8 = await boxOf('#content .turn[data-uuid="' + q(40) + '"]');
 // the anchor's place in the DOM: its ancestors up to #content and the siblings that follow it (the turn's atoms as rendered),
 // and whether the page can highlight at all; the diagnosis when the words are not at the top
 const dom2 = await page.evaluate((u) => {
@@ -156,7 +185,7 @@ const st = await state();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-settled.png" });
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify({ o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2,
-  words3, anchor3, anchor3cls, rows3, moved4, after4, writes4, rows4, rows5, tail6, rows6, scroll6, after: st }) + "\n", () => process.exit(0));
+  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
 """
 
 
@@ -174,8 +203,12 @@ class ServedLandingSettles(WindowLab):
 
     def test_the_landing_row_keeps_the_clicks_time_and_says_whether_the_landing_settled(self):
         r = self._result()
-        land = [x for x in r["rowsAtLand"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
-        self.assertEqual(len(land), 1, "one exact landing row for the navigation: %r" % r["rowsAtLand"])
+        # the exact row is FILED when the settle ends, at the window's end (round two, low 1): none within the landing's first
+        # moments, one by the time the road's later probes ran
+        early = [x for x in r["rowsAtLand"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(early, [], "no exact row before the settle window ran out: %r" % r["rowsAtLand"])
+        land = [x for x in r["rowsAll"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(len(land), 1, "one exact landing row for the navigation: %r" % r["rowsAll"])
         row = land[0]
         self.assertEqual(row["anchorT"], self.deep_t, "the row keeps the click's time through the window's adoption: %r" % row)
         self.assertIsNotNone(row["settled"], "the row says whether the landing settled: %r" % row)
@@ -223,6 +256,16 @@ class ServedLandingSettles(WindowLab):
         self.assertLessEqual(abs(r["after4"] - r["moved4"]), 60, "the view stayed where the reader put it (moved to %s, now %s); writes near the move: %r" % (r["moved4"], r["after4"], r["writes4"]))
         realigns = [w for w in r["writes4"] if w["writer"] == "land-realign" and w["before"] == r["moved4"]]
         self.assertEqual(realigns, [], "no re-land wrote the reader's move back: %r" % r["writes4"])
+        # the wheel came INSIDE the settle window (round two, low 3): no row stood before it, and the takeover filed the row at the
+        # gesture, not at the window's end ~1 s later. The row carries the landing as it stood when the reader took over: the target
+        # on its row (the reader's own move is not a miss), as the rule files a gave-up landing
+        early = [x for x in r["rowsBeforeWheel"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(early, [], "the settle was still open when the reader wheeled: %r" % r["rowsBeforeWheel"])
+        self.assertIsNotNone(r["rowAfterWheelMs"], "the wheel ended the settle: its row appeared: %r" % r["rows4"])
+        self.assertLess(r["rowAfterWheelMs"], 600, "…at the gesture, not at the window's end: %s ms after the wheel" % r["rowAfterWheelMs"])
+        taken = [x for x in r["rows4"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(len(taken), 1, "one exact row for the gesture road's landing: %r" % r["rows4"])
+        self.assertTrue(taken[0]["settled"], "the target sat on its row when the reader took over: %r" % taken[0])
         # medium 2: two landings inside one settle window are two rows, the first marked superseded
         exact = [x for x in r["rows5"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
         self.assertEqual(len(exact), 2, "two exact rows for two clicks: %r" % r["rows5"])
@@ -241,6 +284,17 @@ class ServedLandingSettles(WindowLab):
         self.assertTrue(row["settled"], "the landing is settled against the reachable spot: %r" % row)
         self.assertGreater(row["clamp"] or 0, 0, "…and the row names the clamp: %r" % row)
         self.assertLessEqual(abs(row["dist"] or 0), 24, "the distance from the reachable spot is within a row: %r" % row)
+
+    def test_the_browsers_own_scroll_anchoring_during_the_settle_is_a_sample_not_a_takeover(self):
+        # round two, medium: a node inserted above the viewport in the landing's frame moves scrollTop with no input
+        r = self._result()
+        self.assertGreaterEqual(r["shift8"]["after"] - r["shift8"]["before"], 300, "the insertion moved the scroller by the browser's anchoring: %r" % r["shift8"])
+        exact = [x for x in r["rows8"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(len(exact), 1, "one exact row for the landing: %r" % r["rows8"])
+        self.assertTrue(exact[0]["settled"], "the landing was and stayed exact: settled, not a takeover: %r" % exact[0])
+        self.assertIsNotNone(exact[0]["dist"], "the settle measured the target: %r" % exact[0])
+        self.assertLessEqual(abs(exact[0]["dist"]), 24, "the target on its row at the settle's end: %r" % exact[0])
+        self.assertLessEqual(abs(r["box8"]["top"]), 40, "and on the screen the target still sits at the top: %r" % r["box8"])
 
 
 if __name__ == "__main__":
