@@ -15,11 +15,13 @@ in this lab, and a copy the kernel holds leaves its queue only when the kernel f
 the transcript by hand lands nothing (the kernel keeps the copy, and the page rightly keeps the send provisional by its
 id). That transition is executed on the rule itself in ui/webview/send-pending-overlay.test.ts.
 
-The review's MEDIUM (a held copy under a to-do card released by its landing) is executed on the rule in
-ui/webview/queued-held.test.ts and not driven here: this boot's kernel has no Agent SDK, its session thread ends at the
-import, and the copy it lists survives only in the persisted queue mirror, which no door can take from (a cancel misses, no
-CLI feeds it), so a held copy cannot be produced on this page. Where the SDK is present the copy queues in memory and a
-cancel over the socket by its words releases it; that is the verifier's probe shape.
+A second class on the same boot (the review's MEDIUM: a held copy under a to-do card released by its landing) drives the page by
+frames through the shim's own door, the T262i lab's route (tests/test_queued_copy_held.py): the kernel's real session frame is the
+base; a queue frame lists the kernel's copy of a message with a to-do card after it; a queue frame without the copy (taken, not
+landed) makes the page hold the card as landing; a transcript frame lands the record carrying the copy's id, the card still last.
+After the landing there is one user row and no held card. Before the fold the hold anchored on the card's word uuid, read no
+event after it, and stood beside the landed row for the rest of the turn. No kernel take is needed: this boot's kernel has no
+Agent SDK, so a copy it lists has no door to leave by, which is why the frames stand in for the CLI here.
 
 Skips LOUDLY without the extension deps or a Playwright browser (CI installs none). All fixtures synthetic.
 """
@@ -103,6 +105,57 @@ process.stdout.write("RESULT:" + JSON.stringify({ afterA, bAtOnce, afterB0, afte
 
 
 
+HELD_DRIVER = r"""
+import { createRequire } from "node:module";
+import fs from "node:fs";
+const require = createRequire(process.env.EXT_PKG);
+const { chromium } = require("playwright");
+const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));
+let browser;
+try { browser = await chromium.launch(); }
+catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
+const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+// every kernel frame from the first byte (the FULL session frame is the base for the synthetic pushes); while the synthetic
+// sequence runs the kernel's own frames are held back at the shim's socket handler, so a push cannot overwrite the injected state
+await page.addInitScript(() => {
+  window.__frames = []; window.__quiet = false;
+  window.addEventListener("message", (e) => { const m = e.data; if (m && (m.type === "session" || m.type === "update" || m.type === "chatTail")) window.__frames.push(m); });
+  const desc = Object.getOwnPropertyDescriptor(WebSocket.prototype, "onmessage");
+  Object.defineProperty(WebSocket.prototype, "onmessage", { configurable: true, get() { return desc.get.call(this); },
+    set(fn) { desc.set.call(this, (ev) => { if (window.__quiet) { try { const m = JSON.parse(ev.data); if (m && (m.type === "chatTail" || m.type === "update" || m.type === "session" || m.type === "status")) return; } catch (e) { /* not a frame */ } } return fn(ev); }); } });
+});
+await page.goto(cfg.chat);
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+await page.waitForSelector(".turn.turn-user", { timeout: 20000 });
+await page.waitForFunction(() => window.__frames.some((m) => m.type === "session" && Array.isArray(m.events) && m.events.length > 3), null, { timeout: 20000 });
+await page.waitForTimeout(400);
+const base = await page.evaluate(() => { const fr = window.__frames.filter((m) => m.type === "session" && Array.isArray(m.events)); return fr[fr.length - 1]; });
+base.events = base.events.filter((e) => !(e.uuid || "").startsWith("optimistic:") && e.kind !== "queued" && e.kind !== "todo");
+const QID = "echo:" + "d".repeat(32);
+const todo = { kind: "todo", uuid: "todo", tasks: [{ id: "1", subject: cfg.todoSubject, activeForm: "Mapping the parser", status: "in_progress" }] };
+const copy = { kind: "queued", uuid: "queued", texts: [{ md: cfg.textA, qid: QID, qts: Date.now(), cancelable: true, idx: 0 }] };
+const withCopy = { ...base, type: "update", events: [...base.events, copy, todo] };                                  // the kernel lists its copy, the card after it
+const taken = { ...base, type: "update", events: [...base.events, todo] };                                           // the copy left the queue, nothing landed yet
+const landed = { ...base, type: "update", events: [...base.events, { kind: "user", md: cfg.textA, uuid: "la9", ts: new Date().toISOString(), qid: QID }, todo] };   // its record, the card still last
+const inject = (frame) => page.evaluate((f) => { window.postMessage(f, "*"); }, frame);
+const rows = () => page.evaluate((x) => ({
+  queued: Array.from(document.querySelectorAll("#content .turn-queued:not(.turn-queued-hidden) .queued-bubble")).filter((b) => getComputedStyle(b).display !== "none" && (b.textContent || "").includes(x)).length,
+  landing: document.querySelectorAll("#content .turn-queued:not(.turn-queued-hidden) .queued-bubble.landing, #content .queued-landing").length,
+  user: Array.from(document.querySelectorAll("#content .turn.turn-user")).filter((t) => (t.textContent || "").includes(x)).length,
+  todo: Array.from(document.querySelectorAll("#content .turn")).filter((t) => /to-do/i.test(t.textContent || "")).length,
+  last: (() => { const ts = Array.from(document.querySelectorAll("#content .turn")).filter((t) => getComputedStyle(t).display !== "none"); const l = ts[ts.length - 1]; return l ? l.className.split(" ").filter((c) => c.startsWith("turn-"))[0] : null; })(),
+}), cfg.textA);
+await page.evaluate(() => { window.__quiet = true; });
+await inject(withCopy); await page.waitForTimeout(500); const listed = await rows();
+await inject(taken); await page.waitForTimeout(500); const held = await rows();
+await inject(taken); await page.waitForTimeout(500); const held2 = await rows();   // another push with the copy gone: still held, the card still last
+await inject(landed); await page.waitForTimeout(700); const after = await rows();
+await inject(landed); await page.waitForTimeout(700); const after2 = await rows();   // and the push after the landing
+await browser.close();
+process.stdout.write("RESULT:" + JSON.stringify({ listed, held, held2, after, after2, baseEvents: base.events.length }) + "\n", () => process.exit(0));
+"""
+
+
 def _tail(rows, texts):
     """The rows carrying the lab's own texts, in order: (kind, which)."""
     out = []
@@ -152,6 +205,43 @@ class ServedProvisionalRows(QueuedLab):
             self.assertEqual(_tail(r[k], self.TEXTS), [("queued", "A"), ("queued", "B"), ("queued", "C")], "%s: three rows in send order: %r" % (k, r[k]))
         self.assertEqual(r["sends"], [TEXT_A, TEXT_B, TEXT_C], "three send frames, in order")
 
+
+
+class ServedHeldUnderOverlay(QueuedLab):
+    """The review's MEDIUM: a held copy under the kernel's to-do card is released by its landing (the frames route)."""
+    TODO_SUBJECT = "Map the notes-api parser module by module"
+    _r = None
+
+    def _result(self):
+        cls = type(self)
+        if cls._r is None:
+            cfg = os.path.join(self.lab, "held-cfg.json")
+            with open(cfg, "w") as f:
+                json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID, "textA": TEXT_A, "todoSubject": self.TODO_SUBJECT}, f)
+            driver = os.path.join(self.lab, "held-driver.mjs")
+            with open(driver, "w") as f:
+                f.write(HELD_DRIVER)
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=300,
+                               env=dict(os.environ, EXT_PKG=os.path.join(self.EXT, "package.json"), CFG=cfg))
+            if p.returncode == 3:
+                raise unittest.SkipTest("no playwright browser on this box — the served guard needs one (CI installs none)")
+            self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + open(self.klog).read()[-1500:])
+            line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
+            self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
+            cls._r = json.loads(line[len("RESULT:"):])
+        print("RESULT:" + json.dumps(cls._r), file=sys.stderr)
+        return cls._r
+
+    def test_a_held_copy_under_the_to_do_card_is_released_when_its_record_lands(self):
+        r = self._result()
+        self.assertEqual((r["listed"]["queued"], r["listed"]["todo"], r["listed"]["last"]), (1, 1, "turn-notice"),
+                         "the kernel's copy listed, the to-do card after it as the tail's last unit: %r" % r["listed"])
+        self.assertEqual((r["held"]["queued"], r["held"]["landing"], r["held"]["user"]), (1, 1, 0), "the copy left the queue: the page holds the card as landing: %r" % r["held"])
+        self.assertEqual((r["held2"]["queued"], r["held2"]["landing"]), (1, 1), "…and still on the next push: %r" % r["held2"])
+        for k in ("after", "after2"):
+            self.assertEqual((r[k]["user"], r[k]["queued"], r[k]["landing"]), (1, 0, 0),
+                             "%s: the record landed, the held card released, the card still last: %r" % (k, r[k]))
+            self.assertEqual(r[k]["todo"], 1, "%s: the to-do card stands through it all: %r" % (k, r[k]))
 
 
 if __name__ == "__main__":
