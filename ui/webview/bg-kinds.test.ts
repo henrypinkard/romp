@@ -15,7 +15,7 @@ const FIXTURE = fs.readFileSync(path.resolve(process.cwd(), "..", "tools", "ui-v
 const fn = (name: string) => RENDER.slice(RENDER.indexOf("function " + name + "("), RENDER.indexOf("\n}\n", RENDER.indexOf("function " + name + "(")));
 const UI_RULES = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "CLAUDE.md"), "utf8");
 
-test("the header's words count the kept rows apart from the awaited breakdown, either alone when the other is empty", () => {
+test("the header's words: the breakdown of every row it is given, then how many of them wear the verdict; either alone when the other is empty", () => {
   const rows: AwaitRow[] = [{ kind: "agents", id: "a1", label: "Map the parser" }, { kind: "commands", id: "c1", label: "Build the docs" }, { kind: "watches", id: "w1", label: "the CI run" }];
   assert.equal(keptWord(0), "", "none kept: no word");
   assert.equal(keptWord(1), "1 kept running");
@@ -42,10 +42,12 @@ test("the sections are the kinds, in the rows' display order, and no section of 
     "every listed row is counted, the tracked tasks by kind (round two, medium: a box whose only row was a tracked task read a separator with nothing after it)");
   assert.match(body, /lab\.textContent = "In the background · " \+ listBreakdown\(counted, keptN\);/, "the working header counts every row it lists");
   assert.match(body, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(counted, keptN\);/, "…and the mixed idle header");
-  assert.match(body, /if \(kept\.length\) lab\.append\(" · " \+ listBreakdown\(kept\.map\(/, "…and the peer-named idle header counts the tracked rows below");
+  assert.match(body, /if \(kept\.length\) lab\.append\(" · " \+ listBreakdown\(counted, keptN\)\);/, "…and the peer-named idle header counts every listed row, the peer rows as peers (round four)");
+  assert.match(body, /counts every TOP-LEVEL row the list shows, by kind, awaited or not, a\n\s*\/\/ peer row as a peer/, "the rule's sentence names what it counts");
+  assert.match(body, /An agent's OWN waits, drawn as sub-rows under it, are the agent's and stay out of the count/, "…and what it excludes, and why");
   assert.match(body, /lab\.textContent = "Awaiting" \+ \(word \? " " \+ word : ""\) \+ " · " \+ why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\) \+ \(kept\.length \? " · " \+ listBreakdown\(counted, keptN\) : ""\);/,
     "…and the one-kind idle header counts the rows beyond the wait's, by kind, with the kept subset (round three, low 3)");
-  assert.match(body, /THE HEADER'S RULE \(T394 round three, lows 1 and 2\): the leading word is the wait and its count is the awaited rows/, "the rule, stated where the header is built");
+  assert.match(body, /THE HEADER'S RULE \(T394 round three, lows 1 and 2; round four\): the leading word is the wait and its count is the awaited rows/, "the rule, stated where the header is built");
   assert.match(body, /subset of those rows wearing the judge's verdict, never a further partition/, "…the kept count is a subset, never a partition");
   assert.doesNotMatch(body, /listBreakdown\(items, keptN\)/, "no header reads the kernel's rows alone");
   const key = fn("awaitKey");
