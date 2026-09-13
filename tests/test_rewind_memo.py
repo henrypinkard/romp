@@ -452,6 +452,50 @@ class RewoundMemo(Harness):
         em.asm_document_seeds(path)
         self.assertGreater(em.checkpoint_stats()["documentBytes"], before, "the sidecar read is counted under documentBytes")
 
+    def test_a_leaf_road_pass_over_a_clean_path_retires_nothing_and_leaves_no_work(self):
+        """Round two: the forget fired at EVERY leaf-road pass, so every leaf on the leaf road sat permanently dirty (the converge
+        pass's zero-cost gate never quiet) and a memo stored later in the process was popped out of the next document. A pass
+        over a path with no cursor and no rewoundUuids on disk retires nothing and dirties nothing."""
+        jd, fsid, path = self._own_leaf("clean", scenario="compaction_atom")
+        self.fresh_process()
+        tree = em.parse_session(path, rompuuid=fsid, name="impl", dir="/TESTDIR", candidate_files=[path], postal_log=[], now=NOW)
+        self.assertTrue(em.asm_checkpoint_write(path, fsid, tree=tree))
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="cleanFold")
+        self.assertTrue(em.checkpoint_write(path)); self.assertFalse(em.checkpoint_has_work(), "clean after the write")
+        jd._per_file_rewound(fsid, [path])                                # the leaf road, twice, over an unchanged clean path
+        jd._per_file_rewound(fsid, [path])
+        self.assertFalse(em.checkpoint_has_work(), "no retirement pending, nothing dirty: %r" % sorted(em.checkpoint_dirty()))
+        self.assertNotIn(path, em._RETIRED_FOLDS)
+
+    def test_a_memo_stored_after_a_leaf_road_pass_survives_the_next_write(self):
+        """Round two, the verifier's probe D: after a leaf-road pass the path took the memo road (its lineage grew an anchor), the
+        memo was stored, and the still-pending retirement popped it out of the next document and discarded the dirty mark: the
+        next process read the file whole again. With the retirement fired only at a real flip, the memo reaches the disk."""
+        jd, fsid, path = self._own_leaf("survive", scenario="compaction_atom")
+        self.fresh_process()
+        tree = em.parse_session(path, rompuuid=fsid, name="impl", dir="/TESTDIR", candidate_files=[path], postal_log=[], now=NOW)
+        self.assertTrue(em.asm_checkpoint_write(path, fsid, tree=tree))
+        jd._per_file_rewound(fsid, [path])                                # the leaf road (no memo anywhere: nothing to retire)
+        anchor = Path(path).with_name(fsid + ".jsonl")                    # the session clears: the leaf's file becomes an anchor
+        self.assertEqual(str(anchor), path, "the leaf IS <fsid>.jsonl here; a second file makes the lineage two files")
+        leaf2 = Path(path).with_name("7a391000-2222-4333-8444-000000000388.jsonl")   # outside _own_leaf's sid range
+        leaf2.write_text(json.dumps(G.uline(NOW + 5, "after the clear", "u_after", None)) + "\n")
+        files = jd._judge_candidates(fsid, [str(leaf2)]); self.assertEqual(len(files), 2)
+        jd._per_file_rewound(fsid, files)                                 # the memo road for the anchor: the memo stored
+        self.assertIn(path, em._REWOUND_CACHE)
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="surviveFold")
+        self.assertTrue(em.checkpoint_write(path))
+        em.checkpoint_write(str(leaf2))                                  # the new leaf's own fold document (its memo too)
+        d = json.loads(em._ckpt_file(path).read_text())
+        self.assertIn("rewoundUuids", d["folds"], "the memo reached the disk: %r" % sorted(d["folds"]))
+        self.fresh_process()
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReads"] = {}
+        jd._per_file_rewound(fsid, files)
+        rows = {k: v["bytes"] for k, v in em.record_cache_stats()["wholeReads"].items() if k.endswith("<-_per_file_rewound")}
+        self.assertEqual(rows, {}, "the next process reads no whole file: %s" % em.record_cache_stats()["wholeReads"])
+        self.assertEqual(em.rewound_memo_stats()["served"], 2, "both files served: %s" % em.rewound_memo_stats())
+
 
 if __name__ == "__main__":
     unittest.main()

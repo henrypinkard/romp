@@ -933,6 +933,7 @@ def set_checkpoint_dir(fn):
     _CKPT_DIR_FN = fn
     with _CKPT_LOCK:
         _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear(); _DROP_OWED.clear()
+        _RETIRED_FOLDS.clear()                            # a retirement never outlives a state rebind (round two, low 2)
         _CKPT_CYCLE["cap"] = _ckpt_cycle_default_cap(); _CKPT_CYCLE["spent"] = 0
 
 
@@ -1399,7 +1400,9 @@ def checkpoint_write(path, force=False):
     folds.update(_carry_forward_states(key, folds, base, count, size, mtime))   # the disk document's states for folds this process never ran
     with _CKPT_LOCK:
         retired = set(_RETIRED_FOLDS.get(key, ()))        # taken AFTER the cursor snapshot and the carry: a forget that raced the
-    omitted = {n for n in retired if folds.pop(n, None) is not None or n in retired}   #  snapshot still omits its fold here
+    for n in retired:                                     #  snapshot still omits its fold here; every name taken is honoured by
+        folds.pop(n, None)                                #  this write whether the fold was present to pop or already absent
+    omitted = retired
     cut = min([f["count"] for f in folds.values()] or [count])   # the document's cut: the LOWEST written cursor (T359), so the
     moved = None                                          #  next process's tail read holds every record a lagging fold has
     if cut < count and len(ent) >= 8 and ent[7]:          #  yet to step (its append), bounded by the records this entry holds
@@ -5020,7 +5023,8 @@ def asm_sidecar_refresh(leaf_path, doc):
         return False
     meta = cp.with_name(cp.name + ".meta")
     try:
-        d = json.loads(meta.read_text())
+        text = meta.read_bytes(); _count_read(str(meta), len(text))   # counted like the seeds read (round two, low 3)
+        d = json.loads(text.decode("utf-8"))
         if isinstance(d, dict) and isinstance(d.get("files"), list) and "linked" in d:
             return False
     except (OSError, ValueError):
@@ -5066,6 +5070,8 @@ def _retire_fold(path, name):
     key = str(path)
     with _CKPT_LOCK:
         _RETIRED_FOLDS.setdefault(key, set()).add(name)
+        while len(_RETIRED_FOLDS) > _DROP_OWED_MAX:       # bounded like the owed drops: the oldest path's retirement is let go
+            _RETIRED_FOLDS.pop(next(iter(_RETIRED_FOLDS)), None)
         _FOLD_DIRTY.add(key)
 
 
@@ -5077,8 +5083,13 @@ def rewound_memo_forget(path):
     restore reading that much more tail for every fold. Forgotten here, the next write omits the fold and the cut follows the
     live folds."""
     key = str(path)
-    _REWOUND_CACHE.pop(key, None)
-    _retire_fold(key, "rewoundUuids")                     # the write omits it even when the document still carries it
+    had = _REWOUND_CACHE.pop(key, None) is not None
+    with _CKPT_LOCK:
+        on_disk = "rewoundUuids" in (_CKPT_DOC_FOLDS.get(key) or {})   # the document as last read or written carries the fold
+    if had or on_disk:                                    # retire only at the FLIP, when there is something to retire: a leaf-road
+        _retire_fold(key, "rewoundUuids")                 #  pass over a clean path retires nothing and dirties nothing (round two:
+    #                                                        an unconditional retirement popped a memo stored later in the process
+    #                                                        out of the next document and kept every leaf-road path dirty forever)
 
 
 def asm_document_stands(leaf_path):
