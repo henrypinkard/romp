@@ -560,6 +560,11 @@ BYID['f-chat']._active = '';
 LOCKED_SIDS.add(API); CALLS.notify = [];
 out.locked = { r: window.__rompMoveTab(API, 2), notify: CALLS.notify.slice(), stored: cols(), ids: ids() };
 LOCKED_SIDS = new Set();
+// an OLDER chat bundle (no __rompMoveRefusal on its frame): the shell falls to the movable question and its one line (round two, LOW 3)
+const olderWin = BYID['f-chat'].contentWindow, refusalFn = olderWin.__rompMoveRefusal;
+delete olderWin.__rompMoveRefusal; UNMOVABLE.add(PROV); CALLS.notify = [];
+out.older = { r: window.__rompMoveTab(PROV, 'new'), notify: CALLS.notify.slice(), hasField: typeof olderWin.__rompMoveRefusal };
+olderWin.__rompMoveRefusal = refusalFn; UNMOVABLE = new Set();
 BUSY['f-chat-2'] = true; CALLS.notify = []; CALLS.sets = []; CALLS.taken = []; CALLS.unregister = [];
 out.busy = { home: window.__rompMoveTab(API, 1), ids: ids(), stored: cols(), notify: CALLS.notify.slice(), saves: saves(), taken: CALLS.taken.slice() };
 crossOf('f-chat-2').fire('click', { stopPropagation() {} });
@@ -867,6 +872,13 @@ class SplitExecutes(unittest.TestCase):
         self.assertEqual(l["notify"], [["warn", "The tabs are locked: unlock them with the padlock in the tab strip to move this session."]])
         self.assertEqual(l["stored"], self.out["unmovable"]["stored"], "the store is untouched")
         self.assertEqual(l["ids"], self.out["unmovable"]["ids"], "no column opened")
+
+    def test_an_older_bundle_without_the_refusal_field_falls_to_the_movable_question(self):
+        # round two, LOW 3: a chat page from before the refusal field answers only the movable question, and the shell's one line stands
+        o = self.out["older"]
+        self.assertEqual(o["hasField"], "undefined", "the frame was minted without the field")
+        self.assertIsNone(o["r"])
+        self.assertEqual(o["notify"], [["warn", "Only an open session can be moved between columns."]])
 
     def test_a_column_with_a_create_in_flight_keeps_its_last_member_and_stays_open(self):
         # its queued text and draft would die with the document (review find 2026-09-11): the move that would empty it,

@@ -812,7 +812,7 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    padlock gray at rest, and locked it wears the menu vocabulary's current dress, the accent on the glyph and the
    outline, never a colour fill. */
 .tab-lockbox { display: inline-flex; align-items: center; min-height: 31px; margin-left: 4px; }
-.tab-lock { display: inline-flex; align-items: center; background: transparent; border: 1px solid var(--box-border); border-radius: 6px; padding: 4px 6px; cursor: pointer; color: var(--dim); }
+.tab-lock { display: inline-flex; align-items: center; background: transparent; border: 1px solid var(--tab-lock-border, var(--box-border)); border-radius: 6px; padding: 4px 6px; cursor: pointer; color: var(--dim); }   /* the border is the tag button's own value, set by the strip from tag-menu.ts (one source); the glyph is 14px like the tag's, so both boxes measure 28 by 24 */
 .tab-lock:hover { color: var(--fg); }
 .tab-lock.on { color: var(--accent); border-color: var(--accent); }
 .tab-lock svg { display: block; }

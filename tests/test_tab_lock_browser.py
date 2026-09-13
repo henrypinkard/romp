@@ -85,15 +85,17 @@ const layout = () => page.evaluate(() => {
   const box = bar.querySelector(".tab-lockbox"); const btn = box && box.querySelector(".tab-lock");
   const probe = document.createElement("span"); probe.style.color = "var(--accent)"; document.body.appendChild(probe);
   const accent = getComputedStyle(probe).color; probe.remove();
-  const add = bar.querySelector(".tab-add"), tagBox = bar.querySelector(".tab-tagbox");
+  const add = bar.querySelector(".tab-add"), tagBox = bar.querySelector(".tab-tagbox"), tagBtn = bar.querySelector(".tab-tagbox .tab-tagfilter");
+  const tb = tagBtn ? { w: r1(tagBtn.getBoundingClientRect().width), h: r1(tagBtn.getBoundingClientRect().height), border: getComputedStyle(tagBtn).borderTopColor, radius: getComputedStyle(tagBtn).borderRadius } : null;
   let s = {}; try { s = JSON.parse(localStorage.getItem("romp:settings") || "{}") || {}; } catch (e) {}
   const lock = box ? { present: true, prev: box.previousElementSibling ? box.previousElementSibling.className : null, next: box.nextElementSibling ? box.nextElementSibling.className : null,
                        boxH: r1(box.getBoundingClientRect().height), addH: add ? r1(add.getBoundingClientRect().height) : null, tagBoxH: tagBox ? r1(tagBox.getBoundingClientRect().height) : null,
                        on: btn.classList.contains("on"), pressed: btn.getAttribute("aria-pressed"), label: btn.getAttribute("aria-label"), title: btn.title, svg: !!btn.querySelector("svg"),
                        shackle: (btn.querySelector("path") || {}).getAttribute ? btn.querySelector("path").getAttribute("d") : null,
-                       color: getComputedStyle(btn).color, bg: getComputedStyle(btn).backgroundColor, border: getComputedStyle(btn).borderTopColor, radius: getComputedStyle(btn).borderRadius }
+                       color: getComputedStyle(btn).color, bg: getComputedStyle(btn).backgroundColor, border: getComputedStyle(btn).borderTopColor, radius: getComputedStyle(btn).borderRadius,
+                       w: r1(btn.getBoundingClientRect().width), h: r1(btn.getBoundingClientRect().height) }
                    : { present: false };
-  return { bar: { left: b.left, top: b.top }, tabs, order: tabs.map((t) => t.id), lock, accent, store: { tabsLocked: "tabsLocked" in s ? s.tabsLocked : "absent" } };
+  return { bar: { left: b.left, top: b.top }, tabs, order: tabs.map((t) => t.id), lock, tagBtn: tb, accent, store: { tabsLocked: "tabsLocked" in s ? s.tabsLocked : "absent" } };
 });
 // drag the tab at index `from` and release over the left part of the tab at index `to` (the reorder lab's gesture)
 async function drag(label) {
@@ -301,6 +303,12 @@ class ServedTabLock(unittest.TestCase):
         self.assertEqual(lk["shackle"], "M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7", "unlocked: the shackle swung out (the Sessions pane's drawing)" + table)
         self.assertEqual((lk["label"], lk["pressed"], lk["on"]), ("Lock tabs", "false", False), table)
         self.assertEqual(lk["radius"], "6px", "a little rounded box" + table)
+        # round two, LOW 1: like the tags thing beside it, measured side by side: the same border colour and the same box, to the pixel
+        tb = s["tagBtn"]; table2 = "\n  lock=" + json.dumps({k: lk[k] for k in ("w", "h", "border", "radius")}) + " tag=" + json.dumps(tb)
+        self.assertIsNotNone(tb, "the tag button beside it" + table2)
+        self.assertEqual((lk["w"], lk["h"]), (tb["w"], tb["h"]), "the same box as the tag button" + table2)
+        self.assertEqual(lk["border"], tb["border"], "the same border colour as the tag button (one source)" + table2)
+        self.assertEqual(lk["radius"], tb["radius"], table2)
         self.assertNotEqual(lk["color"], s["accent"], "gray at rest, not the accent" + table)
         self.assertEqual(s["store"]["tabsLocked"], "absent", "nothing written until pressed" + table)
 

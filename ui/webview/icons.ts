@@ -32,7 +32,7 @@ const LOCK_BODY = '<rect x="3" y="6.2" width="8" height="5.6" rx="1.2"/>';
 export const LOCK_SHACKLE_SEATED = 'M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2';
 export const LOCK_SHACKLE_OPEN = 'M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7';
 const lockSvg = (shackle: string): string =>
-  '<svg viewBox="0 0 15 15" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"'
+  '<svg viewBox="0 0 15 15" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"'   // drawn at the tag glyph's 14px, so the two boxes beside each other measure the same (T395 round two)
   + ' stroke-linecap="round" aria-hidden="true">' + LOCK_BODY + '<path d="' + shackle + '"/></svg>';
 export const ICON_LOCK = lockSvg(LOCK_SHACKLE_SEATED);
 export const ICON_LOCK_OPEN = lockSvg(LOCK_SHACKLE_OPEN);

@@ -33,7 +33,7 @@ test("the padlock is ONE drawing: icons.ts states the Sessions pane's numbers, a
   }
   assert.match(TIMELINE, /x: 3, y: 6\.2, width: 8, height: 5\.6, rx: 1\.2/, "the timeline's body");
   assert.match(ICONS, /const LOCK_BODY = '<rect x="3" y="6\.2" width="8" height="5\.6" rx="1\.2"\/>';/, "the same body");
-  assert.match(ICONS, /'<svg viewBox="0 0 15 15" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1\.4"'/, "the timeline's 15-unit box and 1.4 stroke");
+  assert.match(ICONS, /'<svg viewBox="0 0 15 15" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1\.4"'/, "the timeline's 15-unit drawing and 1.4 stroke, drawn at the tag glyph's 14px so the boxes match (round two)");
   assert.match(ICONS, /^export const ICON_LOCK = lockSvg\(LOCK_SHACKLE_SEATED\);/m);
   assert.match(ICONS, /^export const ICON_LOCK_OPEN = lockSvg\(LOCK_SHACKLE_OPEN\);/m);
   assert.match(TIMELINE, /the same numbers as ui\/webview\/icons\.ts ICON_LOCK \/ ICON_LOCK_OPEN/, "the timeline points back: one drawing, change both");
@@ -57,7 +57,9 @@ test("the dress: the tags box's floor, gray at rest, the accent on glyph and out
   const box = CSS.match(/\n\.tab-lockbox \{[^}]*\}/)![0];
   assert.match(box, /display: inline-flex;/); assert.match(box, /align-items: center;/); assert.match(box, /min-height: 31px;/, "the + tab's rendered height, as the tags box");
   const btn = CSS.match(/\n\.tab-lock \{[^}]*\}/)![0];
-  assert.match(btn, /background: transparent;/); assert.match(btn, /border: 1px solid var\(--box-border\);/); assert.match(btn, /border-radius: 6px;/);
+  assert.match(btn, /background: transparent;/); assert.match(btn, /border: 1px solid var\(--tab-lock-border, var\(--box-border\)\);/); assert.match(btn, /border-radius: 6px;/);
+  assert.match(RENDER, /lock\.style\.setProperty\("--tab-lock-border", TAG_BTN_BORDER\);/, "the border is the tag button's own constant, one source for both boxes (round two, LOW 1)");
+  assert.match(RENDER, /^import \{ openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER \} from "\.\/tag-menu";/m);
   assert.match(btn, /color: var\(--dim\);/, "gray at rest");
   const on = CSS.match(/\n\.tab-lock\.on \{[^}]*\}/)![0];
   assert.match(on, /color: var\(--accent\);/); assert.match(on, /border-color: var\(--accent\);/);
