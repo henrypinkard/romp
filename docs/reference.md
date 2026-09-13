@@ -1054,7 +1054,9 @@ document's cursor carries a state: against a state the process holds, a cursor
 without one (an over-cap, cold or legacy bare write) is refused and the fold
 reads whole as before, so a complete state is never replaced by a tail-only one.
 The knobs: `ROMP_CKPT_CONVERGE_MS=0` turns the pass off and the drop write with
-it (the drop then pops as it did before the write existed); `ROMP_CKPT_CONVERGE_MB`
+it (the drop then pops as it did before the write existed, except under the
+incident scan's memo, which keeps a walked file's records resident when the
+document write is off, since its memo cannot reach the disk); `ROMP_CKPT_CONVERGE_MB`
 is the cycle budget both charge, and `0` turns the drop write off the same way
 rather than deferring every drop; both are read where the drop lives, so they
 hold from the first fold, before the first pusher cycle begins. The pass also
