@@ -1560,7 +1560,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   whole at every boot). The
   counters: the memo's answers (`served`), the walks it took (`walked`), the
   walks over a memo the file's growth or rewrite retired (`stale`; a file
-  whose entry merely left memory and came back is walked, not stale) and the
+  whose entry merely left memory and came back is walked, not stale; a live
+  leaf or a growing anchor named in a scan ticks it once per judge pass, the
+  routine retirement by growth, so a rising count beside a growing file is
+  expected and only a rise with no growth is a surprise) and the
   walks whose memo could not be read or stored (`fallback`: a document state
   of the wrong shape, or no reader entry after the walk).
 - `stacks`: every thread's last six frames, keyed by the thread's ident and

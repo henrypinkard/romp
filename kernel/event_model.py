@@ -4996,6 +4996,39 @@ _HYDRATED_CAP = _env_or("ROMP_HYDRATED_CAP_MB", max(1024 ** 3, _machine_memory_b
 _LAZY_KINDS = ("a", "u", "c", "o", "k", "b")   # atom kinds whose message is lazy; boundary and refusal atoms carry no message
 
 
+def asm_document_seeds(leaf_path):
+    """Whether the assembly document for `leaf_path` can SEED a one-file walk of the leaf: its inputs are the leaf alone. Read
+    from the sidecar's `files` (a few bytes, never the document); a sidecar without the list (an older write) answers as
+    asm_document_stands does, and the next write adds it. A cleared or resume-forked session's document is written over the
+    leaf plus its lineage, so file_rewound's load refused it on the inputs comparison and the leaf was read whole at every
+    process (T391 follow-up, round one, low 1): such a leaf takes the memo road."""
+    cp = _asm_ckpt_file(leaf_path)
+    if cp is None or not cp.exists():
+        return False
+    meta = cp.with_name(cp.name + ".meta")
+    try:
+        d = json.loads(meta.read_text())
+    except (OSError, ValueError):
+        return True                                       # no readable sidecar: the document stands, its inputs unknown
+    files = d.get("files") if isinstance(d, dict) else None
+    if not isinstance(files, list):
+        return True
+    return files == [Path(leaf_path).stem]
+
+
+def rewound_memo_forget(path):
+    """Drop the incident scan's memo cursor for `path` (T391 follow-up, round one, low 2): a leaf that took the memo road while it
+    had no assembly document carries a rewoundUuids cursor in its fold document; once its first compaction lands and the scan
+    flips to the leaf road for good, that cursor would never step again, and the checkpoint's cut, the minimum over the folds,
+    would drag behind it by up to the lag bound (about an eighth of the file) until growth passed it, every later boot's
+    restore reading that much more tail for every fold. Forgotten here, the next write omits the fold and the cut follows the
+    live folds."""
+    key = str(path)
+    if _REWOUND_CACHE.pop(key, None) is not None:
+        with _CKPT_LOCK:
+            _FOLD_DIRTY.add(key)
+
+
 def asm_document_stands(leaf_path):
     """Whether an assembly document file exists for `leaf_path` (a stat, no read; False with no checkpoint directory): the
     judges' incident scan asks before taking the leaf road, whose seeded walk needs the document, and takes the memo road
@@ -5497,7 +5530,8 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             os.replace(tmp, cp)
             meta = cp.with_name(cp.name + ".meta")            # {"av", "path"}: what the boot sweep reads, never the document
             mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
-            mtmp.write_text(json.dumps({"av": _ASM_CKPT_V, "path": doc["path"]}))
+            mtmp.write_text(json.dumps({"av": _ASM_CKPT_V, "path": doc["path"], "files": sorted(doc["files"])}))   # the inputs'
+            #                                                                   fsids too: asm_document_seeds reads them, never the document
             os.replace(mtmp, meta)
         except OSError:
             return skip("write")
