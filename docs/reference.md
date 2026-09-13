@@ -1559,9 +1559,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
   `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`;
   `offsets` is a reader entry holding fewer records than the tree read, or
-  more under another generation: an entry that merely grew since the
-  settle's parse lends the prefix the tree read, so a busy session's
-  document is written between its appends),
+  more for a lineage file or under another generation: a LEAF entry that
+  merely grew since the settle's parse lends the prefix the tree read, so a
+  busy session's document is written between its appends; a lineage file's
+  skip row carries the stat of the records the tree was parsed from, so a
+  record it gained after the parse fails the next boot's check. The standing
+  residual, shared with the reader's grown path: an early record edited in
+  place at equal length plus an append passes the 64-byte guard, like a
+  same-size same-mtime rewrite),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
   a cut), `hydratedBy` (those bytes per calling function), and `converge`: the
   pass's writes of idle leaves' documents from the boot's own parse

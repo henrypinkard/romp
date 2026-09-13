@@ -1595,12 +1595,17 @@ def _scan_jsonl_bytes(data, base_offset, offsets=None):
     return records, base_offset + end + 1
 
 
-def _entry_gen(path):
-    """The reader entry's generation for `path`, None with no entry: what a writer compares its adapter's source key against
-    before trusting the entry's offsets for records the adapter read (T396)."""
+def _entry_offsets_gen(path):
+    """(record offsets from record 0, generation) of the reader's entry for `path` from ONE entry tuple under one lock
+    acquisition, or (None, None) with no entry or a tail entry: what the assembly writer compares its adapter's source
+    key against before trusting the entry's offsets for the records the adapter read (T396 round one, low 2: the
+    _asm_gates pattern, never two reads of the cache that could see two entries)."""
     with _JSONL_CACHE_LOCK:
         ent = _JSONL_CACHE.get(str(path))
-    return ent[6] if ent is not None and len(ent) > 6 else None
+    if ent is None or len(ent) < 8 or ent[5] > 0:
+        return None, None
+    offs = ent[7]
+    return [(offs[i], offs[i + 1]) for i in range(0, len(offs), 2)], ent[6]
 
 
 def record_offsets(path, base):
@@ -2484,6 +2489,8 @@ class FileAdapter:
         # sibling file happens to sort after it
         files = [f for f in candidate_files if Path(f).stem != leaf_stem] + [Path(leaf_path)]
         self._src_keys = {}      # path -> the reader's (gen, base, count) the records came from (the fold's identity gate)
+        self._src_stat = {}      # path -> the (size, mtime) of the file AS READ for those records: the witness a document row
+        #                          carries for a file wholly before the cut, never the write-time stat (T396 round one)
         if seed is not None:
             self._seq = int(seed["seq_base"])
             self.prompt_ids |= seed["prompt_ids"]; self.boundary_pids |= seed["boundary_pids"]
@@ -2498,6 +2505,9 @@ class FileAdapter:
             if cut == "skip":                                   #  a file wholly before the cut (a fork's prior file, immutable)
                 self._src[str(fp)] = []
                 self._src_keys[str(fp)] = ("skip",)
+                st_skip = (seed or {}).get("stat", {}).get(fsid)   # the document's verified witness for it (the load checked it)
+                if st_skip is not None:
+                    self._src_stat[str(fp)] = tuple(st_skip)
                 continue
             if cut is not None:
                 ent = _read_jsonl_entry(fp, tail_ok=True, tail_from=tuple(cut))
@@ -2506,6 +2516,8 @@ class FileAdapter:
             recs = ent[4] if ent is not None else []
             self._src[str(fp)] = recs
             self._src_keys[str(fp)] = (ent[6], ent[5], ent[5] + len(recs)) if ent is not None else (None, 0, 0)
+            if ent is not None:
+                self._src_stat[str(fp)] = (ent[1], ent[0])    # the reader's (size, mtime) for this very read
             if cut is not None and ent is not None and ent[5] < cut[1]:
                 recs = recs[cut[1] - ent[5]:]            # the entry holds records before the cut (a whole reader came
             #                                              first): the seed stands for those, ingest from the cut on
@@ -5164,24 +5176,35 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             except OSError:
                 return skip("stat")
             pre_n = max(0, min(len(recs), cut_seq - first_seq[fp]))   # records of this file before the cut
-            offs = record_offsets(fp, 0)
-            # The reader's entry may hold MORE records than the tree's adapter read: a live leaf grows between the settle's
+            is_leaf = Path(fp).stem == Path(leaf_path).stem
+            offs, ent_gen = _entry_offsets_gen(fp)
+            # The reader's entry may hold MORE records than the tree's adapter read: a live LEAF grows between the settle's
             # parse and this write (the CLI appends while the settle runs), and the reader extends its entry by a new list
             # whose prefix is the very records the adapter holds, under the same generation. The document's pre-cut part
-            # is that prefix, so the prefix's offsets stand; a shorter entry, or one under another generation (a rewrite,
-            # a refold from zero), does not (T396: a continuously active 120 MB session never got a document while its
-            # kernel lived, since every settle's write met an entry one record longer than its tree, and every boot read
-            # it whole through whichever reader came first).
+            # is that prefix, so the prefix's offsets stand for the leaf; a shorter entry, or one under another generation
+            # (a rewrite, a refold from zero), does not (T396: a continuously active 120 MB session never got a document
+            # while its kernel lived, since every settle's write met an entry one record longer than its tree, and every
+            # boot read it whole through whichever reader came first). A LINEAGE file longer than the tree still skips
+            # (round one, medium): its row would be a skip row proven by a stat alone, and a prior file that gained a record
+            # after the parse (its own session resumed elsewhere, the case _asm_gates demotes as nonleaf) would be stamped
+            # as wholly before the cut with the appended record missing from every restore of this leaf's kernel life.
             src_gen = (getattr(ad, "_src_keys", {}) or {}).get(fp, (None,))[0]
-            if offs is None or len(offs) < len(recs) or (len(offs) > len(recs) and src_gen != _entry_gen(fp)):
+            if offs is None or len(offs) < len(recs) or (len(offs) > len(recs) and not (is_leaf and src_gen == ent_gen)):
                 return skip("offsets")
-            offs = offs[:len(recs)]
-            file_offs[fp] = offs
+            offs = offs[:len(recs)]                       # defensive: no row index below passes len(recs), so the extra
+            file_offs[fp] = offs                          #  offsets of a grown entry are never read (round one, low 3)
             pre_uuids = [r.get("uuid") for r in recs[:pre_n] if r.get("uuid")]
             f = {"path": fp, "size": st_.st_size, "mtime": st_.st_mtime, "pre": pre_n, "n": len(recs),
                  "first": pre_uuids[0] if pre_uuids else None, "last": pre_uuids[-1] if pre_uuids else None}
-            if pre_n >= len(recs) and Path(fp).stem != Path(leaf_path).stem:
+            if pre_n >= len(recs) and not is_leaf:
                 f["skip"] = True                          # wholly before the cut: never read at restore, stat is its proof
+                st_read = (getattr(ad, "_src_stat", {}) or {}).get(fp)
+                if st_read is None:
+                    return skip("stat")                   # no witness for the records the tree was parsed from: no row
+                f["size"], f["mtime"] = int(st_read[0]), float(st_read[1])   # the stat AS READ, never the write-time one: a
+                #                                            record appended to the prior file between the parse and this write
+                #                                            must fail the next boot's verification, not be stamped away (round
+                #                                            one, medium, the half that needed no reader in between)
             else:
                 cut_off = offs[pre_n][0] if pre_n < len(recs) else st_.st_size
                 try:
@@ -5664,6 +5687,8 @@ def _seed_from_doc(doc):
             landed.add(u)
     for fsid, f in doc["files"].items():
         seed["cuts"][fsid] = "skip" if f.get("skip") else (int(f["cut"][0]), int(f["cut"][1]), bytes.fromhex(f["cut"][2]))
+        if f.get("skip"):
+            seed.setdefault("stat", {})[fsid] = (int(f["size"]), float(f["mtime"]))   # the witness a rewrite carries forward
     return seed, landed
 
 

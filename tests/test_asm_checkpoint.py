@@ -425,12 +425,12 @@ class WriteValves(Harness):
         """Review find (third round): a stat, offsets or write failure is a blip, not a property of the cut; memoizing it left
         the session without a document until its next compaction. It is counted and tried again at the next settle."""
         path = self._whole("blip")
-        real = em.record_offsets
-        em.record_offsets = lambda fp, base: None                   # a record landing between the parse and the offsets
-        try:
+        real = em._entry_offsets_gen
+        em._entry_offsets_gen = lambda fp: (None, None)              # a record landing between the parse and the offsets (the
+        try:                                                        #  writer's one entry read, T396)
             self.assertFalse(self.doc(path))
         finally:
-            em.record_offsets = real
+            em._entry_offsets_gen = real
         self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"offsets": 1})
         self.assertIsNone(em._ASM_CACHE[next(iter(em._ASM_CACHE))].get("docSkip"), "not memoized")
         self.assertTrue(self.doc(path), "the next settle writes")
@@ -683,8 +683,8 @@ class ConvergeAssembly(Harness):
         with em._JSONL_CACHE_LOCK:                                 # the record entry back, but the offsets torn away at the write
             pass
         self.fresh(); em.set_checkpoint_dir(lambda: self.ck); self.parse(path)   # a whole record entry again
-        real = em.record_offsets; em.record_offsets = lambda p, base: None
-        self.addCleanup(setattr, em, "record_offsets", real)
+        real = em._entry_offsets_gen; em._entry_offsets_gen = lambda p: (None, None)   # the writer's one entry read (T396)
+        self.addCleanup(setattr, em, "_entry_offsets_gen", real)
         self.assertFalse(km._converge_assembly_leaf(path, SID, time.monotonic()))
         self.assertEqual(km._ASM_CONVERGE_BLIP.get(path), st, "a blip: the first try spent, not done")
         self.assertFalse(km._converge_assembly_leaf(path, SID, time.monotonic()))
