@@ -1054,7 +1054,9 @@ document's cursor carries a state: against a state the process holds, a cursor
 without one (an over-cap, cold or legacy bare write) is refused and the fold
 reads whole as before, so a complete state is never replaced by a tail-only one.
 The knobs: `ROMP_CKPT_CONVERGE_MS=0` turns the pass off and the drop write with
-it (the drop then pops as it did before the write existed); `ROMP_CKPT_CONVERGE_MB`
+it (the drop then pops as it did before the write existed, except under the
+incident scan's memo, which keeps a walked file's records resident when the
+document write is off, since its memo cannot reach the disk); `ROMP_CKPT_CONVERGE_MB`
 is the cycle budget both charge, and `0` turns the drop write off the same way
 rather than deferring every drop; both are read where the drop lives, so they
 hold from the first fold, before the first pusher cycle begins. The pass also
@@ -1158,7 +1160,11 @@ store already places is yielded with its key and scalars and no text or quote
 (no pre-cut body read), the rest read their text after the placement check;
 the lookup is an index built once per planner call with the episode floor
 taken once per pass, and a consumer that plans a unit yielded as placed reads
-its text then.
+its text then. The planner's own callers take every unit that way (T396): the
+emptiness gate that drops a textless segment is decided from the markers'
+scalars and the user bodies alone, and a work unit's text and quote are read
+by the plan pass after its own filters, so a unit that never reaches the model
+is never read (42.8 MB of assistant bodies per boot before).
 
 What the CLI itself does when its parent goes quiet was measured on Claude Code
 2.1.257 (2026-09-10, the restart-surviving sessions program's stage 3 probe, run
@@ -1513,6 +1519,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   longer wait between cycles would have skipped; a conservative undercount,
   since a wake set by another thread or a periodic repost of an unchanged
   frame marks a cycle busy).
+  `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
+  split and the newest cycles' splits, each `{s, t, stages}` with, per stage,
+  its wall `ms` (one decimal), the reader's `bytes` off disk and the assembly
+  cut's `hydrated` bytes ON THE PUSHER'S THREAD since the previous stage
+  boundary (another thread's reads in the window, the judges' first pass or
+  a boot warm, are not the pusher's; a dashboard's connect push, which runs
+  the same stages on the HTTP handler thread, feeds `stages_ms` and never the
+  split); the `push` container carries its sub-stages' sums, the jobs before
+  the push land in `jobs`, and the boundary sits at the push's entry, before
+  the cards-first path. A plain GET carries the newest 16 splits and
+  `stageRingLen`; `GET /perf?ring=all` carries the whole ring, which holds
+  `stageRingMax` cycles: `ROMP_PERF_STAGE_RING` when set, else one per 64 MiB
+  of the machine's memory floored at 16, resolved once, never a literal
+  count. The restart ledger's boot-health row carries the first cycle's
+  `stages` beside `firstCycleS`, so a slow boot names its stage without the
+  kernel alive.
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
@@ -1542,6 +1564,21 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `corrupt`), `dirty` (files whose folds moved since their last write),
   `readBytes` and `readByPath` (what the JSONL reader pulled off disk since
   boot, in total and per file).
+  `rewoundMemo`: the judges' incident scan used to read every dead episode
+  file of a lineage whole at every boot (`_per_file_rewound`, 542 MB on one
+  devbox boot); its verdict set per frozen file is now the fold `rewoundUuids`
+  of that file's fold document, written from the walk's own read at the
+  quiescence drop and restored at the next boot, so such a file is read whole
+  once (a live session's own files, its /clear anchor among them, stay
+  resident instead, since the chain walk reads them at every pass; a leaf
+  with no assembly document, one with no compaction boundary, takes the memo
+  road too, since the leaf road's seeded walk had nothing to seed and read it
+  whole at every boot). The
+  counters: the memo's answers (`served`), the walks it took (`walked`), the
+  walks over a memo the file's growth or rewrite retired (`stale`; a file
+  whose entry merely left memory and came back is walked, not stale) and the
+  walks whose memo could not be read or stored (`fallback`: a document state
+  of the wrong shape, or no reader entry after the walk).
 - `stacks`: every thread's last six frames, keyed by the thread's ident and
   name, when the kernel runs with `ROMP_PERF_STACKS` set (a debugging aid for a
   served test on a runner nobody can log into); `null` otherwise.
@@ -1557,7 +1594,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `fallbacks` per reason (`version`, `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
-  `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`),
+  `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`;
+  `offsets` is no reader entry at all, a tail entry (one read from a
+  checkpoint's offset, its base above zero), or an entry holding fewer records
+  than the tree read, or more for a lineage file or under another generation
+  or over a base the tree's adapter did not read from zero: a LEAF entry that
+  merely grew since the settle's parse lends the prefix the tree read, so a
+  busy session's document is written between its appends; a lineage file's
+  skip row carries the stat of the records the tree was parsed from, so a
+  record it gained after the parse fails the next boot's check. The standing
+  residual, shared with the reader's grown path: an early record edited in
+  place at equal length plus an append passes the 64-byte guard, like a
+  same-size same-mtime rewrite),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
   a cut), `hydratedBy` (those bytes per calling function), and `converge`: the
   pass's writes of idle leaves' documents from the boot's own parse
@@ -1680,8 +1728,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
   (`hit`, `miss`, `populate`, `bypass`); `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
-  both stand (`served`, `derived`; a healthy quiet box serves almost every
-  cycle); `cleared` is the feed's clear set, parsed once per state of
+  both stand (`served`, `derived`, and `failed`: the derivations that raised
+  and waved nothing through, zero on a healthy box; a healthy quiet box serves
+  almost every cycle); `cleared` is the feed's clear set, parsed once per state of
   `cleared.jsonl` (its stat, taken before the read) and served while the file
   stands (`served`, `derived`); `courierSkip` is the courier's change gate
   (`skipped`, `scanned`, `recorded`: a session whose parse, store, journal,

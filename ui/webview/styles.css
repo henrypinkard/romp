@@ -99,6 +99,9 @@ body.scheme-solarized-dark {
      provisional wash and the peer-tinted ground (theme-parity.test.ts holds the contrast on all four), and
      postal-kind-ramp.test.ts holds the stops, the hue distances and the distance from the prose ink. */
   --postal-coordinate: #54b204;  --postal-delegate: #9088f0;  --postal-question: #42a9b0;
+  --peer-ink-l: max(l, 0.72);   /* a session's name in a postal head is inked in its identity colour, lifted to a lightness floor when the colour
+                                    is darker (T390 fold): a sweep of all sixty palette colours over the card grounds (the plain box and the
+                                    incoming card's wash at the peer's own hue) reads 4.9:1 at worst at this floor, 1.7:1 with no floor */
   --postal-wash-l: 0.263;  --postal-wash-c: 0.03;   /* the incoming card's tint: the peer's hue at the box ground's own
                                                        OKLab lightness (the page under the 3% box), a gentle chroma (T337b).
                                                        The lightness here is the shipped theme's FALLBACK: the chat measures
@@ -106,8 +109,12 @@ body.scheme-solarized-dark {
                                                        (postal-wash.ts), since --bg is host-derived in the webview (T337c) */
   /* THE romp accent — light blue (the user 2026-06-24). Use var(--accent) for accent/highlight chrome
      (selected toggles, in-progress loading dots, the Fleet pill, focus) — NOT for STATUS colors, which keep
-     their own meaning (--st-working-bg yellow = working, --st-blocked-bg red, etc.). --accent-fg reads on it. */
+     their own meaning (--st-working-bg yellow = working, --st-blocked-bg red, etc.). --accent-fg reads on it.
+     ONE exception (the user 2026-09-12, T394): the background box's command rows wear it as their KIND hue
+     (--kind-command, below), a kind and not a status; the status still overrides it for failed and completed rows. */
   --accent: #9cd2ff; --accent-fg: #0c1a2e;
+  --kind-command: var(--accent);   /* a command row's hue in the background box (T394): the accent blue the timeline lane icons wear;
+                                      the light block sets its own, its accent being the burnt orange that would read as an error */
   /* THE faint accent wash — the one alpha behind every selected/hovered accent chrome (0.10 and 0.14
      variants drifted in before 2026-08-26). Mirrored in feed.css (own :root). */
   --accent-wash: rgba(156, 210, 255, 0.12);
@@ -247,11 +254,14 @@ body.theme-light {
      at 4.6:1 or better on the cream page, the boxed card, the provisional wash and the peer-tinted ground at every hue
      (T371: the hues hold within a degree of the stops, OKLCH L about .49, chroma at the gamut's edge for the two vivid ones) */
   --postal-coordinate: #386f18;  --postal-delegate: #5f57ab;  --postal-question: #0d6d73;
+  --peer-ink-l: 0.46;   /* a session's name in a postal head, deepened on its own hue to read on the cream card (T390; the kind
+                           words above take the same rule by hand, OKLCH L about .49) */
   --postal-wash-l: 0.919;  --postal-wash-c: 0.045;  /* the cream under the 3% box; a stronger chroma: the cream's own hue
                                                        (71) sits near a warm peer's, and at .03 that tint read at less than half
                                                        a cool one's distance from the ground (T337c, the review of 2026-09-11) */
   --err: #B02A1C;
   --accent: #C2410C; --accent-fg: #FFF8F2;
+  --kind-command: #356890;   /* the dark accent's hue and chroma at OKLCH lightness 0.50 (T394): 4.67:1 as text on the cream box */
   --accent-wash: rgba(194, 65, 12, 0.10);
   --chip-wash: rgba(0, 0, 0, 0.07);   /* a hovered tag chip's ground (T343): on a light card the visible step is darker, and it stays distinct from the card's surface */
   --chip-sel-filter: brightness(0.75);   /* a SELECTED tag chip's strongest level on cream is DARKER (T343 review): brightness(1.3) here paled every selected chip below its faded neighbour; 0.75 lifts each tag's contrast above its rest value */
@@ -552,6 +562,18 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    opening dots (the loading-state rule; the working dot above stays solid on purpose — that rule is about
    real work, this one is about a load in progress). */
 .tab-dot.opening { background: var(--accent); animation: opening-line-pulse 1.2s ease-in-out infinite; }
+/* the dot widget's option (T379): a quiet grey dot when idle instead of the hidden slot, so a tab always shows its dot */
+.tab-dot.idle { background: var(--dim); opacity: 0.45; }
+/* the hot-key keycap widget (T379): the chord at its shortest after the name, a bordered chip in the dim tier, no width
+   beyond its glyphs. ONE rule text, agreed with the tab hot keys pull request (2026-09-12): this file owns .tab-key, and
+   that change drops its copy when it lands on this one */
+.tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); border: 1px solid var(--box-border);
+  border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
+/* the tab-widgets gear (T379): one glyph button at the strip's right end, in the tag box, the tag button's dress */
+.tab-widgets-gear { flex: 0 0 auto; display: inline-flex; align-items: center; margin-left: 4px; padding: 4px 6px; cursor: pointer;
+  background: transparent; border: 1px solid var(--card-border); border-radius: 6px; color: var(--dim);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
+.tab-widgets-gear:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 /* Vertical context gauge right of the name (the user 2026-08-08): the statusline battery rotated
    upright — fills bottom-up with the context-used %, in the SAME global-colormap colour (fill set
    inline by tabCtxGauge, render.ts), no % text. A faint track so an empty gauge still reads as
@@ -999,15 +1021,22 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .bg-stop:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 .bg-stop:disabled { opacity: 0.55; cursor: default; }
 .bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
-.bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }
+.bg-fold-head.bg-completed { --bgt: var(--dim); }   /* the header's completed tint follows the rows (T394): the ready blue would sit beside the command blue */
 .bg-fold-head.bg-await { --bgt: var(--st-awaitbg-bg); }   /* the Awaiting why header — await-green, like its chip */
 .bg-fold-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 /* level 2: a flat list of task LINES (no boxes) BELOW the header, fills the box and scrolls when many */
 .bg-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; padding: 4px 2px; }
 .bg-task { --bgt: var(--st-working-bg); }
+/* ONE HUE PER KIND (T394, the user 2026-09-12: the kinds could not be told apart, and orange reads as an error): agents keep the
+   working gold, watches the awaiting green, commands take the accent blue (--kind-command, per theme). The row's status still
+   overrides where it means something, in the rules that follow: a failed row's dot is the blocked red, a completed row's the
+   dim ink (the ready blue it wore would collide with the command hue). */
+.bg-task.bg-kind-agents { --bgt: var(--st-working-bg); }
+.bg-task.bg-kind-commands { --bgt: var(--kind-command); }
+.bg-task.bg-kind-watches { --bgt: var(--st-awaitbg-bg); }
 .bg-task.bg-failed { --bgt: var(--st-blocked-bg); }
-.bg-task.bg-completed { --bgt: var(--st-ready-bg); }
+.bg-task.bg-completed { --bgt: var(--dim); }
 /* an armed watch / a peer or timer wait: nothing is computing HERE — the dot wears the await-green (slice 2) */
 .bg-task.bg-armed, .bg-task.bg-waiting { --bgt: var(--st-awaitbg-bg); }
 /* the rows grouped by KIND (slice 2, 2026-09-05): a small dim header per group, in the .bg-status
@@ -1036,6 +1065,16 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    never push them off-screen; no spacer, no margin-left:auto, no space-between. */
 .bg-sum { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.92em; color: var(--fg); }
 .bg-status { flex: 0 0 auto; font-size: 0.72em; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; color: var(--bgt); }
+/* on cream the kind hues fail as TEXT (the gold 4.0:1, the green 2.1:1 on the box), so the caption word is the hue deepened to
+   OKLCH lightness 0.46, the postal head's rule (T390): gold 5.6:1, green 5.2:1, blue 5.6:1; the dot keeps the full hue (T394) */
+body.theme-light .bg-status { color: oklch(from var(--bgt) 0.46 c h); }
+/* a KEPT row (T394): a tracked task the judge called a service (kernel bgServiceIds), the verdict as a muted suffix beside a
+   dimmed label and dot; the caption word keeps its hue, and nothing dims by element opacity (a 55 percent dot read 2.0:1 on
+   cream). The dot is the kind hue greyed toward the dim ink, a colour: at this share every hue reads 3:1 or better on the box
+   in both themes (measured 2026-09-12: gold 6.3 dark, 4.9 cream; green 5.4, 3.6; blue 7.1, 5.2) */
+.bg-task.bg-kept .bg-dot { background: color-mix(in srgb, var(--bgt) 45%, var(--dim)); }
+.bg-task.bg-kept .bg-sum { color: var(--dim); }
+.bg-kept-word { flex: 0 0 auto; font-size: 0.82em; color: var(--dim); white-space: nowrap; }
 .bg-caret { flex: 0 0 auto; color: var(--dim); font-size: 0.72em; width: 10px; opacity: 0.7; }
 /* level 3: a task's command + output, each its own scrollable block, indented under the line (overscroll-
    contain so the wheel scrolls the body, not the chat behind it — the "expanded view won't scroll" fix) */
@@ -2533,9 +2572,16 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
 .notice-glyph .meta-dots i { background: var(--notice-rail, var(--accent)); }
 .notice-src { flex: 0 0 auto; font-size: 0.72em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--dim); white-space: nowrap; }
-/* the ONE coloured element in the vocabulary: the house session chip naming a peer (postal mail) */
-.notice-src-chip { display: inline-block; padding: 0 7px; border-radius: var(--radius-pill); letter-spacing: 0.02em;
-  text-transform: none; font-weight: 700; background: var(--peer-bg, var(--overlay-10)); color: var(--peer-fg, var(--fg)); }
+/* the ONE coloured element in the vocabulary: a session's NAME in a postal card's head, both ends (T390, the user
+   2026-09-12): the name itself, bold, inked in the session's identity colour, the way the awaiting fold names a peer; no
+   chip box, no fill. The identity colour arrives as --peer-bg (the session's own colour, chosen for a dark ground); the
+   ink is that colour's hue and chroma at the theme's lightness token (--peer-ink-l: the colour's own lightness in the
+   dark theme, a deepened one in cream, where a pastel identity colour would not read on the card's ground), the same
+   relative-colour rule the incoming card's tint uses. The muted host prefix is the tab's (.host-prefix). */
+.notice-src-end { letter-spacing: 0.02em; text-transform: none; font-weight: 700;
+  color: var(--peer-bg, var(--fg));   /* an engine without relative colour syntax keeps the identity colour itself */
+  color: oklch(from var(--peer-bg, var(--fg)) var(--peer-ink-l, l) c h); }
+.notice-src-end .host-prefix { font-weight: 400; }
 .notice-gist { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 0.92em; color: var(--fg); }
 /* where the gist shares the head with a long META and no actions, it keeps a legible floor: flex shrinks the two in
@@ -2600,7 +2646,8 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
    still show where the words would not fit */
 .notice-src-ends { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
 @container (max-width: 520px) {
-  .turn-postal-service .notice-src-self { width: 10px; height: 10px; padding: 0; border-radius: 50%; align-self: center; overflow: hidden; }
+  .turn-postal-service .notice-src-self { display: inline-block; width: 10px; height: 10px; padding: 0; border-radius: 50%; align-self: center; overflow: hidden;
+    background: var(--peer-bg, var(--overlay-10)); }   /* the dot is the one place the identity colour fills (T390) */
   .turn-postal-service .notice-src-self .notice-src-name { display: none; }
 }
 /* the DELIVERY STATE icon at the head's right edge (postal-state.ts for the map): dim for sent and delivered, the

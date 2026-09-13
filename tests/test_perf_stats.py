@@ -125,10 +125,13 @@ class Collector(unittest.TestCase):
         self.assertEqual(set(snap["goals"]), {"loads", "saves", "writes"}, "read through jd.goal_io_stats")
         # the three identity memos' readers land here (review find, 2026-09-08: they had no consumer)
         self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip",
-                                              "bgTops", "liftGate", "intrMarks", "statesOverlay", "lanes", "spendTree",
+                                              "bgTops", "liftGate", "intrMarks", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
                                               "chatMergeSets", "chatPostal", "chatLedger", "chatFoldTasks"})   # the chat build's fixed-cost memos (2026-09-09)
         self.assertEqual(set(snap["memos"]["spendTree"]), {"entries", "bytes", "bound"}, "the spend guard's tree memos against their bound")
         self.assertEqual(snap["memos"]["spendTree"]["bound"], km.SPEND_GUARD_TREE_MEMO_BYTES)
+        self.assertEqual(set(snap["memos"]["summaryAnchor"]), {"entries", "bytes", "bound", "hit", "miss", "evict", "fault"},
+                         "the brief line's text-atom landings (T388): occupancy and counters against their bound")
+        self.assertEqual(snap["memos"]["summaryAnchor"]["bound"], km.SUMMARY_ANCHOR_MEMO_BYTES)
         self.assertEqual(set(snap["memos"]["bgTops"]), {"hit", "miss", "resolve", "walk", "walk_neg", "idx_build", "entries"},
                          "the placed-launch memo (_bg_placed_tops): counters plus its occupancy")
         for k, v in snap["memos"]["bgTops"].items():
@@ -160,7 +163,7 @@ class Collector(unittest.TestCase):
         self.assertEqual(set(snap["memos"]["goalArchive"]), {"served", "loaded"})
         self.assertEqual(set(snap["memos"]["backref"]), {"served", "built"},
                          "the sender-board walk behind the courier link repair: built once per input state (2026-09-09)")
-        self.assertEqual(snap["memos"]["nudgeGate"], {"served": 0, "derived": 0},
+        self.assertEqual(snap["memos"]["nudgeGate"], {"served": 0, "derived": 0, "failed": 0},
                          "the nudge walk's placement gate: served vs re-derived (2026-09-09)")
         self.assertEqual(set(snap["memos"]["cleared"]), {"served", "derived"},
                          "the clear set: parsed once per file state, served while it stands (2026-09-09)")

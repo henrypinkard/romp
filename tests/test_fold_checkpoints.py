@@ -1571,7 +1571,7 @@ class KernelFolds(Base):
         snap = km._PERF_STATS.snapshot()
         self.assertIn("converge", em._CKPT_STATS, "the production default carries the converge counters (the fixture injects nothing)")
         self.assertEqual(sorted(snap["checkpoints"]), ["coldFolds", "coldWrites", "converge", "dirty", "documentBytes", "droppedRestores", "fallbacks", "oversizeFolds",
-                                                        "readByPath", "readBytes", "refolds", "restored", "restoredFolds", "skippedFolds", "swept", "writes"])
+                                                        "readByPath", "readBytes", "refolds", "restored", "restoredFolds", "rewoundMemo", "skippedFolds", "swept", "writes"])
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn("em.checkpoint_write_dirty(budget_s=EXIT_CKPT_WRITE_BUDGET_S)", src,
                       "exit writes the dirty checkpoints in _drain_and_exit, bounded (2026-09-11: unbounded, it met the manager's SIGKILL)")

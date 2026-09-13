@@ -37,7 +37,7 @@ import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSy
 import { backendLabel, effectiveDefaultBackend } from "./backend-names";
 import { delegate } from "./actions";
 import { flash } from "./actions";   // its own line: the import above is pinned verbatim by click-safe.test.ts (the file-view precedent)
-import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, GROUP_TITLE, workingFor, type AwaitRow } from "./spin-caption";
+import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, listBreakdown, keptWord, GROUP_TITLE, ROW_KINDS, workingFor, type AwaitRow } from "./spin-caption";
 import { CHIP_LABEL, chipWords, statusChip, type ChipState } from "./status-chip";   // the session status chip: its words and its classes, the one builder the bar and the tag overview's rows share (T322b)
 import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
@@ -49,7 +49,8 @@ import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionR
          followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, TABGROUPS_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
-import { tabStateClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
+import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
+import { composeTabWidgets, tabHotkey } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry
 import { titleWithKey, chordOf, effectiveChord, loadOverrides } from "./keybindings";
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
@@ -312,7 +313,7 @@ type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: stri
 // which billing sides this box can bill, and why not for the other (kernel _auth_avail, 2026-09-08): the
 // Billing submenu lists both and greys the unavailable one with the reason in its hover
 interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
-interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -362,6 +363,17 @@ if ((window as any).__rompShowStrip) {
 initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
   (m) => vscodeApi?.postMessage(m));
 installSettingsSync();   // a gear save in ANOTHER VS Code pane lands here via the host
+// Open the settings gear on a NAMED tab, at a named SECTION of it when one is given (T379: the tab-widgets glyph opens
+// the Chat tab scrolled to its Tab widgets section): the same openSettings message every opener posts, with the tab and
+// the section named. Through the shell when this pane sits in one (the kernel's __rompOpenSettings relays it into the
+// settings iframe, tab and section and all); else to this window, whose own gear (the VS Code chat's, mounted above)
+// listens for it.
+function openSettingsOn(tab: string, section?: string): void {
+  const m: { romp: string; tab: string; section?: string } = { romp: "openSettings", tab };
+  if (section) m.section = section;
+  if (inRompShell()) { try { window.parent.postMessage(m, "*"); } catch { /* no shell to ask */ } return; }
+  window.postMessage(m, "*");
+}
 
 let settings: RompSettings = loadSettings();   // global webview settings (compact mode, …) — see settings.ts
 // (compact mode's expanded tool/notice runs are keyed in openFolds — "tg:<uuid>" / "ng:<uuid>" — the ONE fold
@@ -5357,11 +5369,11 @@ function setPeerDot(peerEl: HTMLElement, on: boolean) {
   else if (!on && has) prev!.remove();
 }
 function refreshPostalDots() {
-  // the PEER chips only: this session's own end (.notice-src-self) shows its state elsewhere, and a dot that
-  // arrives with the next working frame and leaves on the next rebuild would only flap (T302 review)
-  document.querySelectorAll(".notice-src-chip:not(.notice-src-self)").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p.textContent || "").trim())));
+  // the PEER ends only: this session's own end (.notice-src-self) shows its state elsewhere, and a dot that
+  // arrives with the next working frame and leaves on the next rebuild would only flap (T302 review). The name is read
+  // without its muted host prefix (the working set is keyed by the bare name)
+  document.querySelectorAll(".notice-src-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p as HTMLElement).dataset.name || (p.textContent || "").trim())));
 }
-
 
 // The interaction TYPE of a postal message, parsed from its leading intent token → a small chip on the
 // card head, shown in both the compact and expanded views (the user 2026-06-16). There are THREE
@@ -5411,9 +5423,13 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   // colour, which that ruling removed as reading like this session's, is back since 2026-09-11 (the user asked
   // where the tint had gone): styles.css paints the incoming card's ground from its rail, which is the peer's
   // colour here (`rail` below), so nothing more is set on the card. Click a name → that session's tab.
-  const peer = el("span", "notice-src-chip");
-  peer.textContent = ev.peer;
-  if (ev.color) { peer.style.setProperty("--peer-bg", ev.color.bg); peer.style.setProperty("--peer-fg", ev.color.fg); }
+  // T390 (the user 2026-09-12): a session's name is the NAME ITSELF, bold, in the session's identity colour, the way the
+  // awaiting fold names a peer (bg-await-peer): no chip box, no fill, in either theme. The identity colour rides --peer-bg
+  // and the sheet inks the text from it (a relative colour: the cream theme deepens it to read on the card's ground).
+  const peer = el("span", "notice-src-end notice-src-peer");
+  peer.append(...hostPartsNodes(ev.peerHost, ev.peer));   // the host prefix muted, as the tab wears it (the one helper)
+  peer.dataset.name = ev.peer;                            // the bare name the working set is keyed by (refreshPostalDots)
+  if (ev.color) peer.style.setProperty("--peer-bg", ev.color.bg);
   makeSessionChip(peer, ev.peer);
   setPeerDot(peer, workingSet.has(ev.peer));   // working dot before the peer name if that session is working
   // the session that OWNS the transcript being built (a comment popover's parent, a subagent viewer's session),
@@ -5426,11 +5442,11 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   if (own && ownId) {
     // this session's own end: its name (the host label muted, as the tab wears it) in its identity colour; a
     // narrow head collapses it to its coloured dot (the container query in styles.css) — both colours still show
-    const self = el("span", "notice-src-chip notice-src-self");
+    const self = el("span", "notice-src-end notice-src-self");
     const nm = el("span", "notice-src-name"); nm.append(...hostNameNodes(own.name, ownId));
     self.appendChild(nm);
     self.title = own.name;
-    if (own.color) { self.style.setProperty("--peer-bg", own.color.bg); self.style.setProperty("--peer-fg", own.color.fg); }
+    if (own.color) self.style.setProperty("--peer-bg", own.color.bg);
     src.appendChild(document.createTextNode(ev.direction === "in" ? " to " : " from "));
     src.appendChild(self);
   }
@@ -6163,7 +6179,7 @@ function sectionHeadOf(node: HTMLElement): HTMLElement | null {
 // the stale pre-outage session it holds underneath. `s.status` may be EMPTY (a skeleton before its first
 // status frame lands): no state → the gray "unknown" ring, the honest "listed, state not yet known". Returns
 // the state so the caller can finish its own chrome (the ✕ title, the gauge).
-function applyTabStatus(tab: HTMLElement, s: { status: Partial<Status> }): ChipState | undefined {
+function applyTabStatus(tab: HTMLElement, s: { id?: string; status: Partial<Status> }): ChipState | undefined {
   const st = s.status.state;
   // the state class — working gold, an on-YOU block alarm-red dashed vs a transient API error's
   // amber auto-retry, awaiting, compacting, closed — is tab-state.ts's rule, shared with the
@@ -6181,10 +6197,10 @@ function applyTabStatus(tab: HTMLElement, s: { status: Partial<Status> }): ChipS
   // that added or removed a row and slid the transcript under the reader by a row's height (tabDotClass).
   // Each pip explains itself on hover, the same titles the feed's DOT_TIP speaks (the user 2026-07-22; tab-state.ts
   // tabDotTitle, beside the class rule); the hidden slot and the compacting bar say nothing.
-  const dotCls = tabDotClass(st);
-  if (dotCls) tab.appendChild(el("span", dotCls));
-  const dotTip = dotCls ? tabDotTitle(st) : null;
-  if (dotTip) (tab.lastElementChild as HTMLElement).title = dotTip;
+  // The slot is a WIDGET now (T379, the user 2026-09-12): the dot widget's render is tab-state.ts's rule (tabDotClass,
+  // tabDotTitle), composed here with every other before-the-name widget the user keeps on (tab-widgets.ts, the one
+  // module the strip and the gear's live demos draw from); off in the gear, no slot at all.
+  composeTabWidgets(tab, "before", s.id || "", s.status, settings.tabWidgets);
   // compacting → a tiny animated compaction bar before the name (the tab gets no outline for this state,
   // so the bar IS the cue). A teal fill whose right edge slides left and loops — the same "compression"
   // motion as the statusline ctx-scan bar (.ctx-compress), miniaturised. Replaces the static ⇲ glyph the
@@ -6285,11 +6301,11 @@ function makeSkeletonTab(id: string): HTMLElement {
   }
   if (id === peekId) tab.classList.add("tab-peek");
   const status = skeletonTabs.status.get(id) as Status | undefined;
-  applyTabStatus(tab, { status: status ?? {} });   // no status yet → the unknown ring, never a pre-outage state
+  applyTabStatus(tab, { id, status: status ?? {} });   // no status yet → the unknown ring, never a pre-outage state
   const label = el("span", "tab-label");
   label.replaceChildren(...hostNameNodes(name, id));
   tab.appendChild(label);
-  if (status) appendTabCtxGauge(tab, { status });
+  if (status) appendTabAfterWidgets(tab, { id, status });
   tab.title = "Not loaded yet — click to load";
   const closeBtn = el("span", "tab-close");
   closeBtn.textContent = "×";
@@ -6311,18 +6327,13 @@ function makeSkeletonTab(id: string): HTMLElement {
 // Drawn AFTER the label by both callers, so the ✕ keeps the tab's right edge. (Defined below makeSkeletonTab
 // on purpose: tab-ctx-gauge.test.ts orders the file's FIRST label append before its first gauge append,
 // and tabs-first.test.ts wants nothing between makePlaceholderTab and renderTabs but the placeholder.)
-function appendTabCtxGauge(tab: HTMLElement, s: { status: Partial<Status> }): void {
-  const st = s.status.state;
-  // Slim vertical context gauge right of the name (the user 2026-08-08): the statusline battery's
-  // fill % + colormap colour, rotated upright and with no % text — so "this session is filling up"
-  // reads at a glance across the whole strip. Skipped while compacting (the compacting bar owns that
-  // moment, and the % is about to be wrong) and on dead tabs. gear → Chat picks WHEN it shows:
-  // only once ≥50% full (the default — a gauge on every quiet tab is clutter; it appears when it
-  // has news), always, or never (the user 2026-08-08 v2, replacing the on/off toggle).
-  if (settings.tabCtx !== "never" && s.status.ctx && st !== "compacting" && st !== "closed") {
-    const pct = Math.max(0, Math.min(100, parseInt(s.status.ctx, 10) || 0));
-    if (settings.tabCtx === "always" || pct >= 50) tab.appendChild(tabCtxGauge(s.status.ctx, pickTone(s.status.ctxColor, s.status.ctxTone)));
-  }
+function appendTabAfterWidgets(tab: HTMLElement, s: { id?: string; status: Partial<Status> }): void {
+  // The after-the-name WIDGETS (T379, the user 2026-09-12): the slim vertical context gauge (the user 2026-08-08: the
+  // statusline battery's fill % + colormap colour, rotated upright, no % text, so "this session is filling up" reads at
+  // a glance across the strip; from half full by default, or always, the gear's Tab widgets section picks; skipped while
+  // compacting and on dead tabs) and the hot-key keycap (when one is assigned), composed from the registry in the
+  // configured order. Drawn AFTER the label by both callers, so the ✕ keeps the tab's right edge.
+  composeTabWidgets(tab, "after", s.id || "", s.status, settings.tabWidgets);
 }
 
 // A loading PLACEHOLDER tab (the user 2026-06-26): name + identity color from the kernel's tabOrder push,
@@ -6390,24 +6401,6 @@ function syncNoSessionsPlaceholder(visibleCount: number, totalCount = 0, heldCou
   ph.id = "no-sessions";
   ph.textContent = txt;
   content.appendChild(ph);
-}
-
-// The tab strip's vertical context gauge: fill height = context-used %, coloured by the SAME
-// server-computed global-colormap RGB the statusline battery / timeline use (setCtxBar), with the
-// same traffic-light fallback for an older kernel that doesn't ship ctxColor. Passive — a click
-// falls through to the tab's own select; the statusline battery keeps the click-to-/compact.
-function tabCtxGauge(ctxStr: string, ctxColor?: number[]): HTMLElement {
-  const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));
-  const g = el("span", "tab-ctx");
-  const fill = el("span", "tab-ctx-fill");
-  fill.style.height = pct + "%";
-  fill.style.background = (ctxColor && ctxColor.length === 3) ? `rgb(${ctxColor.join(",")})`
-    : ctxFallbackColor(pct);   // theme-aware pair (ctx-color.ts): classic keeps main's 60/85 verbatim.
-  // FILLS wear the tone as-is in every theme — readableRgb is for TEXT (re-encoding the warn amber
-  // fill made it a muddy brown on light; the user 2026-08-31, off the live preview)
-  g.appendChild(fill);
-  g.title = `context ${pct}% used`;
-  return g;
 }
 
 // A hairline under EVERY row of tabs (T134, the user 2026-08-27, overturning the survey's
@@ -6569,7 +6562,7 @@ function renderTabs() {
   // input missing here is a repaint that never happens.
   const stripSig = JSON.stringify([
     activeId, peekId, ids, visibleIds, activeId ? tabInView(activeId) : null, plan.items,
-    settings.tabCtx, settings.stripGroupRows, settings.tabsLocked, settings.theme, settings.colormap, titleWithKey("Open a session", "session.new"),
+    settings.tabCtx, settings.stripGroupRows, settings.tabsLocked, settings.theme, settings.colormap, settings.tabWidgets, titleWithKey("Open a session", "session.new"),   // tabWidgets: which widgets a tab carries, their order and options (T379); tabsLocked: the tab lock (T395)
     surfaceLens(effViews(), "chat"), unions,
     snapView,   // the section whose view the pane shows (makeGroupHead: the header's mark and its way-back act)
     visibleIds.map((id) => {
@@ -6577,12 +6570,12 @@ function renderTabs() {
       if (renderKind(skeletonTabs, id, !!s) === "skeleton") {                                              // makeSkeletonTab's reads:
         const m = tabMeta.get(id), kst = skeletonTabs.status.get(id) as Status | undefined;               // the kernel's list + its
         return ["k", m?.name || s?.name, (m?.color || s?.color)?.bg, (m?.color || s?.color)?.fg, id === peekId,   // status frames, never the
-                kst?.state, kst && tabStateClass(kst), !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note];   // stale session's status
+                kst?.state, kst && tabStateClass(kst), !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379)
       }
       if (!s) { const m = tabMeta.get(id); return ["p", m?.name, m?.color?.bg, m?.color?.fg, down, note]; }   // makePlaceholderTab's reads
       const st = s.status;
       return [s.name, s.color?.bg, s.color?.fg, st.state, tabStateClass(st), !!st.faded,
-              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note];
+              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints
     }),
   ]);
   const mslotEl = document.getElementById("mtag-slot");
@@ -6677,7 +6670,7 @@ function renderTabs() {
       tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); label.classList.add("name-faded"); });
     }
     tab.appendChild(label);
-    appendTabCtxGauge(tab, s);   // the context gauge, shared with the skeleton tab (2026-09-07)
+    appendTabAfterWidgets(tab, s);   // the context gauge and the hot-key keycap, the after-the-name widgets (T379), shared with the skeleton tab (2026-09-07)
     // Rich hover tooltip (custom DOM — a native title can't colour/bold): backend in its own colour, the
     // full dir path, and mode/model/effort/context each on a line (the user 2026-06-23). See showTabTip.
     if (!s.sub) {   // the rich tip reads a real session's dir/branch/model; a viewer has none of them
@@ -6763,6 +6756,23 @@ function renderTabs() {
   const tagChipsHost = el("span", "tab-tagchips");
   tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
   tagBox.appendChild(tagChipsHost);
+  // THE TAB-WIDGETS GEAR (T379, the user 2026-09-12): one glyph at the strip's right end, inside the tag box so it
+  // takes no extra height, opening the settings on the Chat tab scrolled to its Tab widgets section (the widget rows;
+  // the user's amendment 2026-09-12: no tab of their own). The ask rides the openSettings
+  // message every opener uses, with the tab named: to the shell when this pane sits in one (the kernel's
+  // __rompOpenSettings relays it into the settings iframe), else to this window (the VS Code chat hosts its own
+  // gear). A standalone /chat with neither has no gear to open, so it shows no glyph (an honest absence, never a
+  // dead control). Built once per strip paint like the tag button beside it; the click is its own, click-safe
+  // because the strip is rebuilt only when its signature changes.
+  if ((window as any).__rompShowStrip || inRompShell()) {
+    const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
+    gear.type = "button";
+    gear.title = "Tab widgets…";
+    gear.setAttribute("aria-label", "Tab widgets");
+    gear.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("chat", "tabwidgets"); });
+    tagBox.appendChild(gear);
+  }
   bar.appendChild(tagBox);
   {
     const v = effViews();
@@ -13707,7 +13717,13 @@ function renderLedger() {
 // the box's fold + each row's detail fold key into openFolds ("bgfold:<sid>" / "bgrow:<id>") — the ONE fold
 // store since 2026-09-08 (these had their own bgFoldOpen / bgExpanded sets)
 const BG_RANK: Record<string, number> = { failed: 3, running: 2, completed: 1 };
-const BG_LEFTOVER_TITLE = "Also running";   // tracked tasks the wait does not name (a dev server the session keeps around)
+// T394 (the user 2026-09-12, from a screenshot of the fold with a section for tasks merely also running): a tracked task the kernel's rows do
+// not name is still a command or an agent, and what set it apart was a JUDGE'S VERDICT (the closer audited its launch without a
+// wait), not a kind. So it lists in its kind's section, dimmed, with the verdict as a muted suffix on the row (kept running, not
+// waited on), and the header counts it apart from the awaited breakdown; the section of its own, whose title said nothing of
+// that, is gone. One hue per kind for the dot and the caption word (the sheet: bg-kind-*), status overriding for failed and
+// completed rows.
+const BG_KEPT_WORD = "· kept running, not waited on";
 // ── SUBAGENT VIEWER (plans/subagent-transcripts.md, 2026-09-05) ─────────────────────────────────
 // The arrow on an Agent head (or an agent bg-task row) opens the agent's whole transcript as a PEEK tab:
 // a client-only pseudo-session in `sessions`/`order` with id `<parentId>/agent/<agentId>`, fed by the
@@ -13904,20 +13920,40 @@ function renderBgTasks() {
   // (awaitingTaskIds — an exact launch-id match; the ids' PRESENCE, never the chip state); the status DOT
   // keeps its own meaning (yellow = the row is running)
   const awaited = new Set<string>(s.status.awaitingTaskIds || []);
+  // the JUDGE's verdict on the tracked tasks, shipped (kernel _bg_split's services, bgServiceIds, in every turn state): a task
+  // the closer audited past its launch without a wait is furniture the session keeps running. Only that verdict earns the
+  // kept-running word (T394 round one: inferring it from a missing row called a placed task under a stamped top, and every
+  // agent, kept running mid-turn, when the kernel simply enumerates no rows for them then)
+  const services = new Set<string>(s.status.bgServiceIds || []);
   host.classList.toggle("bg-awaited", !!why || tasks.some((t) => awaited.has(t.id)));
   const open = openFolds.has("bgfold:" + sid);
   const groups = groupRows(items);
   const awPeers = s.status.awaitingPeers || [];
   const itemIds = rowIds(items);   // the rows AND what nests under them (an agent's own waits name their tasks too)
   const leftovers = tasks.filter((t) => !itemIds.has(t.id));   // tracked tasks the wait does not name (services)
+  const kept = leftovers.map((t) => taskRowSpec(t, awaited.has(t.id), services.has(t.id)));   // …as rows of their KIND (T394): the judge's services dimmed, the verdict as a suffix
+  const keptN = kept.filter((row) => row.kept).length;   // the header counts the rows that WEAR the verdict, none other (round one, medium 1)
+  // every row the list shows, by kind (round two, medium): the kernel's rows AND the tracked tasks they do not name, so a box
+  // whose only row is a placed command or a finished one reads "In the background · 1 command", never a separator with nothing after it
+  const counted: AwaitRow[] = [...items, ...kept.map((row) => ({ kind: row.kind || "commands", id: row.id, label: row.label }))];
   // the header dot: await-green while waiting, like the chip; otherwise the worst tracked status, so a
   // failed task is glanceable while collapsed (running-yellow when nothing tracked has failed)
-  const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, "running");
+  // seeded from the tasks' own statuses (round two, low 2): seeded "running", a completed-only box wore the running gold and
+  // the header's completed tint matched nothing
+  const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, tasks.length ? (tasks[0].status || "running") : "running");
   const head = el("div", "bg-fold-head " + (why ? "bg-await" : "bg-" + worst) + (open ? " open" : ""));
   head.dataset.act = "bg-fold"; head.dataset.id = sid;
   const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);   // ▸ closed → ▾ open (expands DOWNWARD beneath the header)
   head.appendChild(el("span", "bg-dot"));
   const lab = el("span", "bg-fold-label");
+  // THE HEADER'S RULE (T394 round three, lows 1 and 2; round four): the leading word is the wait and its count is the awaited rows
+  // (the chip's number); the breakdown after the separator counts every TOP-LEVEL row the list shows, by kind, awaited or not, a
+  // peer row as a peer; "N kept running" is the subset of those rows wearing the judge's verdict, never a further partition. So
+  // "Awaiting 2 · 1 agent · 2 commands · 1 kept running" is a session waiting on two of three listed rows, one of them a command
+  // the judge called furniture. An agent's OWN waits, drawn as sub-rows under it, are the agent's and stay out of the count, as
+  // they stay out of the chip's (the session waits on the agent, the agent on them). The one-kind idle header and the peer-named
+  // one keep the wait's own words and add the breakdown only when the list shows rows beyond the wait's (else the word, or the
+  // names, already count them all).
   if (why) {
     // IDLE, waiting on the rows — the chip reads Awaiting and the header agrees with it in number: ONE rule
     // words both (awaitWord). The kernel's why leads with the verb ("waiting on a background command: …");
@@ -13936,17 +13972,17 @@ function renderBgTasks() {
         lab.appendChild(nm);
       });
       lab.append(" · " + why.replace(/^delegated to [^;]*;\s*/i, "").replace(/^(waiting on|awaiting)\s+/i, ""));
+      if (kept.length) lab.append(" · " + listBreakdown(counted, keptN));   // every listed row counted, the peer rows as peers (round four): the names alone count them otherwise
     } else if (groups.length > 1) {
-      lab.textContent = "Awaiting " + word + " · " + awaitBreakdown(items);   // mixed kinds: the number, then the breakdown
+      lab.textContent = "Awaiting " + word + " · " + listBreakdown(counted, keptN);   // mixed kinds: the number, then every listed row by kind, then the kept rows
     } else {
-      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "");
+      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "") + (kept.length ? " · " + listBreakdown(counted, keptN) : "");   // the rows beyond the wait's counted too, by kind, the kept subset after (round three, low 3)
     }
   } else {
     // WORKING (or idle with nothing awaited — a service the session keeps around): the same rows, worded
-    // as what they are, no idle note. The breakdown counts the in-flight rows, or the tracked tasks when
-    // the kernel names none (they are shell tasks by construction — _bg_split never makes an agent a service).
-    const counted: AwaitRow[] = items.length ? items : leftovers.map((t) => ({ kind: "commands", id: t.id, label: t.summary }));
-    lab.textContent = "In the background · " + awaitBreakdown(counted);
+    // as what they are, no idle note. The header counts every row the list shows (T394): the in-flight rows by
+    // kind, then the tracked tasks the kernel names no row for, apart, as the kept-running rows they are.
+    lab.textContent = "In the background · " + listBreakdown(counted, keptN);
   }
   head.appendChild(lab);
   host.appendChild(head);
@@ -13967,9 +14003,13 @@ function renderBgTasks() {
   }
   const taskById = new Map<string, BgTask>(tasks.map((t) => [t.id, t]));
   const peerByName = new Map<string, PeerIdent>(awPeers.map((p) => [p.name, p]));
-  const headers = groups.length + (leftovers.length ? 1 : 0) >= 2;   // group headers only when there is more than one group to tell apart
+  // the sections, one per KIND in display order: a kind the kernel's rows bring, or one only a kept row brings (T394)
+  const sections: { kind: string; rows: AwaitRow[] }[] = [...ROW_KINDS, "other"]
+    .filter((k) => groups.some((g) => g.kind === k) || kept.some((row) => row.kind === k))
+    .map((k) => ({ kind: k, rows: (groups.find((g) => g.kind === k) || { rows: [] as AwaitRow[] }).rows }));
+  const headers = sections.length >= 2;   // group headers only when there is more than one group to tell apart
   const list = el("div", "bg-list");
-  for (const g of groups) {
+  for (const g of sections) {
     if (headers) { const gh = el("div", "bg-group-head"); gh.textContent = GROUP_TITLE[g.kind] || "Other"; list.appendChild(gh); }
     for (const it of g.rows) {
       list.appendChild(bgRow(awaitRowSpec(it, taskById.get(it.id || ""), peerByName), sid));
@@ -13986,10 +14026,7 @@ function renderBgTasks() {
         list.appendChild(bgRow(spec, sid));
       });
     }
-  }
-  if (leftovers.length) {
-    if (headers) { const gh = el("div", "bg-group-head"); gh.textContent = BG_LEFTOVER_TITLE; list.appendChild(gh); }
-    for (const t of leftovers) list.appendChild(bgRow(taskRowSpec(t, awaited.has(t.id)), sid));
+    for (const row of kept) if (row.kind === g.kind) list.appendChild(bgRow(row, sid));   // the kept rows of this kind, after the awaited ones
   }
   // the plain-words note on what the state means — for the idle wait only, where the state is not obvious
   // from the header; "In the background" says all a working session needs (2026-09-06)
@@ -14024,13 +14061,18 @@ interface BgRowSpec {
   command?: string | null;    // the fold: an agent's prompt, a command's command line, a watch's predicate
   output?: string | null;     // the fold: a command's output tail (never an agent's — its output file IS the transcript; the arrow is the way in)
   peer?: PeerIdent | null;    // a peer row: the name in identity colour
+  kind?: string | null;       // the row's kind (agents | commands | watches | peer | timer): its section, and the hue of its dot and caption (T394)
+  kept?: boolean;             // a tracked task the judge called a service (kernel bgServiceIds: audited past its launch without a wait), still running: dimmed, the verdict as a muted suffix (T394)
   sub?: "first" | "rest" | null;   // a NESTED row — what the agent above it waits on (2026-09-10): indented; "first" wears the "waiting on" label, "rest" its blank twin so the dots align
   deeper?: string | null;     // a nested row that has waits of its own: their count, said in the label ("waiting on 1 command") — the box draws one level
 }
 
-function taskRowSpec(t: BgTask, awaited: boolean): BgRowSpec {
+function taskRowSpec(t: BgTask, awaited: boolean, service: boolean): BgRowSpec {
   const status = t.status || "running";
+  // its kind's section; the kept-running word only on a task the judge called a service (the kernel's verdict, never inferred
+  // from a missing row) and only while it runs: a completed or failed task is finished, not kept (round one, medium 2 and low 1)
   return { id: t.id, status, caption: status, label: t.summary || "Background task", awaited,
+           kind: t.agentId ? "agents" : "commands", kept: service && status === "running",
            agentId: t.agentId || null, stopId: status === "running" ? t.id : null,
            command: t.command || null, output: t.agentId ? null : (t.output || "(no output captured)") };
 }
@@ -14046,30 +14088,31 @@ function awaitRowSpec(it: AwaitRow, tracked: BgTask | undefined, peerByName: Map
   // the nested rows would have no Stop at all.
   const stopId = running ? tracked!.id : (it.stoppable && id ? id : null);
   if (it.kind === "agents") {
-    return { id, status: "running", caption: "running", label: it.label || (tracked && tracked.summary) || "background agent",
+    return { id, status: "running", caption: "running", kind: "agents", label: it.label || (tracked && tracked.summary) || "background agent",
              agentId: it.agentId || (tracked && tracked.agentId) || null, since: it.since,
              stopId, command: (tracked && tracked.command) || null, output: null };
   }
   if (it.kind === "commands") {
     const status = (tracked && tracked.status) || "running";
-    return { id, status, caption: status, label: it.label || (tracked && tracked.summary) || "background command", since: it.since,
+    return { id, status, caption: status, kind: "commands", label: it.label || (tracked && tracked.summary) || "background command", since: it.since,
              stopId, command: (tracked && tracked.command) || null,
              output: tracked ? (tracked.output || "(no output captured)") : null };
   }
   if (it.kind === "watches") {
-    return { id, status: "armed", caption: "armed", label: it.label || "a watch", since: it.since,
+    return { id, status: "armed", caption: "armed", kind: "watches", label: it.label || "a watch", since: it.since,
              watchId: it.watchId || null, command: it.detail || null };
   }
   if (it.kind === "peer") {
-    return { id, status: "waiting", label: it.label || "a peer", peer: peerByName.get(it.label || "") || null };
+    return { id, status: "waiting", kind: "peer", label: it.label || "a peer", peer: peerByName.get(it.label || "") || null };
   }
-  return { id, status: "waiting", caption: it.kind === "timer" ? "timer" : null, label: it.label || it.kind, since: it.since };
+  return { id, status: "waiting", caption: it.kind === "timer" ? "timer" : null, kind: it.kind, label: it.label || it.kind, since: it.since };
 }
 
 function bgRow(t: BgRowSpec, sid: string): HTMLElement {
   const tOpen = openFolds.has("bgrow:" + t.id);
   const foldable = !!(t.command || t.output);
-  const row = el("div", "bg-task bg-" + (t.status || "running") + (t.awaited ? " bg-awaited" : "") + (t.sub ? " bg-sub" : "") + (tOpen && foldable ? " open" : ""));
+  const row = el("div", "bg-task bg-" + (t.status || "running") + (t.kind ? " bg-kind-" + t.kind : "") + (t.kept ? " bg-kept" : "")
+                     + (t.awaited ? " bg-awaited" : "") + (t.sub ? " bg-sub" : "") + (tOpen && foldable ? " open" : ""));
   const rh = el("div", "bg-head" + (foldable ? "" : " bg-flat"));
   if (foldable) { rh.dataset.act = "bg-toggle"; rh.dataset.id = t.id; }   // the row header toggles; clicks in the detail body don't collapse it
   if (t.sub) {
@@ -14087,6 +14130,7 @@ function bgRow(t: BgRowSpec, sid: string): HTMLElement {
     if (t.peer.color && t.peer.color.bg) sum.style.color = t.peer.color.bg;
   } else sum.textContent = t.label || "Background task";
   rh.appendChild(sum);
+  if (t.kept) { const kw = el("span", "bg-kept-word"); kw.textContent = BG_KEPT_WORD; rh.appendChild(kw); }   // the judge's verdict, muted, beside the label (T394)
   if (t.deeper) {
     // the level the box does not draw, counted in words (the meta rung, like the elapsed time)
     const dp = el("span", "bg-deeper"); dp.textContent = "· waiting on " + t.deeper; rh.appendChild(dp);
@@ -17202,7 +17246,7 @@ function awaitChanged(sid: string): void {
 function awaitKey(st: Status | undefined): string {
   if (!st) return "";
   return JSON.stringify([st.state, st.awaitingWhy || "", st.awaitingKind || "", st.awaitingCount ?? null,
-                         st.awaitingTasks || [], st.awaitingTaskIds || [], st.awaitingItems || [],
+                         st.awaitingTasks || [], st.awaitingTaskIds || [], st.bgServiceIds || [], st.awaitingItems || [],   // the verdict repaints the box (round two, low 1)
                          (st.awaitingPeers || []).map((p) => [p.host || "", p.name || ""])]);
 }
 

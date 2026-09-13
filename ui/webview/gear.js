@@ -23,6 +23,7 @@
 
 var gclock = require('./gesture-clock.js');   // every `gt` below is minted here (see that file)
 var BN = require('./backend-names.ts');   // the backends' user-facing names and the offer rule (T288)
+var TW = require('./tab-widgets.ts');   // the tab-title widgets (T379): the registry the Tab widgets section's rows render from, the strip's own module
 function kb() { return (typeof window !== 'undefined' && window.__rompKernelBase) || ''; }
 function ku(path) {
   var tok = (typeof window !== 'undefined' && window.__rompKernelToken) || '';
@@ -36,6 +37,7 @@ function ku(path) {
 // commands, rebindable in VS Code's own Keyboard Shortcuts editor, so the row says that instead
 // (a second editor there would fight the native one). The old static list is gone with the section
 // (it opened with "Enter — send message", a typing key nobody looks up, and went stale per surface).
+var RS_TABS = [['chat', 'Chat'], ['feed', 'Feed'], ['sessions', 'Sessions'], ['automatic', 'Automatic'], ['appearance', 'Appearance'], ['system', 'System']];
 var SHORTCUT_ROWS =
   '<div class=rs-key id=rs-keys-web hidden><button id=rs-keys-btn type=button>Customize shortcuts…</button>' +
   '<span class=rs-key-desc>view, record and rebind every dashboard shortcut</span></div>' +
@@ -61,51 +63,13 @@ var GEAR_HTML =
   '<button id=rgear hidden aria-hidden=true></button>' +
   '<div id=rsettings hidden><div class=rs-card>' +
   '<div class=rs-h>Settings</div>' +
-  "<div class='rs-sec rs-sec-first'>Account</div>" +
-  "<div class='rs-row' id=rs-billing style='cursor:default'>" +
-  '<span style="flex:1 1 auto"><b>Claude login</b>' +
-  '<span class=rs-sub id=rs-login-acct>…</span>' +
-  "<div id=rs-login-flow style='margin-top:6px'>" +
-  "<button id=rs-login-btn type=button style='cursor:pointer;background:var(--btn-bg, #2a2a2a);color:var(--fg, #ccc);border:1px solid var(--hairline, #3a3a3a);border-radius:5px;padding:3px 10px'>Log in to Claude Code</button>" +
-  // rs-note, NOT rs-sub: this is a live inline status ("starting the login flow…"), not the row's
-  // description — as an rs-sub it floated a SECOND hover popover under the Account row, stacked on
-  // rs-login-acct's (the user 2026-09-02, who saw two tooltips stacked; even empty it painted a box)
-  "<span id=rs-login-state class=rs-note style='margin-left:8px'></span>" +
-  '</div></span></div>' +
-  '<div class=rs-sec>Sessions</div>' +
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>" +
-  '<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>' +
-  "<div style='display:flex;gap:6px;margin-top:5px'>" +
-  "<input id=rs-defaultdir type=text spellcheck=false placeholder='install/serve default' style='flex:1 1 auto;min-width:0;box-sizing:border-box;background:var(--input-bg, #1e1e1e);color:var(--fg, #ccc);" +
-  "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'>" +
-  "<button id=rs-defaultdir-browse type=button style='flex:0 0 auto;cursor:pointer;background:var(--btn-bg, #2a2a2a);color:var(--fg, #ccc);border:1px solid var(--hairline, #3a3a3a);border-radius:5px;padding:3px 8px'>Browse…</button>" +
-  '</div></span></div>' +
-  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>" +
-  '<span class=rs-sub>What the + button uses for a NEW session. Claude Code runs the session through romp itself; Codex runs an OpenAI Codex agent (docs/codex.md).</span>' +
-  "<select id=rs-backend style='display:none'>" +
-  '<option value=sdk>Claude Code</option><option value=codex>Codex</option>' +
-  '</select></span></div>' +
-  "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
-  '<span><b>Auto Nudge</b><span class=rs-mixed id=rs-autonudge-split hidden></span>' +
-  '<span class=rs-sub id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
-  '</span></label>' +
-  "<label class='rs-row'><input type=checkbox id=rs-suggestcompact>" +
-  '<span><b>Suggest /compact</b><span class=rs-mixed hidden></span>' +
-  '<span class=rs-sub>When a session has been idle over an hour with a lot of context built up (first past 400k tokens, again past 800k), send it ONE suggestion to /compact at a natural boundary — its call, once per fill-up. Never sent to muted sessions or anything mid-turn. Off by default for a fresh install. Applies on every connected machine’s kernel.</span>' +
-  '</span></label>' +
-  "<label class='rs-row'><input type=checkbox id=rs-conserve>" +
-  '<span><b>Conserve memory</b><span class=rs-mixed hidden></span>' +
-  '<span class=rs-sub>Close the claude process of a session that has FADED (idle over an hour) and is on no open tab (each averages ~340MB). Everything persists — it revives on a tab click, a message, or a scheduled wake. An open tab always keeps its process; off = every session keeps its process for as long as it lives.</span>' +
-  '</span></label>' +
-  "<label class='rs-row'><input type=checkbox id=rs-thinksum>" +
-  '<span><b>Thinking summaries</b>' +
-  '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
-  '</span></label>' +
-  "<label class='rs-row'><input type=checkbox id=rs-fileedit>" +
-  '<span><b>File editing</b><span class=rs-mixed hidden></span>' +
-  '<span class=rs-sub>Let the file viewer’s Edit save straight to disk on the file’s machine. Off by default; the viewer asks the first time. A session working in the edited folder is told, and a save always refuses when the file changed underneath you. Applies on every connected machine’s kernel.</span>' +
-  '</span></label>' +
-  '<div class=rs-sec>Chat</div>' +
+  // THE TABS (T379, the user 2026-09-12): the settings grouped by the surface they belong to, six pills under the
+  // title in the menu vocabulary; every row keeps its id and its key. The tab-widgets gear on the chat strip opens the
+  // Chat tab scrolled to its Tab widgets section (openSettings(tab, section)); the last tab used is remembered per
+  // browser (romp:settingsTab). RS_TABS is the one list the pills, the panes and selectTab read.
+  '<div class=rs-tabs id=rs-tabs role=tablist>' + RS_TABS.map(function (t) { return '<button class=rs-tab type=button role=tab data-tab=' + t[0] + ' aria-selected=false>' + t[1] + '</button>'; }).join('') + '</div>' +
+  '<div class=rs-pane data-pane=chat hidden>' +
+  "<div class='rs-sec rs-sec-first'>Transcript</div>" +
   '<label class=rs-row><input type=checkbox id=rs-compact>' +
   '<span><b>Compact transcript</b>' +
   '<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>' +
@@ -126,17 +90,7 @@ var GEAR_HTML =
   '<span><b>Show git branch</b>' +
   "<span class=rs-sub>Show the session's git branch (when it's in a repo) in the chat bottom bar, beside the directory.</span>" +
   '</span></label>' +
-  '<label class=rs-row><input type=checkbox id=rs-striprows checked>' +
-  '<span><b>One tag group per row in the tab strip</b>' +
-  '<span class=rs-sub>With the tabs grouped by tag, each group starts on its own row with its tag at the left edge. Off, the groups follow one another across the strip and wrap as they need, so many tags do not mean many rows.</span>' +
-  '</span></label>' +
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Context gauge in tabs</b>" +
-  "<span class=rs-sub>A slim vertical bar beside each session's name in the tab strip, filling as its context fills — the same colors as the context battery, no number. By default it appears only once a session is half full, so quiet tabs stay clean.</span>" +
-  "<select id=rs-tabctx style='display:none'>" +
-  '<option value=over50>When above 50%</option><option value=always>Always</option><option value=never>Never</option>' +
-  '</select>' +
-  "<div id=rs-tabctx-pick style='position:relative;margin-top:5px'></div>" +
-  '</span></div>' +
+  "<div class='rs-sec'>Files</div>" +
   // where a file or folder clicked in the chat opens (render.ts openPath and openBrowse through file-route.ts):
   // the hidden select is
   // the value holder, selectPick below dresses it as a house menu like the other selects
@@ -159,6 +113,7 @@ var GEAR_HTML =
   '<span><b>Files control in the dashboard bar</b>' +
   '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links set to open in the Files pane then open over the pane you clicked.</span>' +
   '</span></label>' +
+  "<div class='rs-sec'>Text and comments</div>" +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Text scheme</b>" +
   "<span class=rs-sub>Chat text colors only. Each option previews its own tiers — prose, the dimmer tool text, code. (Solarized Light is omitted — its tiers are made for a light page and turn muddy here.)</span>" +
   "<div id=rs-chatscheme style='position:relative;margin-top:5px'></div>" +
@@ -169,6 +124,55 @@ var GEAR_HTML =
   "<label class='rs-row'><input type=checkbox id=rs-cmtfast>" +
   '<span><b>Fast comment threads</b><span class=rs-mixed hidden></span>' +
   "<span class=rs-sub>Start new comment threads in fast mode (Opus-only research preview). If the thread's model can't run it, the thread still opens on that model at normal speed, with a notice. Off = same as the session. Follows to every connected machine's kernel.</span>" +
+  '</span></label>' +
+  // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own): the strip's gear opens the
+  // panel here (data-section is the anchor showSection scrolls the card to), then the strip's own controls follow
+  "<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>" +
+  // the widget rows are built by initGear from the registry (tab-widgets.ts): a live demo, the name and what it does, the
+  // sliding switch and the widget's own options; every control built once and re-filled in place (click-safe)
+  '<div class=rs-hint>What a tab title carries, in this order. Each row shows the widget live.</div>' +
+  '<div id=rs-widgets class=rs-widgets></div>' +
+  "<div class='rs-sec'>Strip</div>" +
+  '<label class=rs-row><input type=checkbox id=rs-striprows checked>' +
+  '<span><b>One tag group per row in the tab strip</b>' +
+  '<span class=rs-sub>With the tabs grouped by tag, each group starts on its own row with its tag at the left edge. Off, the groups follow one another across the strip and wrap as they need, so many tags do not mean many rows.</span>' +
+  '</span></label>' +
+  '</div>' +
+  '<div class=rs-pane data-pane=feed hidden>' +
+  "<div class='rs-sec rs-sec-first'>Cards</div>" +
+  '<label class=rs-row><input type=checkbox id=rs-feedcollapsed>' +
+  '<span><b>Collapse cards by default</b>' +
+  '<span class=rs-sub>Every card arrives collapsed to its one-line gist; expanding one is a per-card override. Moved here from the feed footer — a set-and-forget default, not a per-glance action.</span>' +
+  '</span></label>' +
+  "<div class='rs-sec'>Judging bands</div>" +
+  '<div class=rs-judges>' +
+  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>' +
+  '<span><b>Show indexing judges</b>' +
+  "<span class=rs-sub>Debug view: draws the captioner + archiver on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
+  '</span></label>' +
+  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-triage>' +
+  '<span><b>Show triage judges</b>' +
+  "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
+  '</span></label>' +
+  '</div>' +
+  '</div>' +
+  '<div class=rs-pane data-pane=sessions hidden>' +
+  "<div class='rs-sec rs-sec-first'>New sessions</div>" +
+  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>" +
+  '<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>' +
+  "<div style='display:flex;gap:6px;margin-top:5px'>" +
+  "<input id=rs-defaultdir type=text spellcheck=false placeholder='install/serve default' style='flex:1 1 auto;min-width:0;box-sizing:border-box;background:var(--input-bg, #1e1e1e);color:var(--fg, #ccc);" +
+  "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'>" +
+  "<button id=rs-defaultdir-browse type=button style='flex:0 0 auto;cursor:pointer;background:var(--btn-bg, #2a2a2a);color:var(--fg, #ccc);border:1px solid var(--hairline, #3a3a3a);border-radius:5px;padding:3px 8px'>Browse…</button>" +
+  '</div></span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>" +
+  '<span class=rs-sub>What the + button uses for a NEW session. Claude Code runs the session through romp itself; Codex runs an OpenAI Codex agent (docs/codex.md).</span>' +
+  "<select id=rs-backend style='display:none'>" +
+  '<option value=sdk>Claude Code</option><option value=codex>Codex</option>' +
+  '</select></span></div>' +
+  "<label class='rs-row'><input type=checkbox id=rs-fileedit>" +
+  '<span><b>File editing</b><span class=rs-mixed hidden></span>' +
+  '<span class=rs-sub>Let the file viewer’s Edit save straight to disk on the file’s machine. Off by default; the viewer asks the first time. A session working in the edited folder is told, and a save always refuses when the file changed underneath you. Applies on every connected machine’s kernel.</span>' +
   '</span></label>' +
   // Panes (the user 2026-09-10): which optional panes this browser's dashboard shows at all. The chat is
   // required and not listed; the rows are Sessions, Outline and Feed (the rail's own words for the panes
@@ -197,25 +201,25 @@ var GEAR_HTML =
   '<span><b>Collapse idle gaps</b>' +
   '<span class=rs-sub>Squish long idle stretches (no work on any lane — e.g. overnight) into a thin break on the timeline, so the active periods get the width.</span>' +
   '</span></label>' +
-  '<div class=rs-sec>Feed</div>' +
-  '<label class=rs-row><input type=checkbox id=rs-feedcollapsed>' +
-  '<span><b>Collapse cards by default</b>' +
-  '<span class=rs-sub>Every card arrives collapsed to its one-line gist; expanding one is a per-card override. Moved here from the feed footer — a set-and-forget default, not a per-glance action.</span>' +
+  '</div>' +
+  '<div class=rs-pane data-pane=automatic hidden>' +
+  "<div class='rs-sec rs-sec-first'>Sessions</div>" +
+  "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
+  '<span><b>Auto Nudge</b><span class=rs-mixed id=rs-autonudge-split hidden></span>' +
+  '<span class=rs-sub id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
   '</span></label>' +
-  '<div class=rs-sec>Appearance</div>' +   // renamed from Colors (2026-08-28): it owns the overall theme now, not just tints
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Theme</b>" +
-  "<span class=rs-sub>The dashboard's overall look, every pane. Classic and Yatharth are dark (they differ in the tab strip: original high-contrast vs the contributed flat-wash); Yatharth light is the warm light theme — inside VS Code it wins over the editor theme, deliberately.</span>" +
-  "<div id=rs-theme style='position:relative;margin-top:5px'></div>" +
-  '</span></div>' +
-  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>" +
-  '<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>' +
-  "<div id=rs-cmap><button id=rs-cmap-btn type=button aria-label='Pick the recency colormap'></button>" +
-  '<div id=rs-cmap-list hidden></div></div></span></div>' +
-  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>" +
-  '<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>' +
-  "<div id=rs-pal><button id=rs-pal-btn type=button aria-label='Pick the session palette'></button>" +
-  '<div id=rs-pal-list hidden></div></div></span></div>' +
-  '<div class=rs-sec>Keyboard shortcuts</div>' + SHORTCUT_ROWS +
+  "<label class='rs-row'><input type=checkbox id=rs-suggestcompact>" +
+  '<span><b>Suggest /compact</b><span class=rs-mixed hidden></span>' +
+  '<span class=rs-sub>When a session has been idle over an hour with a lot of context built up (first past 400k tokens, again past 800k), send it ONE suggestion to /compact at a natural boundary — its call, once per fill-up. Never sent to muted sessions or anything mid-turn. Off by default for a fresh install. Applies on every connected machine’s kernel.</span>' +
+  '</span></label>' +
+  "<label class='rs-row'><input type=checkbox id=rs-conserve>" +
+  '<span><b>Conserve memory</b><span class=rs-mixed hidden></span>' +
+  '<span class=rs-sub>Close the claude process of a session that has FADED (idle over an hour) and is on no open tab (each averages ~340MB). Everything persists — it revives on a tab click, a message, or a scheduled wake. An open tab always keeps its process; off = every session keeps its process for as long as it lives.</span>' +
+  '</span></label>' +
+  "<label class='rs-row'><input type=checkbox id=rs-thinksum>" +
+  '<span><b>Thinking summaries</b>' +
+  '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
+  '</span></label>' +
   '<div class=rs-sec>Judges</div>' +
   "<div class='rs-row rs-jrow'><b>Triage model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model the triage judges use — planner, grouper, closer, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart. A pick here follows to every connected machine's kernel.</span><select id=rs-judgemodel></select>" +
   // Fast mode sits with the model (the user 2026-09-10, who wanted the setting to speak the chat's own words
@@ -233,6 +237,35 @@ var GEAR_HTML =
   "<span class=rs-sub id=rs-indexfast-sub>" + JUDGEFAST_SUB + "</span></label></div>" +
   "<div class='rs-row rs-jrow'><b>Indexing effort <span class=rs-mixed hidden></span></b><span class=rs-sub>Thinking effort for the indexing judges. Default keeps this high-volume work cheap: effort low on models with adaptive thinking (Fable, Opus 4.6 and later, Sonnet 4.6 and later); Haiku, Sonnet 4.5 and Opus 4.5 have none, so they run with thinking off and no flag. Follows to every connected machine's kernel.</span><select id=rs-indexeffort></select></div>" +
   "<div class='rs-row rs-jrow'><b>Judge concurrency <span class=rs-mixed hidden></span></b><span class=rs-sub>How many judge calls run at once, across every tier. Default is 6, or the ROMP_JUDGE_CONCURRENCY the kernel's service environment sets. Applies on the judges' next pass; no restart. Follows to every connected machine's kernel.</span><select id=rs-judgeconc></select></div>" +
+  '</div>' +
+  '<div class=rs-pane data-pane=appearance hidden>' +
+  "<div class='rs-sec rs-sec-first'>Appearance</div>" +   // renamed from Colors (2026-08-28): it owns the overall theme now, not just tints
+  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Theme</b>" +
+  "<span class=rs-sub>The dashboard's overall look, every pane. Classic and Yatharth are dark (they differ in the tab strip: original high-contrast vs the contributed flat-wash); Yatharth light is the warm light theme — inside VS Code it wins over the editor theme, deliberately.</span>" +
+  "<div id=rs-theme style='position:relative;margin-top:5px'></div>" +
+  '</span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>" +
+  '<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>' +
+  "<div id=rs-cmap><button id=rs-cmap-btn type=button aria-label='Pick the recency colormap'></button>" +
+  '<div id=rs-cmap-list hidden></div></div></span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>" +
+  '<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>' +
+  "<div id=rs-pal><button id=rs-pal-btn type=button aria-label='Pick the session palette'></button>" +
+  '<div id=rs-pal-list hidden></div></div></span></div>' +
+  '</div>' +
+  '<div class=rs-pane data-pane=system hidden>' +
+  "<div class='rs-sec rs-sec-first'>Account</div>" +
+  "<div class='rs-row' id=rs-billing style='cursor:default'>" +
+  '<span style="flex:1 1 auto"><b>Claude login</b>' +
+  '<span class=rs-sub id=rs-login-acct>…</span>' +
+  "<div id=rs-login-flow style='margin-top:6px'>" +
+  "<button id=rs-login-btn type=button style='cursor:pointer;background:var(--btn-bg, #2a2a2a);color:var(--fg, #ccc);border:1px solid var(--hairline, #3a3a3a);border-radius:5px;padding:3px 10px'>Log in to Claude Code</button>" +
+  // rs-note, NOT rs-sub: this is a live inline status ("starting the login flow…"), not the row's
+  // description — as an rs-sub it floated a SECOND hover popover under the Account row, stacked on
+  // rs-login-acct's (the user 2026-09-02, who saw two tooltips stacked; even empty it painted a box)
+  "<span id=rs-login-state class=rs-note style='margin-left:8px'></span>" +
+  '</div></span></div>' +
+  '<div class=rs-sec>Keyboard shortcuts</div>' + SHORTCUT_ROWS +
   '<div class=rs-sec>Updates & debug</div>' +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Automatic updates <span class=rs-mixed hidden></span></b>" +
   '<span class=rs-sub>romp watches for new tagged releases (every 6 hours) AND new commits on main (origin polled every few minutes, plus a restart offer when updated code sits on disk unbooted) — one banner covers both, and acting on it converges every attached machine. Check and ask (the default) offers the banner with an Update button; Install automatically converges by itself: a change to kernel code restarts it at once (turns in flight are cut and resume with their history); anything else (the UI, the docs, the postal bus) converges in place with the kernel left up; Off never checks. Kernel-side setting.</span>' +
@@ -240,21 +273,11 @@ var GEAR_HTML =
   '<option value=ask>Check and ask</option><option value=auto>Install automatically</option><option value=off>Off</option>' +
   '</select></span></div>' +
   
-  '<div class=rs-judges>' +
-  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>' +
-  '<span><b>Show indexing judges</b>' +
-  "<span class=rs-sub>Debug view: draws the captioner + archiver on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
-  '</span></label>' +
-  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-triage>' +
-  '<span><b>Show triage judges</b>' +
-  "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
-  '</span></label>' +
-  '</div>' +
   "<div class=rs-sep style='padding-top:8px'>" +
   '<button id=ra-open class=ra-openbtn>Token usage analytics</button>' +
   '<button id=rs-log-open class=ra-openbtn hidden>Open log<span class=rs-log-n hidden></span></button></div>' +   // T290: the Log moved here from the bottom bar (web shell only); the span is the unread count
   "<div class='rs-h rs-sep'>romp · version</div>" +
-  '<div id=rsver>…</div></div></div>' +
+  '<div id=rsver>…</div></div></div></div>' +
   '<div id=rs-login-modal hidden>' +
   '<div class=rs-login-card>' +
   "<div class=rs-h style='margin-bottom:4px'>Log in to Claude Code</div>" +
@@ -302,7 +325,7 @@ function initGear(post, opts) {
     cvm = document.getElementById('rs-conserve'),
     csg = document.getElementById('rs-suggestcompact'),
     dd = document.getElementById('rs-defaultdir'), gb = document.getElementById('rs-branch'), sbg = document.getElementById('rs-badge'),
-    tc = document.getElementById('rs-tabctx'), fl = document.getElementById('rs-filelink'), fsc = document.getElementById('rs-filesctl'),
+    fl = document.getElementById('rs-filelink'), fsc = document.getElementById('rs-filesctl'),
     sr = document.getElementById('rs-striprows'),
     dn = document.getElementById('rs-dense'),
     cs = document.getElementById('rs-chatscheme'),
@@ -321,6 +344,10 @@ function initGear(post, opts) {
     pn = { timeline: document.getElementById('rs-pane-timeline'), fleet: document.getElementById('rs-pane-fleet'), feed: document.getElementById('rs-pane-feed') },
     ths = document.getElementById('rs-thinksum'),
     ans = document.getElementById('rs-autonudge-split'), asub = document.getElementById('rs-autonudge-sub');
+  // No default for tabWidgets (round one, HIGH): an injected empty object won over a pre-widgets store's tabCtx, so the
+  // Context bar read as on at 50 percent whatever the user had chosen, and a save of ANY setting wrote the empty prefs and
+  // rewrote the mirror. A store with no tabWidgets derives the prefs from tabCtx at read time (widgetPrefs, the same
+  // derivation settings.ts makes), and only a widget change writes the key (saveWidgets).
   function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
@@ -345,7 +372,6 @@ function initGear(post, opts) {
   if (sr) sr.addEventListener('change', function () { var s = load(); s.stripGroupRows = sr.checked; save(s); });
   // compact tabs and agents (off by default): render.ts applies a body class on the save, and the strip and the panel repaint through the cascade
   if (dn) dn.addEventListener('change', function () { var s = load(); s.denseChrome = dn.checked; save(s); });
-  if (tc) tc.addEventListener('change', function () { var s = load(); s.tabCtx = tc.value; save(s); });
   if (fl) fl.addEventListener('change', function () { var s = load(); s.fileLinkPane = fl.value; save(s); });   // webview-local pref read at click time (render.ts openPath)
   if (fsc) fsc.addEventListener('change', function () { var s = load(); s.showFilesControl = fsc.checked; save(s); });   // the shell hears the store change (its storage listener) and hides or shows the control (T317)
   // the optional panes: the whole set is rewritten from the three boxes on every change (a missing key reads
@@ -475,28 +501,88 @@ function initGear(post, opts) {
     ttDrop(THEMES, themeOf(load()));
   }
   ttPaint();
-  // The Context-gauge picker joins the same builder (the user 2026-08-27, approving the flagged
-  // migration: one menu vocabulary across the whole panel — the native select stuck out beside
-  // the two house menus). Plain-text options, so the rows are just labels; the HIDDEN select
-  // stays the VALUE holder (the versionMenu pattern): fill()/openSettings keep writing tc.value,
-  // and the pick fires the select's own change event so persistence is the existing handler.
-  var TABCTX = [
-    { id: 'over50', name: 'When above 50%' },
-    { id: 'always', name: 'Always' },
-    { id: 'never', name: 'Never' }
-  ];
-  function tabCtxRowHTML(o) {
-    return '<span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--menu-fg, #ccc)">' + o.name + '</span>';
+  // (the Context gauge picker moved onto the Context bar widget's row in the Chat tab's Tab widgets section, T379: tcPaint below is its stand-in)
+  function tcPaint() {}
+  // ── THE TABS (T379) ── six pills, one pane each; selectTab shows one pane and remembers it per browser
+  var TAB_KEY = 'romp:settingsTab';
+  function knownTab(t) { return RS_TABS.some(function (x) { return x[0] === t; }) ? t : null; }
+  function selectTab(t) {
+    t = knownTab(t) || knownTab((function () { try { return localStorage.getItem(TAB_KEY); } catch (e) { return null; } })()) || 'chat';
+    Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { var on = b.getAttribute('data-tab') === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
+    Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-pane'), function (pn) { pn.hidden = pn.getAttribute('data-pane') !== t; });
+    try { localStorage.setItem(TAB_KEY, t); } catch (e) {}
+    return t;
   }
-  var tcDrop = housePick(document.getElementById('rs-tabctx-pick'), 'tabctx', tabCtxRowHTML, function (id) {
-    if (tc) { tc.value = id; tc.dispatchEvent(new Event('change')); }
-    tcPaint();
-  });
-  function tcPaint() {
-    if (!tcDrop) return;
-    tcDrop(TABCTX, tc ? tc.value : 'over50');
+  Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); selectTab(b.getAttribute('data-tab')); }); });
+  // a SECTION of the tab (the user 2026-09-12): an ask may name a section of the tab it opens (data-section on the section's
+  // head; the strip's tab-widgets gear asks for chat / tabwidgets), and the card scrolls so that head sits at its top, under
+  // the padding. Looked up in the SHOWN pane only, after the panel is displayed (rects exist only then). Set on the card,
+  // the modal's one scroll box, never scrollIntoView, which would scroll the host document too.
+  function showSection(section) {
+    if (typeof section !== 'string' || !section) return;
+    var sec = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="' + section + '"]');
+    var card = document.querySelector('#rsettings .rs-card');
+    if (!sec || !card) return;
+    var go = function () { card.scrollTop = card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - (parseFloat(getComputedStyle(card).paddingTop) || 0); };
+    if (card.clientHeight > 0) { go(); return; }   // laid out already: an open panel, or a host that never hides this document
+    // Not laid out yet: in the shell this document sits in an iframe that is display:none until the shell hears the
+    // settings-open message feedFull just posted, and a scroll set on a box with no size clamps to zero (the served lab
+    // measured 0 on the first open). The card gaining a size IS the event that says the panel is visible, so the
+    // scroll rides it, once. No timer: a frame or a delay would guess at the shell's round trip.
+    if (typeof ResizeObserver !== 'function') return;
+    var ro = new ResizeObserver(function () { if (card.clientHeight > 0) { ro.disconnect(); go(); } });
+    ro.observe(card);
   }
-  tcPaint();
+  // ── THE WIDGET ROWS (T379) ── one per registered widget: the live demo (a miniature tab rendering the widget over a
+  // synthetic status through the SAME render the strip uses), the name and what it does, the sliding switch, and the
+  // widget's own options as house pickers. Built once; every paint re-fills in place (click-safe). A change writes
+  // settings.tabWidgets and the tabCtx mirror through save(), and the strip repaints on the romp:settings signal.
+  var wHost = document.getElementById('rs-widgets');
+  var wRows = {};
+  function widgetPrefs(s) { return TW.tabWidgetPrefs(s.tabWidgets, s.tabCtx); }
+  function saveWidgets(prefs) { var s = load(); s.tabWidgets = prefs; s.tabCtx = TW.tabCtxOfPrefs(prefs); save(s); paintWidgets(); }
+  function widgetOptRowHTML(o) { return '<span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--menu-fg, #ccc)">' + o.name + '</span>'; }
+  function buildWidgets() {
+    if (!wHost || wHost.children.length) return;
+    TW.tabWidgets().forEach(function (w) {
+      var row = document.createElement('div'); row.className = 'rs-widget'; row.setAttribute('data-widget', w.id);
+      var demo = document.createElement('span'); demo.className = 'rs-widget-demo';
+      var name = document.createElement('span'); name.className = 'rs-widget-name';
+      var b = document.createElement('b'); b.textContent = w.label; name.appendChild(b);
+      var d = document.createElement('span'); d.className = 'rs-sub'; d.textContent = w.description; name.appendChild(d);   // the panel's idiom: the description is the row's hover popover
+      var sw = document.createElement('button'); sw.type = 'button'; sw.className = 'rs-switch'; sw.setAttribute('role', 'switch'); sw.setAttribute('aria-label', w.label);
+      sw.addEventListener('click', function (e) { e.stopPropagation(); var prefs = widgetPrefs(load()); prefs.on[w.id] = !TW.widgetOn(prefs, w); saveWidgets(prefs); });
+      var opts = document.createElement('span'); opts.className = 'rs-widget-opts';
+      var paints = [];
+      (w.options || []).forEach(function (o) {
+        var wrap = document.createElement('span'); wrap.className = 'rs-widget-opt'; wrap.style.position = 'relative'; wrap.setAttribute('data-opt', o.key); wrap.title = o.label;
+        opts.appendChild(wrap);
+        var drop = housePick(wrap, 'wopt-' + w.id + '-' + o.key, widgetOptRowHTML, function (id) { var prefs = widgetPrefs(load()); prefs.opts[w.id] = prefs.opts[w.id] || {}; prefs.opts[w.id][o.key] = id; saveWidgets(prefs); });
+        paints.push(function (prefs) { if (drop) drop(o.choices.map(function (c) { return { id: c.value, name: c.label }; }), TW.widgetOpts(prefs, w)[o.key]); });
+      });
+      row.appendChild(demo); row.appendChild(name); row.appendChild(sw); row.appendChild(opts);
+      wHost.appendChild(row);
+      wRows[w.id] = { row: row, demo: demo, sw: sw, paints: paints };
+    });
+  }
+  function paintWidgets() {
+    buildWidgets();
+    var prefs = widgetPrefs(load());
+    TW.tabWidgets().forEach(function (w) {
+      var r = wRows[w.id]; if (!r) return;
+      var on = TW.widgetOn(prefs, w);
+      r.sw.classList.toggle('on', on); r.sw.setAttribute('aria-checked', on ? 'true' : 'false');
+      r.row.classList.toggle('rs-widget-off', !on);
+      // the demo: a miniature tab, the widget's node where the strip would put it (before the name or after it)
+      var tab = document.createElement('span'); tab.className = 'tab';
+      var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web';
+      var node = TW.renderWidgetDemo(w, prefs);
+      if (w.slot === 'before') { if (node) tab.appendChild(node); tab.appendChild(label); }
+      else { tab.appendChild(label); if (node) tab.appendChild(node); }
+      r.demo.replaceChildren(tab);
+      r.paints.forEach(function (fn) { fn(prefs); });
+    });
+  }
   // The remaining native selects sweep onto the same builder (the user 2026-08-27, closing the
   // 3-house/3-native split the gauge migration left): a generic adapter over ANY hidden select —
   // options snapshot from sel.options (so the effort selects, whose options arrive from /models
@@ -1306,15 +1392,17 @@ function initGear(post, opts) {
       clearPaneVars();
       window.removeEventListener('resize', onRsResize); } }
   function closeSettings() { p.hidden = true; setModalCls(false); feedFull(false); }
-  function openSettings() { if (!p.hidden) { closeSettings(); return; }   // the opener toggles the modal
+  function openSettings(tab, section) {
+    if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); showSection(section); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)
+    selectTab(tab);
     // Signal the SHELL first, then measure (the picker's order, adopted 2026-08-09): feedFull posts
     // settings-open, which is what un-hides #feed-pane when the feed is toggled off — measuring first
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fl) fl.value = s.fileLinkPane === 'pane' ? 'pane' : 'chat'; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); if (tc) tc.value = tabCtxMode(s.tabCtx); tcPaint(); csPaint(); ttPaint(); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fl) fl.value = s.fileLinkPane === 'pane' ? 'pane' : 'chat'; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); showSection(section); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
-  window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(); });
+  window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin
   // document and calls this synchronously): close the modal and say so, unless one of its own dialogs is up
   // (the login card, an open house dropdown), which the document's own Escape handlers close one level at a

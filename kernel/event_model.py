@@ -744,9 +744,32 @@ _READ_BYTES = {}                  # path -> bytes this process read from it thro
 _READ_BYTES_LOCK = threading.Lock()
 
 
+_READ_BYTES_TOTAL = [0]           # the reader's bytes off disk since the process began, one integer (T397: a stage mark)
+_THREAD_BYTES = threading.local()  # the same, per THREAD (`read`, `hydrated`): the pusher's stage split reads its own thread's
+
+
 def _count_read(path, n):
     with _READ_BYTES_LOCK:
         _READ_BYTES[path] = _READ_BYTES.get(path, 0) + int(n)
+        _READ_BYTES_TOTAL[0] += int(n)
+    _THREAD_BYTES.read = getattr(_THREAD_BYTES, "read", 0) + int(n)
+
+
+def read_bytes_total():
+    """What the reader pulled off disk since the process began, as one number (the per-path table is read_bytes_report)."""
+    with _READ_BYTES_LOCK:
+        return _READ_BYTES_TOTAL[0]
+
+
+def thread_read_bytes():
+    """What the reader pulled off disk on the CALLING thread since it began (T397 round one, low 2: a stage's bytes are the
+    pusher's own, not the judges' first pass or a boot warm reading through the same window)."""
+    return getattr(_THREAD_BYTES, "read", 0)
+
+
+def thread_hydrated_bytes():
+    """The assembly cut's hydrated bytes on the CALLING thread since it began (the process total is asmCheckpoint.hydratedBytes)."""
+    return getattr(_THREAD_BYTES, "hydrated", 0)
 
 
 def read_bytes_report():
@@ -1560,6 +1583,7 @@ def checkpoint_stats():
         out["oversizeFolds"] = dict(_CKPT_STATS["oversizeFolds"]); out["coldFolds"] = dict(_CKPT_STATS["coldFolds"])
         out["coldWrites"] = dict(_CKPT_STATS["coldWrites"]); out["converge"] = dict(_CKPT_STATS["converge"])
         out["refolds"] = {k: dict(v) for k, v in _CKPT_STATS["refolds"].items()}
+        out["rewoundMemo"] = dict(_REWOUND_STATS)
     d = _ckpt_dir()
     with _READ_BYTES_LOCK:
         out["documentBytes"] = sum(n for p_, n in _READ_BYTES.items() if d is not None and p_.startswith(str(d) + os.sep))
@@ -1595,16 +1619,17 @@ def _scan_jsonl_bytes(data, base_offset, offsets=None):
     return records, base_offset + end + 1
 
 
-def record_offsets(path, base):
-    """[(byte offset, byte length)] of the reader entry's held records for `path`, record `base` first (the entry's
-    base): the assembly checkpoint's record locations. None when the reader holds no entry or its base is later."""
+def _entry_offsets_gen(path):
+    """(record offsets from record 0, generation) of the reader's entry for `path` from ONE entry tuple under one lock
+    acquisition, or (None, None) with no entry or a tail entry: what the assembly writer compares its adapter's source
+    key against before trusting the entry's offsets for the records the adapter read (T396 round one, low 2: the
+    _asm_gates pattern, never two reads of the cache that could see two entries)."""
     with _JSONL_CACHE_LOCK:
         ent = _JSONL_CACHE.get(str(path))
-    if ent is None or len(ent) < 8 or ent[5] > base:
-        return None
+    if ent is None or len(ent) < 8 or ent[5] > 0:
+        return None, None
     offs = ent[7]
-    start = (base - ent[5]) * 2
-    return [(offs[i], offs[i + 1]) for i in range(start, len(offs), 2)]
+    return [(offs[i], offs[i + 1]) for i in range(0, len(offs), 2)], ent[6]
 
 
 def _read_jsonl_incremental(path, on_fail=None):
@@ -2476,6 +2501,8 @@ class FileAdapter:
         # sibling file happens to sort after it
         files = [f for f in candidate_files if Path(f).stem != leaf_stem] + [Path(leaf_path)]
         self._src_keys = {}      # path -> the reader's (gen, base, count) the records came from (the fold's identity gate)
+        self._src_stat = {}      # path -> the (size, mtime) of the file AS READ for those records: the witness a document row
+        #                          carries for a file wholly before the cut, never the write-time stat (T396 round one)
         if seed is not None:
             self._seq = int(seed["seq_base"])
             self.prompt_ids |= seed["prompt_ids"]; self.boundary_pids |= seed["boundary_pids"]
@@ -2490,6 +2517,9 @@ class FileAdapter:
             if cut == "skip":                                   #  a file wholly before the cut (a fork's prior file, immutable)
                 self._src[str(fp)] = []
                 self._src_keys[str(fp)] = ("skip",)
+                st_skip = (seed or {}).get("stat", {}).get(fsid)   # the document's verified witness for it (the load checked it)
+                if st_skip is not None:
+                    self._src_stat[str(fp)] = tuple(st_skip)
                 continue
             if cut is not None:
                 ent = _read_jsonl_entry(fp, tail_ok=True, tail_from=tuple(cut))
@@ -2498,6 +2528,8 @@ class FileAdapter:
             recs = ent[4] if ent is not None else []
             self._src[str(fp)] = recs
             self._src_keys[str(fp)] = (ent[6], ent[5], ent[5] + len(recs)) if ent is not None else (None, 0, 0)
+            if ent is not None:
+                self._src_stat[str(fp)] = (ent[1], ent[0])    # the reader's (size, mtime) for this very read
             if cut is not None and ent is not None and ent[5] < cut[1]:
                 recs = recs[cut[1] - ent[5]:]            # the entry holds records before the cut (a whole reader came
             #                                              first): the seed stands for those, ingest from the cut on
@@ -4245,6 +4277,87 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
     return {u for u, v in verdicts.items() if v == "rewind"}
 
 
+_REWOUND_CACHE = {}               # path -> (count, gen, {"uuids": [...]}): file_rewound's verdict set over a FROZEN file, a registered
+#                                   fold (T391) the fold document carries and restores, so a dead episode file is read whole once
+_REWOUND_STATS = {"served": 0, "walked": 0, "stale": 0, "fallback": 0}   # the memo's answers, the walks it took, the memos an
+#                                   append or rewrite retired, and the walks whose memo could not be read or stored
+
+
+def _rewound_walk(path):
+    """The plain one-file walk `rewound_uuids` memoizes: file_rewound's road without a rompuuid, returning the verdict set and
+    the reader's (gen, base, count) the adapter's records came from (FileAdapter._src_keys), the witness the memo is stored at.
+    Its own, never re-fetched from the cache after the walk: an append and a refresh between the two would memoize pre-append
+    verdicts at the post-append witness (T391 round one, low 1)."""
+    key = str(path)
+    ad = FileAdapter([key], key)
+    if not ad.by_uuid and Path(path).stat().st_size > 0:
+        raise OSError("transcript read yielded no records")
+    verdicts = dict(ad.chain_verdicts())
+    return {u for u, v in verdicts.items() if v == "rewind"}, ad._src_keys.get(key, (None, 0, 0))
+
+
+def rewound_uuids(path, drop=True):
+    """`file_rewound(path)` for a file with no rompuuid road (a dead episode's transcript in a lineage, walked by the judges'
+    incident scan), memoized per FROZEN file as the fold `rewoundUuids` of its fold document (T391): the memo rides the
+    existing document, its witness (size, mtime, the cut's guard), its restore, its fold state cap and its counted fallbacks,
+    and the quiescence drop writes it from the walk's own read, so the file is read whole once and not at the next process.
+    fold_records consults it: a hit or a restore at the witness answers with no read; a file that grew or was rewritten steps
+    a `step` that retires the state (None), so the walk runs again and the memo is rewritten; an over-cap set is recorded as
+    such and walked again next time. The leaf road with a rompuuid never comes here.
+
+    `drop`: whether the walk's entry leaves the reader's cache after the memo is stored (the quiescence drop, when the file
+    has been idle past its window). True for a dead episode's file, which nothing else reads; False for a file of a LIVE
+    session's lineage (its /clear anchor, T391 round one, medium): the chain walk reads that file whole first at every pass,
+    and a memo that popped the entry made the next pass's chain walk read it whole again, every pass, while the memo itself
+    found its cursor at a moved generation and walked. Resident, the anchor is read once per process and the memo's cursor
+    stays at the generation the chain walk's entry holds, so the scan reads nothing at all.
+
+    The counters (checkpoints.rewoundMemo): `served`, a memo answered in memory or from the document at the witness; `walked`,
+    every walk; `stale`, the walks over a memo the file's growth or rewrite retired (an in-process cursor stepped past by an
+    append, a document cursor restored and stepped past, a refold whose count moved); a walk over an unchanged file whose entry
+    left memory and came back under a fresh generation is walked, not stale (round one, low 2); `fallback`, a document state of
+    the wrong shape (walked, never trusted) or a walk whose reader entry was gone before the memo could be stored (round one,
+    low 3), both counted so a memo that never takes is visible on /perf."""
+    key = str(path)
+    had = _REWOUND_CACHE.get(key)
+    kinds = []
+    state = fold_records(_REWOUND_CACHE, key, lambda: None, lambda st, o: None, on=kinds.append, ckpt="rewoundUuids")
+    if isinstance(state, dict) and isinstance(state.get("uuids"), list):
+        with _CKPT_LOCK:
+            _REWOUND_STATS["served"] += 1
+        return set(state["uuids"])
+    if state is not None:                                 # a state that is not the memo's shape: never trusted, counted, walked
+        with _CKPT_LOCK:
+            _REWOUND_STATS["fallback"] += 1
+        _REWOUND_CACHE.pop(key, None)
+    out, (gen, base, count) = _rewound_walk(path)         # the walk (a whole read of a frozen file: the record cache holds it)
+    kind = kinds[0] if kinds else None
+    with _CKPT_LOCK:
+        _REWOUND_STATS["walked"] += 1
+        if kind in ("append", "restore") or (kind == "refold" and had is not None and had[0] != count):
+            _REWOUND_STATS["stale"] += 1                  # a memo stood and the file moved under it
+    if gen is None:                                       # no reader entry for the walk's records: nothing to store the memo at
+        with _CKPT_LOCK:
+            _REWOUND_STATS["fallback"] += 1
+        return out
+    _REWOUND_CACHE[key] = (count, gen, {"uuids": sorted(out)})   # the memo at the walk's own witness, dirty
+    with _CKPT_LOCK:
+        _FOLD_DIRTY.add(key)
+    if drop and checkpoint_drop_writes_on():              # the quiescence drop over this frozen file writes the document from the
+        with _JSONL_CACHE_LOCK:                           #  walk's own read and lets the records go (T362's drop, its budget and its
+            ent = _JSONL_CACHE.get(key)                   #  deferral); a file still changing keeps its entry and is written at its
+        if ent is not None and ent[6] == gen:             #  settle; only the very entry the walk read is dropped. With the drop's
+            _drop_quiescent_entry(key, ent, pop=True)     #  document write OFF (a cycle cap of 0) the entry stays resident: the memo
+    #                                                        could not reach the disk, and a drop then made the file a whole read at
+    #                                                        every pass where the old road read it once per process (round two, low 1)
+    return out
+
+
+def rewound_memo_stats():
+    with _CKPT_LOCK:
+        return dict(_REWOUND_STATS)
+
+
 def _membership_of(adapter):
     """The five-way membership dict from an adapter's walk; a seeded adapter's pre-cut verdicts join its own."""
     active = adapter.active_path()
@@ -4906,6 +5019,14 @@ _HYDRATED_CAP = _env_or("ROMP_HYDRATED_CAP_MB", max(1024 ** 3, _machine_memory_b
 _LAZY_KINDS = ("a", "u", "c", "o", "k", "b")   # atom kinds whose message is lazy; boundary and refusal atoms carry no message
 
 
+def asm_document_stands(leaf_path):
+    """Whether an assembly document file exists for `leaf_path` (a stat, no read; False with no checkpoint directory): the
+    judges' incident scan asks before taking the leaf road, whose seeded walk needs the document, and takes the memo road
+    for a leaf that has none (a leaf with no compaction boundary can never have one, and was read whole at every boot)."""
+    cp = _asm_ckpt_file(leaf_path)
+    return cp is not None and cp.exists()
+
+
 def _asm_ckpt_file(leaf_path):
     d = _ckpt_dir()
     if d is None:
@@ -5156,15 +5277,39 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             except OSError:
                 return skip("stat")
             pre_n = max(0, min(len(recs), cut_seq - first_seq[fp]))   # records of this file before the cut
-            offs = record_offsets(fp, 0)
-            if offs is None or len(offs) != len(recs):
+            is_leaf = Path(fp).stem == Path(leaf_path).stem
+            offs, ent_gen = _entry_offsets_gen(fp)
+            # The reader's entry may hold MORE records than the tree's adapter read: a live LEAF grows between the settle's
+            # parse and this write (the CLI appends while the settle runs), and the reader extends its entry by a new list
+            # whose prefix is the very records the adapter holds, under the same generation. The document's pre-cut part
+            # is that prefix, so the prefix's offsets stand for the leaf; a shorter entry, or one under another generation
+            # (a rewrite, a refold from zero), does not (T396: a continuously active 120 MB session never got a document
+            # while its kernel lived, since every settle's write met an entry one record longer than its tree, and every
+            # boot read it whole through whichever reader came first). A LINEAGE file longer than the tree still skips
+            # (round one, medium): its row would be a skip row proven by a stat alone, and a prior file that gained a record
+            # after the parse (its own session resumed elsewhere, the case _asm_gates demotes as nonleaf) would be stamped
+            # as wholly before the cut with the appended record missing from every restore of this leaf's kernel life.
+            src_gen, src_base = ((getattr(ad, "_src_keys", {}) or {}).get(fp, (None, None)) + (None, None))[:2]
+            # The prefix is accepted for the leaf under the tree's own generation AND from base zero: a seeded adapter that
+            # read the file from its cut (a degenerate document whose pre-cut part holds records but no atoms restores unseen
+            # as restored) holds records the entry's prefix does not begin with, so a whole reader upgrading the entry to
+            # base zero under the same generation must not lend it that prefix (round two, low 1).
+            if offs is None or len(offs) < len(recs) or (len(offs) > len(recs) and not (is_leaf and src_gen == ent_gen and src_base == 0)):
                 return skip("offsets")
-            file_offs[fp] = offs
+            offs = offs[:len(recs)]                       # defensive: no row index below passes len(recs), so the extra
+            file_offs[fp] = offs                          #  offsets of a grown entry are never read (round one, low 3)
             pre_uuids = [r.get("uuid") for r in recs[:pre_n] if r.get("uuid")]
             f = {"path": fp, "size": st_.st_size, "mtime": st_.st_mtime, "pre": pre_n, "n": len(recs),
                  "first": pre_uuids[0] if pre_uuids else None, "last": pre_uuids[-1] if pre_uuids else None}
-            if pre_n >= len(recs) and Path(fp).stem != Path(leaf_path).stem:
+            if pre_n >= len(recs) and not is_leaf:
                 f["skip"] = True                          # wholly before the cut: never read at restore, stat is its proof
+                st_read = (getattr(ad, "_src_stat", {}) or {}).get(fp)
+                if st_read is None:
+                    return skip("stat")                   # no witness for the records the tree was parsed from: no row
+                f["size"], f["mtime"] = int(st_read[0]), float(st_read[1])   # the stat AS READ, never the write-time one: a
+                #                                            record appended to the prior file between the parse and this write
+                #                                            must fail the next boot's verification, not be stamped away (round
+                #                                            one, medium, the half that needed no reader in between)
             else:
                 cut_off = offs[pre_n][0] if pre_n < len(recs) else st_.st_size
                 try:
@@ -5647,6 +5792,8 @@ def _seed_from_doc(doc):
             landed.add(u)
     for fsid, f in doc["files"].items():
         seed["cuts"][fsid] = "skip" if f.get("skip") else (int(f["cut"][0]), int(f["cut"][1]), bytes.fromhex(f["cut"][2]))
+        if f.get("skip"):
+            seed.setdefault("stat", {})[fsid] = (int(f["size"]), float(f["mtime"]))   # the witness a rewrite carries forward
     return seed, landed
 
 
@@ -5845,6 +5992,7 @@ def hydrate(atoms, rompuuid=None, by=None):
                     raise LazyBodyRead("atom %s: the record at its offset is %s" % (a.get("uuid"), rec.get("uuid")))
                 with _ASM_CKPT_LOCK:
                     _ASM_CKPT_STATS["hydratedBytes"] += ln; _ASM_CKPT_STATS["hydratedAtoms"] += 1
+                    _THREAD_BYTES.hydrated = getattr(_THREAD_BYTES, "hydrated", 0) + ln   # this thread's share (T397)
                     _ASM_CKPT_STATS["hydratedBy"][by] = _ASM_CKPT_STATS["hydratedBy"].get(by, 0) + ln
                     if a.get("uuid"):
                         _HYDRATED[a["uuid"]] = (rec, ln); _HYDRATED_BYTES[0] += ln

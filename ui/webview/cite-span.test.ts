@@ -16,9 +16,15 @@ const CSS = fs.readFileSync(path.join(UI, "styles.css"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const JUDGE = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "judge.py"), "utf8");
 
-test("the span rides the payload only while the cited atom IS the landing", () => {
-  assert.match(KERNEL, /"summaryAnchorQuote": \(nodes\[nid\]\.get\("summaryQuote"\)\s*\n\s*if _sa_u and _sa_u == nodes\[nid\]\.get\("summaryAnchor"\) else None\)/,
-    "a fallback-tier anchor lands elsewhere — its quote would highlight the wrong text");
+test("the span rides the payload only while it was located IN the landing atom", () => {
+  // the distiller's span while the cited atom IS the landing; else the text-atom tier's span, which _summary_text_anchor
+  // located in the very atom it returns (T388); the latest-prose walk and the work-anchor last resort carry none
+  assert.match(KERNEL, /"summaryAnchorQuote": \(nodes\[nid\]\.get\("summaryQuote"\)\s*\n\s*if _sa_u and _sa_u == nodes\[nid\]\.get\("summaryAnchor"\) else \(_sa_q or None\)\)/,
+    "a fallback-tier anchor lands elsewhere — its quote would highlight the wrong text; the located span is the one exception");
+  assert.match(KERNEL, /_sa_u, _sa_q = _brief_landing\(nid, _completed, _line\)/,
+    "the card takes the one resolve of the brief's landing (_brief_landing), from the line it shows, the same the modal row takes");
+  assert.match(KERNEL, /u, q = _summary_text_anchor\(seg_turn\.get\(sk\), line, memo_key=\(fsid, nid, sk\)\)/,
+    "the only writer of the quote inside it is the tier that located the span in the atom it returns");
   assert.match(FEED, /summaryAnchorQuote\?: string \| null;/);
   assert.match(FEED, /anchorUuid: it\.summaryAnchorUuid, quote: it\.summaryAnchorQuote \|\| undefined/,
     "the click carries the span");
