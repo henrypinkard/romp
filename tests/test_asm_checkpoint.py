@@ -558,7 +558,7 @@ class ConvergeAssembly(Harness):
     def test_the_dirty_leaf_boot_shape_writes_the_fold_document_and_the_assembly_document_in_one_pass(self):
         """Round one, medium: the ordinary boot shape is a dirty idle leaf (the judges' pass read it whole, its fold document lacks
         the pairing) with no assembly document. The fold half of the pass healed and primed it and its held quiescence drop
-        POPPED the record entry; the assembly step then found the assembly entry but no record entry (record_offsets None), a
+        POPPED the record entry; the assembly step then found the assembly entry but no record entry (_entry_offsets_gen (None, None)), a
         skipped write, retried once, abandoned. The assembly write now runs while the record entry is resident, inside the same
         hold, and the held drop is paid after it: one pop, both documents from the one read, and the next boot restores both."""
         path = self.idle_leaf("both")

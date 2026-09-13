@@ -1572,8 +1572,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
   `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`;
-  `offsets` is a reader entry holding fewer records than the tree read, or
-  more for a lineage file or under another generation: a LEAF entry that
+  `offsets` is no reader entry at all, a tail entry (one read from a
+  checkpoint's offset, its base above zero), or an entry holding fewer records
+  than the tree read, or more for a lineage file or under another generation
+  or over a base the tree's adapter did not read from zero: a LEAF entry that
   merely grew since the settle's parse lends the prefix the tree read, so a
   busy session's document is written between its appends; a lineage file's
   skip row carries the stat of the records the tree was parsed from, so a

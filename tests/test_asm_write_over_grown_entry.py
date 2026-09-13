@@ -147,6 +147,37 @@ class WriteOverGrownEntry(Harness):
         self.assertEqual(ad._src_stat[str(pa)], (row["size"], row["mtime"]), "the adapter holds it for the next write")
         self.assertEqual(ad._src_keys[str(pa)], ("skip",))
 
+    def test_a_prefix_is_lent_only_to_an_adapter_that_read_from_zero(self):
+        """Round two, low 1: the prefix clause proved the generation but not the adapter's BASE. A degenerate document whose
+        pre-cut part holds records but no atoms (two reminder attachments, then the boundary as the first atom) restores with
+        prefix 0, so the writer does not see the tree as restored and runs over a seeded adapter that read from the cut
+        (base 2); a whole reader under another key then upgrades the entry to base 0 under the same generation, and the
+        writer accepted that prefix over records the adapter never read. The prefix is the leaf's, under the tree's
+        generation, from base zero."""
+        t0 = NOW
+        recs = [G.reminder_line(t0, "att_deg_1", None),                     # uuid-chained attachments that are never atoms
+                G.reminder_line(t0 + 1, "att_deg_2", "att_deg_1"),
+                G.compact_line(t0 + 10, "b_deg", "att_deg_2"),
+                G.compact_summary_line(t0 + 11, "s_deg", "b_deg"),
+                G.uline(t0 + 20, "after the compaction, what remains?", "u_deg_1", "s_deg"),
+                G.aline(t0 + 30, "the cap and the retry budget remain", "a_deg_1", "u_deg_1", stop="end_turn"),
+                G.uline(t0 + 40, "then close them out", "u_deg_2", "a_deg_1"),
+                G.aline(t0 + 50, "closing both", "a_deg_2", "u_deg_2", stop="end_turn")]
+        path = self.write("degenerate", recs)
+        self.fresh(); self.parse(path)
+        self.assertTrue(self.doc(path), em.asm_checkpoint_stats())
+        doc = json.load(gzip.open(em._asm_ckpt_file(path)))
+        row = doc["files"][os.path.basename(path)[:-6]]
+        self.assertEqual(row["cut"][1], 2, "the cut sits after the two attachment records: %r" % (row["cut"][:2],))
+        self.fresh(); modes = []
+        tree = self.parse(path, modes)                                  # a seeded adapter reading from the cut: base 2
+        self.assertEqual(modes, ["restore"])
+        em._read_jsonl_entry(path, tail_ok=False)                        # a whole reader under another key: base 0, same generation
+        em._ASM_CKPT_STATS["skipped"] = {}
+        reasons = []
+        self.assertFalse(em.asm_checkpoint_write(path, SID, False, tree=tree, reason_out=reasons), "not lent: %r" % reasons)
+        self.assertEqual(reasons, ["offsets"], "%r" % reasons)
+
 
 if __name__ == "__main__":
     unittest.main()
