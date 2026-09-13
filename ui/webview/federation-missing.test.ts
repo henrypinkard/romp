@@ -60,7 +60,7 @@ test("render.ts: the boot check fails loudly — one reload, then one diag row p
 
 test("render.ts: for as long as the page is in this state every drag starter and the arrangement writer stand down, and a refused drop is a cancelled drag", () => {
   assert.match(RENDER, /function commitTabOrder\(\) \{\n\s*if \(fedMissing\) return;/, "one-writer principle: an order that never passed through the arrangement is not one");
-  assert.match(RENDER, /function reorderTo\(dragId: string, targetId: string, after: boolean\): boolean \{[^\n]*\n\s*if \(fedMissing\) return false;/, "a drop is refused, and says so");
+  assert.match(RENDER, /function reorderTo\(dragId: string, targetId: string, after: boolean\): boolean \{[^\n]*\n\s*if \(fedMissing \|\| settings\.tabsLocked\) return false;/, "a drop is refused, and says so");
   assert.match(RENDER, /if \(prev\?\.dataset\?\.id\) tabDragCommitted = reorderTo\(draggedId, prev\.dataset\.id, true\);\n\s*else if \(next\?\.dataset\?\.id\) tabDragCommitted = reorderTo\(draggedId, next\.dataset\.id, false\);/,
     "the drop is committed only when the reorder happened: a refused one FLIPs the strip home on dragend");
   assert.match(RENDER, /tab\.addEventListener\("dragstart", \(e\) => \{\n\s*if \(fedMissing \|\| settings\.tabsLocked\) \{ e\.preventDefault\(\); return; \}/, "the one drag starter refuses first (skeleton tabs and rename-restored tabs included)");

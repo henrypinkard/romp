@@ -14,6 +14,7 @@ const RENDER = fs.readFileSync(path.join(UI, "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.join(UI, "styles.css"), "utf8");
 const ICONS = fs.readFileSync(path.join(UI, "icons.ts"), "utf8");
 const TIMELINE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
+const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 
 // a localStorage shim before the settings module loads (load/save read it at call time)
 const store: Record<string, string> = {};
@@ -70,10 +71,20 @@ test("locked, nothing moves: every draggable gate, both dragstart guards, the me
   assert.match(RENDER, /if \(fedMissing \|\| settings\.tabsLocked\) \{ e\.preventDefault\(\); return; \}/, "the shared dragstart refuses too (belt and braces)");
   assert.match(RENDER, /head\.draggable = !settings\.tabsLocked;/, "a group drag moves tabs as well");
   assert.match(RENDER, /head\.addEventListener\("dragstart", \(e\) => \{\s*\n\s*if \(settings\.tabsLocked\) \{ e\.preventDefault\(\); return; \}\s*\n\s*draggedGroup = name;/);
-  assert.match(RENDER, /if \(settings\.tabsLocked\) \{ row\.classList\.add\("disabled"\); row\.setAttribute\("aria-disabled", "true"\); row\.title = "Tabs are locked: the lock in the tab strip"; \}/, "the Move to rows read disabled");
+  assert.match(RENDER, /if \(settings\.tabsLocked\) \{ row\.classList\.add\("ctx-item-locked"\); row\.setAttribute\("aria-disabled", "true"\); bodyE\.title = "Tabs are locked: the lock in the tab strip"; \}/, "the Move to rows read held: the label, not the +");
+  assert.match(RENDER, /plus\.title = "add this tag too \(the session keeps its other tags\)" \+ \(settings\.tabsLocked \? ": adding is not a move, so the lock does not hold it" : ""\);/, "the + keeps its own title");
+  assert.match(CSS, /\n\.ctx-sub \.ctx-item\.ctx-item-locked > \.ctx-item-body \{ opacity: 0\.45; \}/, "the dim on the body, so the + keeps full strength (round one, LOW 1)");
+  assert.match(CSS, /\n\.ctx-sub \.ctx-item\.ctx-item-locked \{ cursor: default; \}\n\.ctx-sub \.ctx-item\.ctx-item-locked > \.ctx-item-body/);
   assert.match(RENDER, /row\.addEventListener\("click", \(e2\) => \{ e2\.stopPropagation\(\); if \(settings\.tabsLocked\) return; moveUnion\(home, g\);/, "and do nothing");
   assert.match(RENDER, /settings\.tabCtx, settings\.stripGroupRows, settings\.tabsLocked, settings\.theme,/, "in the strip's signature: the toggle repaints");
   assert.match(RENDER, /__rompMovableSession = \(sid: unknown\): boolean => typeof sid === "string" && !!sid && !isProvisionalId\(sid\) && !isSubId\(sid\) && !settings\.tabsLocked;/, "the shell's question before a move into another column answers no while locked");
+  assert.match(RENDER, /__rompMoveRefusal = \(sid: unknown\): string => typeof sid !== "string" \|\| !sid \|\| isProvisionalId\(sid\) \|\| isSubId\(sid\) \? "not-open" : settings\.tabsLocked \? "locked" : "";/, "…and the reason behind it (round one, MEDIUM 2)");
+  assert.match(KERNEL, /function refusal\(f,sid\)\{try\{var w=f&&f\.contentWindow&&f\.contentWindow\.__rompMoveRefusal;return typeof w==='function'\?String\(w\(sid\)\|\|''\):'';\}catch\(e\)\{return '';\}\}/);
+  assert.match(KERNEL, /var LOCKED='The tabs are locked: unlock them with the padlock in the tab strip to move this session\.';/, "the toast names the padlock, the way back");
+  assert.match(KERNEL, /var why=refusal\(src,sid\);if\(why==='locked'\)return notify\(LOCKED\);if\(why\|\|!movable\(src,sid\)\)return notify\('Only an open session can be moved between columns\.'\);/, "a lock is not \"not an open session\"");
+  assert.match(RENDER, /if \(fedMissing \|\| settings\.tabsLocked\) return false;/, "a drop after another window locked mid-drag commits nothing (round one, LOW 3)");
+  assert.match(RENDER, /const focusedLock = !!focusedEl\?\.closest\("\.tab-lock"\);/);
+  assert.match(RENDER, /\} else if \(focusedLock\) \(bar\.querySelector\("\.tab-lock"\) as HTMLElement \| null\)\?\.focus\(\);/, "a keyboard press on the lock keeps the focus there across the rebuild (round one, LOW 2)");
 });
 
 test("the setting: per browser, off by default, only the literal true locks; the write fans out like the gear's", () => {
@@ -84,4 +95,18 @@ test("the setting: per browser, off by default, only the literal true locks; the
   delete store["romp:settings"]; assert.equal(S.loadSettings().tabsLocked, false);
   assert.match(RENDER, /function setTabsLocked\(on: boolean\): void \{\s*\n\s*settings = saveSettings\(\{ tabsLocked: on \}\);\s*\n\s*try \{ window\.dispatchEvent\(new Event\("romp:settings"\)\); \} catch \{[^}]*\}\s*\n\s*vscodeApi\?\.postMessage\(\{ type: "settingsSync", settings \}\);\s*\n\}/,
     "the store, the same-document signal (the strip repaints through it), the host relay for VS Code's panes");
+});
+
+test("the Sessions pane shares the order, so the padlock holds its drags too: lanes, the dialog's rows and the pills (round one, MEDIUM 1)", () => {
+  assert.match(TIMELINE, /^const LOCKED_TEXT = 'the tabs are locked: unlock them with the padlock in the tab strip to move sessions';/m);
+  assert.match(TIMELINE, /_tabsLocked\(\) \{\s*\n\s*try \{ const s = JSON\.parse\(localStorage\.getItem\('romp:settings'\) \|\| '\{\}'\); return !!\(s && s\.tabsLocked === true\); \}/, "the strip's own store key, read at the gesture (the pane is served raw: no import)");
+  assert.match(TIMELINE, /_beginDrag\(sid, e\) \{\s*\n\s*if \(this\._tabsLocked\(\)\) return;/, "a lane drag never starts while locked");
+  assert.match(TIMELINE, /_persistOrder\(order, prev, sid, from\) \{\s*\n\s*if \(this\._tabsLocked\(\)\) \{[^]*?this\._applyOrderToData\(prev\);\s*\n\s*this\.settingRefused\(\{ gesture: 'order', sid: sid \|\| '', from: from \|\| '', text: LOCKED_TEXT \}\);\s*\n\s*return;/, "a persist after a mid-drag lock writes nothing and puts the lanes back");
+  assert.match(TIMELINE, /rowHit\.style\.cursor = this\._tabsLocked\(\) \? 'default' : 'grab';/);
+  assert.match(TIMELINE, /if \(this\._tabsLocked\(\)\) \{ const lt = el\('title', \{\}\); lt\.textContent = LOCKED_TEXT; rowHit\.appendChild\(lt\); \}/, "the lane says why on hover");
+  assert.match(TIMELINE, /wh\.style\.cursor = this\._tabsLocked\(\) \? 'default' : 'grab';/);
+  assert.match(TIMELINE, /pillCell\.addEventListener\('pointerdown', \(e\) => \{\s*\n\s*if \(this\._tabsLocked\(\)\) return;/, "the pills' order too");
+  assert.match(TIMELINE, /if \(!this\._tabsLocked\(\)\) this\._setLens\(\{ tagOrder: names \}, \{ tagOrder: true \}\);/);
+  assert.match(TIMELINE, /e\.preventDefault\(\);\s*\n\s*if \(this\._tabsLocked\(\)\) return;[^\n]*\n\s*const cells = Array\.from\(grid\.children\)\.filter\(\(c\) => c\._sid\);/, "the dialog's rows too");
+  assert.match(TIMELINE, /window\.addEventListener\('storage', \(e\) => \{\s*\n\s*if \(!e \|\| e\.key !== 'romp:settings'\) return;/, "a lock in another window repaints the lanes through the storage event, the strip's own road");
 });

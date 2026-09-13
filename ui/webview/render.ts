@@ -5800,7 +5800,7 @@ function flipTabs(mutate: () => void): void {
   });
 }
 function reorderTo(dragId: string, targetId: string, after: boolean): boolean {   // whether it reordered: a drop that it refused is not a committed drag
-  if (fedMissing) return false;   // no manager: the strip shows the kernel's seed, not an arrangement — a reorder here would be a lie to keep
+  if (fedMissing || settings.tabsLocked) return false;   // no manager: the strip shows the kernel's seed, not an arrangement — a reorder here would be a lie to keep; or the tabs were locked mid-drag by another window (T395 round one)
   const di = order.indexOf(dragId);
   if (di < 0) return false;
   order.splice(di, 1);
@@ -6608,6 +6608,7 @@ function renderTabs() {
   // the active tab. Captured before the tab rule below, which keeps its pinned two-line shape.
   const focusedEl = document.activeElement as HTMLElement | null;
   const focusedGroup = (focusedEl?.closest(".tab-group-head") as HTMLElement | null)?.dataset.group;
+  const focusedLock = !!focusedEl?.closest(".tab-lock");   // a keyboard press on the lock rebuilt the strip: the lock keeps the focus (T395 round one)
   const refocusTab = bar.contains(document.activeElement);
   bar.replaceChildren();
   // A session under several tags has a COPY in each group (T264b, the user 2026-09-08: tags are
@@ -6805,7 +6806,8 @@ function renderTabs() {
     const h = Array.from(bar.querySelectorAll<HTMLElement>(".tab-group-head")).find((x) => x.dataset.group === focusedGroup);
     // the group gone, or now holding the active tab (no stop): the old rule
     if (h && h.tabIndex >= 0) h.focus(); else focusActiveTab();
-  } else if (refocusTab) focusActiveTab();
+  } else if (focusedLock) (bar.querySelector(".tab-lock") as HTMLElement | null)?.focus();   // not the active tab: Enter again would drop the caret into the composer
+  else if (refocusTab) focusActiveTab();
   stripAftermath(visibleIds, ids);
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
   // the rotated toggles in the chat pane's vertical strip — see _LANDING_FLEET_JS — so the pill was redundant.)
@@ -7225,9 +7227,12 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
           if (home) {
             lb.append("Move to ", named()); bodyE.appendChild(lb);
             row.appendChild(bodyE);
-            if (settings.tabsLocked) { row.classList.add("disabled"); row.setAttribute("aria-disabled", "true"); row.title = "Tabs are locked: the lock in the tab strip"; }   // the tab lock (T395): a move row is a tab move
+            // the tab lock (T395): a move row is a tab move, so it reads held (the label dims, the row answers nothing); the + beside
+            // it still tags (adding is not a move), so it keeps its strength and says so itself (round one, LOW 1)
+            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock in the tab strip"; }
             const plus = el("button", "ctx-tag-x ctx-tag-plus") as HTMLButtonElement;
-            plus.type = "button"; plus.textContent = "+"; plus.title = "add this tag too — the session keeps its other tags";
+            plus.type = "button"; plus.textContent = "+";
+            plus.title = "add this tag too (the session keeps its other tags)" + (settings.tabsLocked ? ": adding is not a move, so the lock does not hold it" : "");
             plus.addEventListener("click", (e2) => { e2.stopPropagation(); editUnion(g, { add: [id] }); build(); sb.textContent = subText(); });
             row.appendChild(plus);
             row.addEventListener("click", (e2) => { e2.stopPropagation(); if (settings.tabsLocked) return; moveUnion(home, g); build(); sb.textContent = subText(); });
@@ -7922,6 +7927,9 @@ const PROVISIONAL_WAIT_MS = 90_000;
 // a create in flight, or a failed one still holding its text, that would die with the document. Shape checks and a flag
 // read: any column's page answers for any id.
 (window as any).__rompMovableSession = (sid: unknown): boolean => typeof sid === "string" && !!sid && !isProvisionalId(sid) && !isSubId(sid) && !settings.tabsLocked;   // …and nothing moves while the tabs are locked (T395)
+// the REASON behind the answer above (T395 round one): the shell's refusal toast names the padlock for a lock, and says
+// "only an open session" for the rest, instead of one line for both
+(window as any).__rompMoveRefusal = (sid: unknown): string => typeof sid !== "string" || !sid || isProvisionalId(sid) || isSubId(sid) ? "not-open" : settings.tabsLocked ? "locked" : "";
 (window as any).__rompColumnBusy = (): boolean => !!provisionalId || failedProvisionals.size > 0;
 
 function openProvisional(req: CreateReq): void {

@@ -554,7 +554,7 @@ test("the header's structure and gestures read as a label: the tag's chip, then 
     "role, expanded state, the current mark, tab stop and key handler together");
   assert.match(head, /if \(e\.key === "Enter" \|\| e\.key === " "\) \{ e\.preventDefault\(\); head\.click\(\); \}\s*\n\s*\}\);/, "Enter and Space press the header");
   // a push mid-read must not kick focus off the header: renderTabs re-focuses the same group after the rebuild
-  assert.match(RENDER, /const focusedGroup = \(focusedEl\?\.closest\("\.tab-group-head"\) as HTMLElement \| null\)\?\.dataset\.group;\s*\n\s*const refocusTab = bar\.contains\(document\.activeElement\);/,
+  assert.match(RENDER, /const focusedGroup = \(focusedEl\?\.closest\("\.tab-group-head"\) as HTMLElement \| null\)\?\.dataset\.group;\s*\n\s*const focusedLock = !!focusedEl\?\.closest\("\.tab-lock"\);[^\n]*\n\s*const refocusTab = bar\.contains\(document\.activeElement\);/,
     "captured before the tab rule (chat-focus-model.test pins that rule's two-line shape)");
   assert.match(RENDER, /if \(h && h\.tabIndex >= 0\) h\.focus\(\); else focusActiveTab\(\);/,
     "…falling back to the active tab when the group is gone or now holds it");
@@ -1842,7 +1842,7 @@ test("the tab menu speaks for the right-clicked copy's group: Move to drops THAT
   assert.match(RENDER, /function startTabRename\(id: string, copy\?: string\)/);
   assert.match(RENDER, /t\.dataset\.id === id && \(copy === undefined \|\| t\.dataset\.copy === copy\)\)\s*\n\s*\?\? Array\.from\(bar\.children\)\.find\(\(t\): t is HTMLElement => t instanceof HTMLElement && t\.dataset\.id === id\)\);/,
     "the right-clicked copy edits in place, the first copy when that one is gone");
-  assert.match(RENDER, /plus\.title = "add this tag too — the session keeps its other tags";/);
+  assert.match(RENDER, /plus\.title = "add this tag too \(the session keeps its other tags\)" \+ \(settings\.tabsLocked \? ": adding is not a move, so the lock does not hold it" : ""\);/);   // the tab lock (T395) adds its clause
 });
 
 test("executed: activating a session under several tags springs no fold: a holder showing a copy is marked; all folded, the first is the stand-in and nothing opens (T264b)", () => {

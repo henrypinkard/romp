@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""THE TAB LOCK (T395, the user 2026-09-12) on the served chat page: a hermetic kernel serves six synthetic notes-api
+"""THE TAB LOCK (T395, the user 2026-09-12) on the served chat page and, for the Sessions pane, the landing: a hermetic kernel serves six synthetic notes-api
 sessions (TESTHOST, one flat row of tabs); the strip carries a padlock button right after the + tab and before the tags
 box, in a box of the tags box's height. A REAL mouse drag (page.mouse down, a run of moves across the strip, up over the
 target) with the lock OFF moves the tab; the lock pressed, the same drag moves nothing, the tabs are not draggable, the
 box wears the accent with no fill, the setting persists across a reload; pressed again, the drag moves the tab once more.
+Round one: a keyboard press on the lock keeps the focus on the lock across the strip's rebuild; and the Sessions pane
+(the landing's timeline, which shares the order) refuses a lane drag while locked, its lanes without the grab cursor and
+saying why, and moves the lane once unlocked.
 
 TAB_LOCK_DIST=<dir> serves another tree's UI bundle (the red run's before); TAB_LOCK_SHOTS=<prefix> writes
 <prefix>-locked-<theme>.png; TAB_LOCK_DUMP=<path> writes the whole measurement. Skips LOUDLY without the extension deps or
@@ -60,7 +63,8 @@ const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));
 let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
-const page = await browser.newPage({ viewport: { width: 1400, height: 700 } });
+const ctx = await browser.newContext({ viewport: { width: 1400, height: 700 } });   // one explicit context: the shell page below shares its store
+const page = await ctx.newPage();
 await page.addInitScript(() => {   // the gesture's log: every drag event, so a case that moved nothing says whether a drag ever began
   window.__log = [];
   for (const k of ["dragstart", "drop", "dragend"]) window.addEventListener(k, (e) => window.__log.push({ k, prevented: e.defaultPrevented }));
@@ -119,6 +123,39 @@ out.locked = await layout();
 await page.reload(); await settle();                      // the setting is the browser's: a fresh page comes up locked
 out.afterReload = await layout();
 out.lockedDrag = await drag("locked: the same drag");
+// a KEYBOARD press on the lock (round one, LOW 2): the strip rebuilds, and the focus stays on the lock, not the active tab
+const activeCls = () => page.evaluate(() => (document.activeElement && document.activeElement.className) || "");
+await page.focus("#tabs .tab-lockbox .tab-lock"); await page.keyboard.press("Enter"); await page.waitForTimeout(400);
+out.keyToggle = { active: await activeCls(), store: (await layout()).store };
+await page.keyboard.press("Enter"); await page.waitForTimeout(400);   // and back to locked for the scenes below
+out.keyToggleBack = { active: await activeCls(), store: (await layout()).store };
+// THE SESSIONS PANE (round one, MEDIUM 1): the landing's timeline shares the order with the strip; its lane drag is held too
+const shell = await ctx.newPage(); await shell.goto(cfg.landing);   // the same context: the lock's store is shared
+await shell.waitForSelector("#rail-gear", { timeout: 20000 });
+let tl = shell.frames().find((f) => f.url().includes("/timeline"));
+for (let i = 0; i < 100 && !tl; i++) { await shell.waitForTimeout(100); tl = shell.frames().find((f) => f.url().includes("/timeline")); }
+await tl.waitForFunction((names) => Array.from(document.querySelectorAll("svg text")).filter((t) => names.includes(t.textContent.trim())).length >= names.length, cfg.names, { timeout: 30000 });
+await shell.waitForTimeout(600);
+const lanes = () => tl.evaluate((names) => {
+  const labels = Array.from(document.querySelectorAll("svg text")).filter((t) => names.includes(t.textContent.trim()))
+    .map((t) => { const r = t.getBoundingClientRect(); return { name: t.textContent.trim(), x: r.left + r.width / 2, y: r.top + r.height / 2 }; }).sort((a, b) => a.y - b.y);
+  const rects = Array.from(document.querySelectorAll("svg rect"));
+  return { labels, grabRects: rects.filter((q) => q.style.cursor === "grab").length, titles: Array.from(document.querySelectorAll("svg rect > title")).map((q) => q.textContent) };
+}, cfg.names);
+const frameBox = await shell.evaluate(() => { const f = document.getElementById("f-timeline").getBoundingClientRect(); return { x: f.left, y: f.top }; });
+async function laneDrag(label) {
+  const pre = await lanes();
+  if (pre.labels.length < 3) return { label, skipped: "lanes: " + pre.labels.length };
+  const src = pre.labels[2], tgt = pre.labels[0];
+  await shell.mouse.move(frameBox.x + src.x, frameBox.y + src.y); await shell.mouse.down();
+  await shell.mouse.move(frameBox.x + src.x, frameBox.y + src.y - 8, { steps: 3 });     // past the axis threshold, vertically
+  await shell.mouse.move(frameBox.x + tgt.x, frameBox.y + tgt.y - 4, { steps: 12 });
+  await shell.mouse.up(); await shell.waitForTimeout(900);
+  const post = await lanes();
+  return { label, dragged: src.name, preOrder: pre.labels.map((l) => l.name), postOrder: post.labels.map((l) => l.name),
+           moved: pre.labels.map((l) => l.name).join() !== post.labels.map((l) => l.name).join(), grabRectsPre: pre.grabRects, titlesPre: pre.titles };
+}
+out.tlLocked = await laneDrag("locked: the 3rd lane to the top");
 // the screenshots: the strip with the lock on, dark then light
 for (const theme of ["dark", "light"]) {
   await page.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
@@ -132,6 +169,8 @@ await page.evaluate(() => document.body.classList.remove("theme-light"));
 out.pressedAgain = await press();
 out.unlocked = await layout();
 out.unlockedAgainDrag = await drag("unlocked again: the same drag");
+out.tlUnlocked = await laneDrag("unlocked: the 3rd lane to the top");   // the timeline reads the same store: the drag moves the lane
+await shell.close();
 fs.writeFileSync(cfg.out, JSON.stringify(out));
 console.log("RESULT: ok");
 await browser.close();
@@ -231,8 +270,8 @@ class ServedTabLock(unittest.TestCase):
         cfg = os.path.join(cls.lab, "cfg.json")
         out = os.path.join(cls.lab, "result.json")
         with open(cfg, "w") as f:
-            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (cls.port, cls.token), "count": len(NAMES), "out": out,
-                       "shots": os.environ.get("TAB_LOCK_SHOTS", "")}, f)
+            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (cls.port, cls.token), "landing": "http://127.0.0.1:%d/?token=%s" % (cls.port, cls.token),
+                       "count": len(NAMES), "names": NAMES, "out": out, "shots": os.environ.get("TAB_LOCK_SHOTS", "")}, f)
         driver = os.path.join(cls.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
@@ -285,6 +324,27 @@ class ServedTabLock(unittest.TestCase):
         self.assertTrue(all(t["draggable"] for t in un["tabs"]), json.dumps(un["tabs"]))
         a = r["unlockedAgainDrag"]
         self.assertTrue(a["moved"] and a["landedFirst"], "unlocked again: the drag moves the tab: " + json.dumps(a))
+
+    def test_a_keyboard_press_on_the_lock_keeps_the_focus_on_the_lock(self):
+        # round one, LOW 2: the rebuild used to treat any focus inside the strip as a held tab and threw it onto the active tab
+        r = self._run()
+        self.assertIn("tab-lock", r["keyToggle"]["active"], "after Enter the lock still has the focus: " + json.dumps(r["keyToggle"]))
+        self.assertEqual(r["keyToggle"]["store"]["tabsLocked"], False, "Enter toggled it (unlocked)")
+        self.assertIn("tab-lock", r["keyToggleBack"]["active"], json.dumps(r["keyToggleBack"]))
+        self.assertEqual(r["keyToggleBack"]["store"]["tabsLocked"], True, "and back")
+
+    def test_the_sessions_pane_lane_drag_is_held_by_the_lock_and_moves_once_unlocked(self):
+        # round one, MEDIUM 1: the timeline shares the order with the strip, so its lane drag wrote a new order while every tab read
+        # draggable false
+        r = self._run()
+        lk, un = r["tlLocked"], r["tlUnlocked"]
+        self.assertNotIn("skipped", lk, json.dumps(lk)); self.assertNotIn("skipped", un, json.dumps(un))
+        self.assertFalse(lk["moved"], "locked: the lane drag moves nothing: " + json.dumps(lk))
+        self.assertEqual(lk["grabRectsPre"], 0, "locked: no lane offers the grab cursor: " + json.dumps(lk))
+        self.assertTrue(any("locked" in t for t in lk["titlesPre"]), "locked: the lanes say why on hover: " + json.dumps(lk["titlesPre"][:3]))
+        self.assertTrue(un["moved"], "unlocked: the same drag moves the lane: " + json.dumps(un))
+        self.assertEqual(un["postOrder"][0], un["dragged"], json.dumps(un))
+        self.assertGreater(un["grabRectsPre"], 0, "unlocked: the lanes offer the grab cursor again")
 
     def test_the_locked_dress_is_the_accent_on_glyph_and_outline_with_no_fill(self):
         r = self._run()
