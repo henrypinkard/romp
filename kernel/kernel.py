@@ -7936,6 +7936,16 @@ def _consume_update_report(running_only=False, _tries=3):
     return rep
 
 
+def _update_checks_off():
+    """ROMP_UPDATE_CHECK=off: a HERMETIC kernel (a served lab's, tests/test_ship_reship.py kernel_env) runs none of the
+    update loop's three checks. The release check reads the release remote's tags, the main-drift check the remote's
+    main (git ls-remote, both), and either raises the shell's update banner over the page under test; the converge
+    check reads the checkout. CI 2026-09-13: the banner sat on the settings pills and took a lab's clicks, first from the
+    release check on a PR run, then from the drift check on main's own runs (a clone ON main, with main moving while the
+    job ran), so the seam stands the whole loop down before its first pass, and each check besides for a direct caller."""
+    return os.environ.get("ROMP_UPDATE_CHECK", "") == "off"
+
+
 def _update_check():
     """ONE check pass: learn the newest release, then act per mode. Runs at boot and then on
     _update_check_loop's cadence — kernels outlive browser tabs by days or weeks (the user
@@ -7943,10 +7953,7 @@ def _update_check():
     flipping the gear setting takes effect without a restart. A pass acts only when the discovered
     version CHANGES (new information): the same release re-found every few hours must not re-raise
     banners or re-file notices."""
-    if os.environ.get("ROMP_UPDATE_CHECK", "") == "off":
-        # a HERMETIC kernel (a served lab's, tests/test_ship_reship.py kernel_env): the check below reads the release
-        # remote's tags over the network, and a newer release than the checkout's raises the shell's update banner over
-        # the page under test (CI, 2026-09-13: the banner sat on the settings pills and took the lab's clicks)
+    if _update_checks_off():
         return
     if _update_mode() == "off":
         return
@@ -8317,6 +8324,8 @@ def _dist_converge_check():
     One rebuild attempt per distinct source state (the in-memory latch): a failure stays visible in its
     notice and on stderr, retries on the next source change or the next boot — never a 5-minute storm.
     The ROMP_DIST_DIR seam disables it: a redirected dist is the test's own to control."""
+    if _update_checks_off():
+        return                                        # a hermetic kernel: the loop's third check stands down with the other two
     if os.environ.get("ROMP_DIST_DIR"):
         return
     newest = _dist_src_newest()
@@ -8543,6 +8552,8 @@ def _main_drift_check():
     """One origin/checkout/running comparison pass; fires the SAME banner as the release check (the
     shell's offer() renders the main-drift wording off kind:"main"). Re-fires only when the target sha
     CHANGES — new information, never a re-nag of the sha already offered or dismissed."""
+    if _update_checks_off():
+        return                                        # a hermetic kernel: no ls-remote, no banner of this kind either
     if _update_mode() == "off":
         return
     if not _main_tracking():
@@ -8833,6 +8844,8 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
 def _update_check_loop():
     """The daemon thread: one pass at boot, then one per cadence, forever. The cheap main-drift probe
     runs every pass; the release-tag check keeps its six-hour stride."""
+    if _update_checks_off():
+        return                                        # a hermetic kernel: no pass at all (each check is gated besides)
     last_release = 0.0
     while True:
         try:
