@@ -210,7 +210,8 @@ class TheBriefClickEndToEnd(unittest.TestCase):
         self.assertEqual(card["column"], "needs_input", "the live prompt floors the working top")
         self.assertEqual(card["distillState"], "blocked", "…and the card shows the decision brief")
         self.assertEqual(card["summaryAnchorUuid"], "t20", "the landing follows the shown brief (its sentence in the newest segment), not the takeaway")
-        self.assertEqual(card["summaryAnchorQuote"], "Should the history budget follow the device or the setting?")
+        self.assertEqual(card["summaryAnchorQuote"], "Should the history budget follow the device or the setting?",
+                         "the located span is the SHOWN brief's sentence; resolved from the takeaway's line (the column's rule) no span is found")
 
     def test_a_faulted_build_is_served_but_not_memoized_so_the_next_build_recovers(self):
         self._write({self.G1: self._blocked_top([self.segs[0]])}, {self.G1: "blocked"})
