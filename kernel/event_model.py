@@ -777,7 +777,7 @@ def read_bytes_report():
     file, so a test or /perf can say how much of a boot was tails and how much whole files."""
     with _READ_BYTES_LOCK:
         out = dict(_READ_BYTES)
-    out["total"] = sum(out.values())
+        out["total"] = _READ_BYTES_TOTAL[0]              # the running total, kept for this report alone (T397 round two, low 1)
     return out
 
 
@@ -1568,6 +1568,8 @@ def checkpoint_sweep():
         if not keep:
             try:
                 cp.unlink(); gone += 1
+                if cp.name.endswith(".gz"):
+                    _asm_removed("sweep")
                 if cp.name.endswith(".gz"):
                     cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
             except OSError:
@@ -5048,6 +5050,7 @@ def _asm_ckpt_note(path, reason, detail=""):
     if cp is not None:
         try:
             cp.unlink()
+            _asm_removed("fallback:" + str(reason))
             cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
         except OSError:
             pass
@@ -5062,9 +5065,17 @@ def _asm_ckpt_skip(reason):
 def asm_checkpoint_stats():
     with _ASM_CKPT_LOCK:
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
-        out["hydratedBy"] = dict(out["hydratedBy"])
+        out["hydratedBy"] = dict(out["hydratedBy"]); out["removed"] = dict(out.get("removed") or {})
         cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
-    return out
+    out["parse"] = dict(_ASM_STATS)                   # the parse's roads (T398): serve, fold, restore, full (with its reason), bypass,
+    return out                                        #  fallback, and every g:<reason> demotion, so a whole parse names its road
+
+
+def _asm_removed(reason):
+    """A document file removed, counted per reason (T398): the fallback that refused it, or the boot sweep."""
+    with _ASM_CKPT_LOCK:
+        r = _ASM_CKPT_STATS.setdefault("removed", {})
+        r[reason] = r.get(reason, 0) + 1
 
 
 def asm_converge_stat(name, n=1):
@@ -6055,8 +6066,20 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
             elif _CKPT_DIR_FN is not None:
                 served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
                 if served is not None:
+                    _ASM_STATS["restore"] = _ASM_STATS.get("restore", 0) + 1
                     _mode("restore")
                     return served
+            # A full parse names its road (T398): an entry the gates DEMOTED (the g:<reason> beside it: the leaf's record
+            # entry replaced by a from-zero read, a lineage file moved), a leaf with NO document file, a document that
+            # stood but was REFUSED at the restore (its fallback reason counted beside), or no checkpoint directory at all.
+            if entry is not None:
+                why = "demoted"
+            elif _CKPT_DIR_FN is None:
+                why = "noDir"
+            else:
+                cp_ = _asm_ckpt_file(leaf_path)
+                why = "noDocument" if cp_ is None or not cp_.exists() else "refused"
+            _ASM_STATS["full:" + why] = _ASM_STATS.get("full:" + why, 0) + 1
             _mode("full")
             return _asm_full(key, leaf_path, candidate_files, links, rompuuid,
                              postal_index, sdk_human)

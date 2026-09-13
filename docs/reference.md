@@ -1529,12 +1529,26 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   split); the `push` container carries its sub-stages' sums, the jobs before
   the push land in `jobs`, and the boundary sits at the push's entry, before
   the cards-first path. A plain GET carries the newest 16 splits and
-  `stageRingLen`; `GET /perf?ring=all` carries the whole ring, which holds
+  `stageRingLen` (how many splits the ring holds now, not how many were
+  served); `GET /perf?ring=all` carries the whole ring, which holds
   `stageRingMax` cycles: `ROMP_PERF_STAGE_RING` when set, else one per 64 MiB
   of the machine's memory floored at 16, resolved once, never a literal
-  count. The restart ledger's boot-health row carries the first cycle's
-  `stages` beside `firstCycleS`, so a slow boot names its stage without the
-  kernel alive.
+  count, and an override above the fraction is clamped to it. Under `jobs`
+  every tick job is a sub-stage (`jobs.<job>`, the glue between them
+  `jobs.other`), and `prelude` is the cycle's opening (the liveness snapshot,
+  the names), so the stages sum to `s`; `splitFailed` counts a split the
+  bookkeeping could not close. The restart ledger's boot-health row carries
+  the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
+  stage without the kernel alive, and `parse`, the assembly's road counters at
+  the first cycle's end (T398): `serve`, `fold`, `restore`, `full` with
+  `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
+  `rewrite` when the leaf's record entry was replaced by a from-zero read
+  under a new generation, `nonleaf` when a lineage file moved),
+  `full:noDocument`, `full:refused` (a document that stood but did not verify,
+  its fallback reason counted), `bypass` (a pending cut armed on the session)
+  and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,
+  beside `asmCheckpoint.removed`, the document files removed per reason (a
+  fallback's reason, or the boot sweep).
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
