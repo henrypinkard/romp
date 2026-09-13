@@ -744,9 +744,32 @@ _READ_BYTES = {}                  # path -> bytes this process read from it thro
 _READ_BYTES_LOCK = threading.Lock()
 
 
+_READ_BYTES_TOTAL = [0]           # the reader's bytes off disk since the process began, one integer (T397: a stage mark)
+_THREAD_BYTES = threading.local()  # the same, per THREAD (`read`, `hydrated`): the pusher's stage split reads its own thread's
+
+
 def _count_read(path, n):
     with _READ_BYTES_LOCK:
         _READ_BYTES[path] = _READ_BYTES.get(path, 0) + int(n)
+        _READ_BYTES_TOTAL[0] += int(n)
+    _THREAD_BYTES.read = getattr(_THREAD_BYTES, "read", 0) + int(n)
+
+
+def read_bytes_total():
+    """What the reader pulled off disk since the process began, as one number (the per-path table is read_bytes_report)."""
+    with _READ_BYTES_LOCK:
+        return _READ_BYTES_TOTAL[0]
+
+
+def thread_read_bytes():
+    """What the reader pulled off disk on the CALLING thread since it began (T397 round one, low 2: a stage's bytes are the
+    pusher's own, not the judges' first pass or a boot warm reading through the same window)."""
+    return getattr(_THREAD_BYTES, "read", 0)
+
+
+def thread_hydrated_bytes():
+    """The assembly cut's hydrated bytes on the CALLING thread since it began (the process total is asmCheckpoint.hydratedBytes)."""
+    return getattr(_THREAD_BYTES, "hydrated", 0)
 
 
 def read_bytes_report():
@@ -5969,6 +5992,7 @@ def hydrate(atoms, rompuuid=None, by=None):
                     raise LazyBodyRead("atom %s: the record at its offset is %s" % (a.get("uuid"), rec.get("uuid")))
                 with _ASM_CKPT_LOCK:
                     _ASM_CKPT_STATS["hydratedBytes"] += ln; _ASM_CKPT_STATS["hydratedAtoms"] += 1
+                    _THREAD_BYTES.hydrated = getattr(_THREAD_BYTES, "hydrated", 0) + ln   # this thread's share (T397)
                     _ASM_CKPT_STATS["hydratedBy"][by] = _ASM_CKPT_STATS["hydratedBy"].get(by, 0) + ln
                     if a.get("uuid"):
                         _HYDRATED[a["uuid"]] = (rec, ln); _HYDRATED_BYTES[0] += ln

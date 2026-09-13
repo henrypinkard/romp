@@ -205,6 +205,28 @@ _CHAT_SIG_LABELS = ("transcript", "states", "store", "hold", "archive", "episode
 _CHAT_SIG_DEPS = ("taskout", "pathlink", "postal")
 
 
+_STAGE_RING_LEN = [None]          # resolved once (the first cycle), like the other memory-fraction bounds' module constants
+
+
+def _stage_ring_len(mem_total=None):
+    """How many cycles' stage splits the pusher keeps (T397): ROMP_PERF_STAGE_RING when it names a positive integer, else one
+    per 64 MiB of the machine's memory floored at 16 (a 64 GB box keeps 1024 cycles, a 4 GB one 64; an entry is about
+    2.5 KB, so the largest ring is a few MB), never a literal count (the user's caches direction 2026-09-11). Resolved ONCE
+    into a module slot at first use (the memory reader is defined below this class and read again at every snapshot
+    otherwise; round one, low 5). `mem_total` computes the fraction for a given reading (tests) and resolves nothing."""
+    if mem_total is not None:
+        return max(16, int(mem_total) // (64 * 1024 * 1024))
+    if _STAGE_RING_LEN[0] is None:
+        raw = os.environ.get("ROMP_PERF_STAGE_RING", "")
+        n = 0
+        try:
+            n = int(raw) if raw else 0
+        except ValueError:
+            n = 0
+        _STAGE_RING_LEN[0] = n if n > 0 else max(16, _mem_total_bytes() // (64 * 1024 * 1024))
+    return _STAGE_RING_LEN[0]
+
+
 class _PerfStats:
     """Always-on counters behind GET /perf (`romp perf`): where the kernel's threads spend their time,
     kept cheap enough to leave running. Every writer takes the lock and does a few dict operations;
@@ -324,6 +346,16 @@ class _PerfStats:
                            "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
+            # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes
+            # and the hydrated bytes since the previous stage boundary); cycle() keeps the boot's FIRST cycle's split for
+            # the process (firstCycleS alone could not name the stage a 59 s boot spent its time in, 2026-09-12) and
+            # appends every cycle's split to `stage_ring`, a deque sized as a fraction of memory (_stage_ring_len), made
+            # at the first cycle since the memory reader is defined below this class.
+            self.cycle_stages = {}
+            self.first_cycle = None
+            self.stage_ring = None
+            self._stage_mark = None
+            self._pusher_ident = None                 # the thread whose stages the split records: the pusher's, set at cycle_begin
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0,
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
@@ -402,10 +434,76 @@ class _PerfStats:
             if ms > p["cycle_ms_max"]:
                 p["cycle_ms_max"] = ms
             self.ring.append(ms)
+            split = {"s": round(dt, 3), "t": time.time(),
+                     "stages": {k: {"ms": round(v["ms"], 1), "bytes": v["bytes"], "hydrated": v["hydrated"]}
+                                for k, v in self.cycle_stages.items()}}
+            if self.first_cycle is None:
+                self.first_cycle = split
+            if self.stage_ring is None:
+                self.stage_ring = collections.deque(maxlen=_stage_ring_len())
+            self.stage_ring.append(split)
+            self.cycle_stages = {}
+            self._stage_mark = None
+
+    @staticmethod
+    def _byte_marks():
+        """(this THREAD's reader bytes off disk, this thread's hydrated bytes) so far: the two byte counters a stage moves,
+        per thread, so the pusher's split carries the pusher's own reads and not the judges' first pass or a boot warm
+        running through the same window (round one, low 2)."""
+        try:
+            return em.thread_read_bytes(), em.thread_hydrated_bytes()
+        except Exception:
+            return 0, 0
+
+    def _mine(self):
+        """Whether the calling thread is the one whose cycle the split records (the pusher's, set at cycle_begin): a
+        dashboard's connect push runs _push on the HTTP handler thread through the same stage calls, and its whole build
+        landed in the pusher cycle's split, in firstCycle and in the boot-health row, the boot being exactly when pages
+        redial (round one, medium). The cumulative totals take every thread's stages as before."""
+        return self._pusher_ident is not None and threading.get_ident() == self._pusher_ident
+
+    def stage_boundary(self):
+        """A stage boundary that closes no stage: the bytes read since the last boundary belong to the stage that closes
+        next (the pusher's jobs before the push: `_push` marks its own start so its first sub-stage does not carry them)."""
+        marks = self._byte_marks()
+        with self.lock:
+            if not self._mine():
+                return
+            prev = self._stage_mark
+            self._stage_mark = marks
+            if prev is not None:                            # the jobs before the push: to the cycle's `jobs` bucket
+                cs = self.cycle_stages.setdefault("jobs", {"ms": 0.0, "bytes": 0, "hydrated": 0})
+                cs["bytes"] += max(0, marks[0] - prev[0]); cs["hydrated"] += max(0, marks[1] - prev[1])
 
     def stage(self, name, dt):
+        marks = self._byte_marks()
         with self.lock:
             self.stages[name] = self.stages.get(name, 0.0) + dt * 1000.0
+            if not self._mine():
+                return                                      # another thread's push: the totals alone
+            cs = self.cycle_stages.setdefault(name, {"ms": 0.0, "bytes": 0, "hydrated": 0})
+            cs["ms"] += dt * 1000.0
+            if name == "push":                              # the container: its bytes are its sub-stages' (already attributed)
+                cs["bytes"] = sum(v["bytes"] for k, v in self.cycle_stages.items() if k.startswith("push."))
+                cs["hydrated"] = sum(v["hydrated"] for k, v in self.cycle_stages.items() if k.startswith("push."))
+            else:
+                prev = self._stage_mark
+                if prev is not None:
+                    cs["bytes"] += max(0, marks[0] - prev[0]); cs["hydrated"] += max(0, marks[1] - prev[1])
+                self._stage_mark = marks
+
+    def cycle_begin(self):
+        """The cycle's opening, on the pusher's thread: the thread the split records, the split emptied (a push in the gap
+        between cycles, on any thread, lands in no cycle), and the first byte mark the stages are measured from."""
+        marks = self._byte_marks()
+        with self.lock:
+            self._pusher_ident = threading.get_ident()
+            self.cycle_stages = {}
+            self._stage_mark = marks
+
+    def first_cycle_split(self):
+        with self.lock:
+            return dict(self.first_cycle) if self.first_cycle is not None else None
 
     def parse_hit(self):
         """The kernel's _parse served from the shared store (T323 stage 2)."""
@@ -513,10 +611,17 @@ class _PerfStats:
         n = len(sorted_ms)
         return sorted_ms[min(n - 1, int(q * n))] if n else 0.0
 
-    def snapshot(self):
+    STAGE_RING_SERVED = 16   # the ring's floor: how many of the newest splits a plain GET /perf carries (`?ring=all` for the ring)
+
+    def snapshot(self, ring_all=False):
         with self.lock:
             ring = sorted(self.ring)
             pusher = dict(self.pusher)
+            pusher["firstCycle"] = dict(self.first_cycle) if self.first_cycle is not None else None   # T397: the boot's
+            sr = list(self.stage_ring) if self.stage_ring is not None else []                           #  first cycle's split
+            pusher["stageRing"] = sr if ring_all else sr[-self.STAGE_RING_SERVED:]   # the newest few by default: the whole ring
+            pusher["stageRingLen"] = len(sr)                                          #  is up to a few MB of JSON (round one, low 3)
+            pusher["stageRingMax"] = self.stage_ring.maxlen if self.stage_ring is not None else _stage_ring_len()
             stages = dict(self.stages)
             builds = {k: dict(v) for k, v in self.builds.items()}
             builds["chat"]["bg_miss"] = dict(self.builds["chat"]["bg_miss"])   # the nested map: a copy too
@@ -23235,6 +23340,9 @@ def _boot_health_first_cycle(dt):
     _BOOT_HEALTH_DONE[0] = True
     row = {"t": int(time.time()), "pid": os.getpid(), "bootHealth": True, "firstCycleS": round(dt, 2),
            "boundS": BOOT_FIRST_CYCLE_BOUND_S, "slow": dt > BOOT_FIRST_CYCLE_BOUND_S}
+    split = _PERF_STATS.first_cycle_split()                # T397: the cycle's stage split rides the row (the ledger reader
+    if split is not None:                                  #  sees which stage a slow boot spent its time in without the kernel)
+        row["stages"] = split.get("stages")
     if row["slow"]:
         try:
             sys.stderr.write("boot health: the first pusher cycle took %.1f s (bound %.0f s): sessions and cards waited behind it; "
@@ -46607,6 +46715,8 @@ def _push(targets, connect=False, live_map=None):
     # The FLEET connects as its OWN app (the user 2026-06-29) so we build its per-session ledgers EVEN when no
     # chat client is open — previously the fleet rode app=feed and got ledgers only as a side effect of a chat
     # build (want_chat), so opening the fleet alone showed an empty/loading screen until a chat push happened.
+    _PERF_STATS.stage_boundary()                 # T397: the push's sub-stages measure their bytes from here (the cards-first
+    #                                              path below included: round one, low 1), not from the cycle's start
     want_fleet = any(c["app"] == "fleet" for c in targets)
     want_feed = _feed_audience(targets)          # the Sessions pane (app "fleet") rides the feed payload; chat needs feed["working"]
     want_tl = any(c["app"] == "timeline" for c in targets)
@@ -49549,6 +49659,7 @@ def _pusher_cycle():
 
 def _pusher_cycle_jobs(now, live_map, any_client):
     _t_jobs = time.monotonic()            # /perf: this function minus the _push_all below is the `jobs` stage
+    _PERF_STATS.cycle_begin()             # T397: the cycle's first byte mark, so the split's bytes start here
     try:                                  # the cycle's checkpoint byte budget, whole again, and the drops owed from the last one
         _begin_checkpoint_cycle()         # (T362): before the builds below, whose quiescence drops write against it
     except Exception:
@@ -56372,7 +56483,8 @@ class Handler(BaseHTTPRequestHandler):
                     rows = rows + _thread_rows()               # bus (the user 2026-08-22); every existing
                 return self._send(200, json.dumps(rows), "application/json", cache="no-cache")   # consumer unchanged
             if p == "/perf":                                  # the kernel's performance counters (`romp perf`); shape: _PerfStats
-                return self._send(200, json.dumps(_PERF_STATS.snapshot()), "application/json", cache="no-cache")
+                return self._send(200, json.dumps(_PERF_STATS.snapshot(ring_all=(q.get("ring") or [""])[0] == "all")),
+                                  "application/json", cache="no-cache")   # ?ring=all: the whole stage ring (T397)
             if p == "/commands":                              # slash-command list for the composer's "/" autocomplete (SDK get_server_info, per-cwd cached)
                 sid = (q.get("sid") or [""])[0]
                 cmds, warming = _commands_for_cwd(_cwd_of(sid) if sid else "")
