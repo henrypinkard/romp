@@ -14,8 +14,9 @@ export const SETTLE_MS = 1200;
  *  reads that as a gesture too; without evidence such a scroll is a SAMPLE for the settle, never a takeover. A scroll follows
  *  its input within a frame or two; the window only bounds staleness. */
 export const SETTLE_INPUT_MS = 120;
-/** The one early backstop sample beside the event samples: the first paint after the landing's own render, where a page
- *  that moves nothing settles on its two quiet samples instead of waiting for the window's end (round one, low 5). */
+/** The one early backstop sample beside the event samples: the first paint after the landing's own render, a measurement
+ *  of where the target came to rest once the page laid out (round one, low 5). It settles nothing by itself: the window's end
+ *  files the landing (round two, low 1). */
 export const SETTLE_FIRST_PAINT_MS = 250;
 /** The row a landing must sit within is the aligned element's own height, capped at this fraction of the viewport: a
  *  600 px miss on a 900 px message is a miss (round one, low 1). */
@@ -30,10 +31,20 @@ export function reachableOffset(targetY: number, scrollHeight: number, clientHei
   return Math.max(0, Math.round(targetY - maxScroll));
 }
 
-/** Whether a scroll at `scrollAt` (ms) has a reader's input behind it: one at `lastInputAt` within SETTLE_INPUT_MS before it.
- *  0 or null = no input seen. */
-export function gestureEvidence(lastInputAt: number | null | undefined, scrollAt: number): boolean {
+/** Whether a scroll at `scrollAt` (ms) has a reader's input behind it: the pointer HELD on the scroller itself (a scrollbar
+ *  thumb drag: one pointerdown on the scroller, then scrolls with no pointer moves at all until the release, round three), or
+ *  an input at `lastInputAt` within SETTLE_INPUT_MS before it (a wheel, a key, a touch, a drag inside the content). 0 or null =
+ *  no timed input seen. */
+export function gestureEvidence(lastInputAt: number | null | undefined, scrollAt: number, held: boolean = false): boolean {
+  if (held) return true;
   return !!lastInputAt && scrollAt - lastInputAt >= 0 && scrollAt - lastInputAt <= SETTLE_INPUT_MS;
+}
+
+/** Whether a pointerdown grabbed the SCROLLER: its target is the scroller element itself (the content's children take a press
+ *  on the text; the scrollbar gutter belongs to the scroller), or its offset lies in the gutter beyond the client box. The
+ *  hold this starts stands until the pointer's release or cancel, and every scroll meanwhile is the reader's (round three). */
+export function scrollerGrab(targetIsScroller: boolean, offsetX: number, offsetY: number, clientWidth: number, clientHeight: number): boolean {
+  return targetIsScroller || offsetX >= clientWidth || offsetY >= clientHeight;
 }
 
 export interface SettleSample { at: number; dist: number }   // at: ms since the landing write; dist: the target's top vs the viewport top, px
@@ -67,9 +78,14 @@ export function settleStep(samples: readonly SettleSample[], rowH: number, gestu
 
 /** The fields the landing row gains when the settle ends: the last measured distance (px, the target's top vs the
  *  viewport top; null when the target was never measured) and whether the landing settled. A landing the reader
- *  took over ("gave-up") is settled when its last distance was within the row: the reader's own move is not a miss. */
-export function settleRowFields(step: SettleStep, samples: readonly SettleSample[], rowH: number): { dist: number | null; settled: boolean } {
+ *  took over ("gave-up") is settled when its last distance was within the row: the reader's own move is not a miss; the row
+ *  says so with `gesture` (round three, low 3). */
+export function settleRowFields(step: SettleStep, samples: readonly SettleSample[], rowH: number): { dist: number | null; settled: boolean; gesture?: true } {
   const last = samples.length ? samples[samples.length - 1] : null;
-  if (!last) return { dist: null, settled: false };
-  return { dist: Math.round(last.dist), settled: step === "settled" || (step === "gave-up" && withinRow(last.dist, rowH)) };
+  // the takeover MARK (round three, low 3): the audit could not tell a landing the reader abandoned from one that held, since a
+  // gave-up landing within the row files settled true like a held one; `gesture` says the reader took it over, the distance
+  // stays the target's last measured one
+  const mark = step === "gave-up" ? { gesture: true as const } : {};
+  if (!last) return { dist: null, settled: false, ...mark };
+  return { dist: Math.round(last.dist), settled: step === "settled" || (step === "gave-up" && withinRow(last.dist, rowH)), ...mark };
 }

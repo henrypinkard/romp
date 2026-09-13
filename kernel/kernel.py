@@ -58672,7 +58672,7 @@ class Handler(BaseHTTPRequestHandler):
                 for _k in ("dist", "clamp"):
                     if isinstance(msg.get(_k), (int, float)) and not isinstance(msg.get(_k), bool):
                         rec[_k] = msg[_k]
-                for _k in ("settled", "superseded"):
+                for _k in ("settled", "superseded", "gesture"):   # gesture: the reader took the landing over (round three, low 3)
                     if isinstance(msg.get(_k), bool):
                         rec[_k] = msg[_k]
                 with open(jd.STATE / "locate-audit.jsonl", "a", encoding="utf-8") as f:

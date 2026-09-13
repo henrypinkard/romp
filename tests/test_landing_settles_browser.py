@@ -43,7 +43,7 @@ const ledger = () => page.evaluate(() => window.__sent.filter((m) => m.type === 
   .map((m) => ({ writer: m.data.writer, before: m.data.before, after: m.data.after })));
 const rows = () => page.evaluate(() => window.__sent.filter((m) => m.type === "locateDiag")
   .map((m) => ({ ok: m.ok, trail: m.trail, anchor: m.anchor || null, anchorT: m.anchorT === undefined ? null : m.anchorT, dist: m.dist === undefined ? null : m.dist,
-                 settled: m.settled === undefined ? null : m.settled, superseded: m.superseded === undefined ? null : m.superseded, clamp: m.clamp === undefined ? null : m.clamp })));
+                 settled: m.settled === undefined ? null : m.settled, superseded: m.superseded === undefined ? null : m.superseded, clamp: m.clamp === undefined ? null : m.clamp, gesture: m.gesture === undefined ? null : m.gesture })));
 // an element's box against the viewport top, and its own height (the row it must stay within)
 const boxOf = (sel) => page.evaluate((s) => {
   const c = document.getElementById("content"); const t = document.querySelector(s);
@@ -152,6 +152,27 @@ await page.waitForTimeout(120);
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(52), anchorT: cfg.base + 104 });
 await page.waitForTimeout(2500);
 const rows5 = (await rows()).slice(rowsBefore5);
+// ROAD 9 (round three, medium): a scrollbar THUMB drag. The reader presses on the scroller itself (the gutter is the scroller's own
+// box), pauses past the timed window, then drags: the browser fires scroll events with NO pointer moves at all until the release.
+// The timed evidence alone read those scrolls as samples and land-realign wrote the reader back; the hold on the scroller is the
+// evidence now, whatever the clock says.
+const rowsBefore9 = (await rows()).length;
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(45), anchorT: cfg.base + 90 });
+try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(45), { timeout: 20000 }); }
+catch (e) { const st = await state(); console.error("the drag road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
+const landed9 = await page.evaluate(() => document.getElementById("content").scrollTop);
+await page.evaluate(() => { const c = document.getElementById("content"); const r = c.getBoundingClientRect();
+  c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", isPrimary: true, button: 0, buttons: 1, clientX: r.right - 4, clientY: r.top + r.height / 2 })); });
+await page.waitForTimeout(300);   // the pause past SETTLE_INPUT_MS before the first movement
+const moved9 = await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollTop + 500; return c.scrollTop; });
+await page.waitForTimeout(120);
+const moved9b = await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollTop + 400; return c.scrollTop; });
+await page.waitForTimeout(200);
+await page.evaluate(() => { const c = document.getElementById("content"); c.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", isPrimary: true, button: 0, buttons: 0 })); });
+await page.waitForTimeout(1400);
+const after9 = await page.evaluate(() => document.getElementById("content").scrollTop);
+const writes9 = (await ledger()).filter((w) => w.writer === "land-realign" && (Math.abs(w.before - moved9) < 4 || Math.abs(w.before - moved9b) < 4));
+const rows9 = (await rows()).slice(rowsBefore9);
 // ROAD 8 (round two, medium): the browser's own scroll anchoring during the settle. A 400 px node inserted ABOVE the viewport
 // in the landing's frame moves scrollTop with no write and no input; the classifier calls that a gesture, and the settle used to
 // end on it and file the landing settled false, dist null. With the reader's input as the evidence a gesture needs, it is a
@@ -185,7 +206,7 @@ const st = await state();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-settled.png" });
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify({ o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2,
-  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
+  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
 """
 
 
@@ -266,6 +287,7 @@ class ServedLandingSettles(WindowLab):
         taken = [x for x in r["rows4"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
         self.assertEqual(len(taken), 1, "one exact row for the gesture road's landing: %r" % r["rows4"])
         self.assertTrue(taken[0]["settled"], "the target sat on its row when the reader took over: %r" % taken[0])
+        self.assertTrue(taken[0].get("gesture"), "…and the row says the reader took it over (round three, low 3): %r" % taken[0])
         # medium 2: two landings inside one settle window are two rows, the first marked superseded
         exact = [x for x in r["rows5"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
         self.assertEqual(len(exact), 2, "two exact rows for two clicks: %r" % r["rows5"])
@@ -295,6 +317,16 @@ class ServedLandingSettles(WindowLab):
         self.assertIsNotNone(exact[0]["dist"], "the settle measured the target: %r" % exact[0])
         self.assertLessEqual(abs(exact[0]["dist"]), 24, "the target on its row at the settle's end: %r" % exact[0])
         self.assertLessEqual(abs(r["box8"]["top"]), 40, "and on the screen the target still sits at the top: %r" % r["box8"])
+
+    def test_a_scrollbar_thumb_drag_with_a_pause_before_the_first_movement_is_the_readers_and_the_view_holds(self):
+        # round three, medium: one pointerdown on the scroller, a 300 ms pause, then scrolls with no pointer moves until the release
+        r = self._result()
+        self.assertGreater(r["moved9"], r["landed9"] + 400, "the drag moved the view: %s from %s" % (r["moved9"], r["landed9"]))
+        self.assertLessEqual(abs(r["after9"] - r["moved9b"]), 60, "the view stayed where the drag left it (%s), now %s; re-lands near the drag: %r" % (r["moved9b"], r["after9"], r["writes9"]))
+        self.assertEqual(r["writes9"], [], "no land-realign wrote the drag back: %r" % r["writes9"])
+        taken = [x for x in r["rows9"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(len(taken), 1, "one exact row for the drag road's landing: %r" % r["rows9"])
+        self.assertTrue(taken[0].get("gesture"), "the row says the reader took the landing over: %r" % taken[0])
 
 
 if __name__ == "__main__":

@@ -41,6 +41,14 @@ test("a gesture needs the reader's input behind it (round two, medium): an input
   assert.equal(LS.gestureEvidence(0, 1050), false, "no input ever seen: the browser's anchoring or another mover");
   assert.equal(LS.gestureEvidence(null, 1050), false);
   assert.equal(LS.gestureEvidence(2000, 1050), false, "an input after the scroll is not its cause");
+  // round three: the pointer HELD on the scroller (a scrollbar thumb drag: one pointerdown, no moves, scrolls until the release)
+  assert.equal(LS.gestureEvidence(0, 1050, true), true, "held on the scroller: the reader's, whatever the clock says");
+  assert.equal(LS.gestureEvidence(1000, 1900, true), true, "…a pause past the window before the first movement changes nothing");
+  assert.equal(LS.gestureEvidence(1000, 1900, false), false, "released: the timed window rules again");
+  assert.equal(LS.scrollerGrab(true, 10, 10, 800, 600), true, "a press whose target is the scroller element itself (the gutter is its own box)");
+  assert.equal(LS.scrollerGrab(false, 805, 100, 800, 600), true, "…or whose offset lies in the vertical scrollbar's gutter");
+  assert.equal(LS.scrollerGrab(false, 100, 605, 800, 600), true, "…or the horizontal one's");
+  assert.equal(LS.scrollerGrab(false, 100, 100, 800, 600), false, "a press on the content's children is a drag inside the content: the timed rule");
 });
 
 test("the window's end files the landing as it stands: settled within the row, else unsettled, never held forever", () => {
@@ -55,9 +63,11 @@ test("the window's end files the landing as it stands: settled within the row, e
 test("the row's fields: the last distance rounded, settled by the step; a gave-up landing within the row is not a miss", () => {
   assert.deepEqual(settleRowFields("settled", [{ at: 0, dist: 0 }, { at: 250, dist: 2.4 }], 40), { dist: 2, settled: true });
   assert.deepEqual(settleRowFields("unsettled", [{ at: 0, dist: 0 }, { at: 1200, dist: 300.6 }], 40), { dist: 301, settled: false });
-  assert.deepEqual(settleRowFields("gave-up", [{ at: 0, dist: 0 }, { at: 100, dist: 5 }], 40), { dist: 5, settled: true });
-  assert.deepEqual(settleRowFields("gave-up", [{ at: 0, dist: 0 }, { at: 100, dist: 500 }], 40), { dist: 500, settled: false });
+  assert.deepEqual(settleRowFields("gave-up", [{ at: 0, dist: 0 }, { at: 100, dist: 5 }], 40), { dist: 5, settled: true, gesture: true }, "the takeover MARK (round three, low 3): the audit tells an abandoned landing from a held one");
+  assert.deepEqual(settleRowFields("gave-up", [{ at: 0, dist: 0 }, { at: 100, dist: 500 }], 40), { dist: 500, settled: false, gesture: true });
+  assert.deepEqual(settleRowFields("gave-up", [], 40), { dist: null, settled: false, gesture: true }, "a takeover before any measurement still wears the mark");
   assert.deepEqual(settleRowFields("wait", [], 40), { dist: null, settled: false }, "never measured");
+  assert.equal("gesture" in settleRowFields("settled", [{ at: 0, dist: 0 }], 40), false, "a landing that held wears no mark");
 });
 
 test("the scroll clamp: how far short of the viewport top a target near the tail must stop (medium 3)", () => {
@@ -69,7 +79,7 @@ test("the scroll clamp: how far short of the viewport top a target near the tail
 });
 
 test("render.ts wiring: landOn ends follow mode, feeds the rule from the page's own events, files the row at settle time, and the walk-forward waits", () => {
-  assert.match(RENDER, /import \{ SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, type SettleSample \} from "\.\/landing-settle";/);
+  assert.match(RENDER, /import \{ SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, type SettleSample \} from "\.\/landing-settle";/);
   assert.match(RENDER, /if \(c && v\) v\.stick = atBottom\(c\); \}/, "a landing ends follow mode unless it put the reader at the bottom (the tail-shrink snap otherwise undoes it)");
   assert.match(RENDER, /const landSettle = \{ turn: target, at, uuid: flashKey \?\? null, quote: quote \?\? null, rowH: settleRowHeight\(at\), samples: \[\] as SettleSample\[\],/, "one settle in flight per landing, with what re-finds its target");
   assert.match(RENDER, /ro\.observe\(at\); if \(at !== target\) ro\.observe\(target\);/, "the aligned element's box, and the turn's");
@@ -80,27 +90,31 @@ test("render.ts wiring: landOn ends follow mode, feeds the rule from the page's 
   assert.match(RENDER, /settleFinish\(s, settleRowFields\(step, s\.samples, s\.rowH\)\);/);
   assert.match(RENDER, /if \(s\.row\) vscodeApi\?\.postMessage\(\{ \.\.\.s\.row, \.\.\.fields, \.\.\.\(s\.clamp \? \{ clamp: s\.clamp \} : \{\}\) \}\);/, "the deferred row goes out with the measurement and the clamp when one applied");
   assert.match(RENDER, /if \(after !== before && landSettling && !landSettling\.done && writer !== "land-on" && writer !== "land-realign"\) settleSample\(\);/, "another writer's move during the settle is a sample, so the rule re-lands");
-  assert.match(RENDER, /if \(scrolled && landSettling && !landSettling\.done && landTrail\[landTrail\.length - 1\] === "pointer-exact"\) landSettling\.row = row;\s*\n\s*else vscodeApi\?\.postMessage\(row\);/, "an exact landing's row waits for the settle; every other outcome files at once");
+  assert.match(RENDER, /if \(scrolled && landSettling && !landSettling\.done && landTrail\[landTrail\.length - 1\] === "pointer-exact"\) \{ landSettling\.row = row; settleSample\(\); \}[^\n]*\n\s*else vscodeApi\?\.postMessage\(row\);/, "an exact landing's row waits for the settle; every other outcome files at once");
   assert.match(RENDER, /if \(landSettling && !landSettling\.done\) \{ afterSettle\.push\(\(\) => edgeCheckAfterWindow\(sid\)\); return; \}/, "the walk-forward of a detached window that fits waits for the landing to settle");
   assert.match(RENDER, /pendingAnchorT = ask\?\.t \?\? null; pendingAnchorKind = ask\?\.kind \?\? null;/, "the click's time and kind ride through the window's adoption");
 });
 
 test("render.ts wiring, round one: the gesture verdict ends the settle by any input; a superseded landing files its row; the clamp is measured", () => {
   // medium 1: the scroll listener's classifier verdict, not a wheel or key listener alone
-  assert.match(RENDER, /if \(cls === "gesture"\) \{ if \(gestureEvidence\(settleLastInput, Date\.now\(\)\)\) settleGesture\(\); else settleSample\(\); \}/,
-    "the classifier's gesture verdict ends the settle only with the reader's input behind it; without, the scroll is a sample (round two, medium: the browser's own anchoring)");
+  assert.match(RENDER, /if \(cls === "gesture"\) \{ if \(gestureEvidence\(settleLastInput, Date\.now\(\), settleScrollerHeld\)\) settleGesture\(\); else settleSample\(\); \}/,
+    "the classifier's gesture verdict ends the settle only with the reader's input behind it, timed or the pointer held on the scroller; without, the scroll is a sample (rounds two and three)");
   assert.doesNotMatch(RENDER, /window\.addEventListener\("wheel", settleGesture/, "no wheel-only listener: a scrollbar drag and a touch swipe count too");
   assert.doesNotMatch(RENDER, /addEventListener\("keydown", settleGesture\)/, "a key is evidence for the scroll it causes, not a takeover by itself (round two)");
-  assert.match(RENDER, /for \(const ev of \["pointerdown", "pointermove", "touchstart", "touchmove", "wheel", "keydown"\]\) window\.addEventListener\(ev, settleInput, \{ capture: true, passive: true \}\);/,
-    "the reader's hand on the scroller: pointer, touch, wheel and key, recorded as the time of the last input");
+  assert.match(RENDER, /for \(const ev of \["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchmove", "wheel", "keydown"\]\) window\.addEventListener\(ev, settleInput, \{ capture: true, passive: true \}\);/,
+    "the reader's hand on the scroller: pointer, touch, wheel and key, recorded as the time of the last input; the release ends a hold");
   const inp = RENDER.slice(RENDER.indexOf("function settleInput(e: Event): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function settleInput(e: Event): void {")));
-  assert.match(inp, /if \(e\.type === "pointermove" && !\(e as PointerEvent\)\.buttons\) return;/, "a hover is not a hand on the scroller; a scrollbar drag is");
+  assert.match(inp, /if \(e\.type === "pointermove" && !\(e as PointerEvent\)\.buttons\) return;/, "a hover is not a hand on the scroller; a drag inside the content is");
+  assert.match(inp, /if \(e\.type === "pointerup" \|\| e\.type === "pointercancel"\) \{ settleScrollerHeld = false; return; \}/, "the release ends the hold (round three)");
+  assert.match(inp, /if \(scrollerGrab\(e\.target === c, pe\.clientX - cr\.left, pe\.clientY - cr\.top, c\.clientWidth, c\.clientHeight\)\) settleScrollerHeld = true;/, "a press on the scroller itself or in its gutter starts the hold");
+  assert.match(RENDER, /settleLastInput = 0;   \/\/ the input that caused this landing/, "landOn clears the timed evidence: the click that landed is not a takeover (round three, low 4)");
+  assert.match(RENDER, /gesture: undefined, settled: false, superseded: true/, "a superseded row wears no takeover mark");
   assert.match(inp, /if \(!c \|\| !\(e\.target instanceof Node\) \|\| !c\.contains\(e\.target\)\) return;/, "on the scroller and its scrollbar only");
   assert.match(inp, /a\.tagName === "TEXTAREA" \|\| a\.tagName === "INPUT" \|\| \(a as HTMLElement\)\.isContentEditable/, "typing in a field scrolls the field, never #content");
   assert.match(RENDER, /settleLastInput = Date\.now\(\);/);
   assert.doesNotMatch(RENDER, /re-align whenever the bar\/ledger actually resizes, plus two\n\/\/ timed retries/, "landOn's comment describes the settle, not the wheel cancel and two retries (round two, low 4)");
   // medium 2: the superseded row
-  assert.match(RENDER, /function settleSupersede\(s: NonNullable<typeof landSettling>\): void \{\s*\n\s*settleEnd\(s\);\s*\n\s*if \(s\.row\) vscodeApi\?\.postMessage\(\{ \.\.\.s\.row, \.\.\.settleRowFields\("gave-up", s\.samples, s\.rowH\), settled: false, superseded: true,/);
+  assert.match(RENDER, /function settleSupersede\(s: NonNullable<typeof landSettling>\): void \{\s*\n\s*settleEnd\(s\);\s*\n\s*if \(s\.row\) vscodeApi\?\.postMessage\(\{ \.\.\.s\.row, \.\.\.settleRowFields\("gave-up", s\.samples, s\.rowH\), gesture: undefined, settled: false, superseded: true,/);
   assert.match(RENDER, /if \(landSettling\) settleSupersede\(landSettling\);/, "a newer landing files the older's row, marked");
   // medium 3: the clamp
   assert.match(RENDER, /const floor = reachableOffset\(r\.top - cr\.top \+ c\.scrollTop, c\.scrollHeight, c\.clientHeight\);\s*\n\s*s\.clamp = floor;\s*\n\s*s\.samples\.push\(\{ at: Date\.now\(\) - s\.start, dist: \(r\.top - cr\.top\) - floor \}\);/);
@@ -114,8 +128,10 @@ test("render.ts wiring, round one: the gesture verdict ends the settle by any in
   assert.match(RENDER, /if \(s\.at\.isConnected && s\.at\.getClientRects\(\)\.length\) return s\.at;/);
   assert.match(RENDER, /if \(!turn \|\| !turn\.getClientRects\(\)\.length\) return null;/);
   // low 5: two named backstops
-  assert.match(RENDER, /landSettle\.timers\.push\(window\.setTimeout\(settleSample, SETTLE_FIRST_PAINT_MS\), window\.setTimeout\(settleSample, SETTLE_MS \+ 20\)\);\s*\n\s*settleSample\(\);/,
-    "…and the landing's own first sample at the write, so a takeover in the first frames files the landing as it stood (round two)");
+  assert.match(RENDER, /landSettle\.timers\.push\(window\.setTimeout\(settleSample, SETTLE_FIRST_PAINT_MS\), window\.setTimeout\(settleSample, SETTLE_MS \+ 20\)\);\s*\n\s*\/\//,
+    "no sample inside landOn itself (round three, low 1)");
+  assert.match(RENDER, /landTrail\[landTrail\.length - 1\] === "pointer-exact"\) \{ landSettling\.row = row; settleSample\(\); \}/,
+    "the row attached, then the landing's own first sample, so a takeover in the first frames files the landing as it stood and an unmeasurable one files settled false");
 });
 
 test("render.ts wiring: the settle re-finds its target by uuid after a rebuild replaced the DOM, and gives up honestly when the turn is gone", () => {

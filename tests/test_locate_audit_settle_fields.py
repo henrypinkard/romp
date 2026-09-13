@@ -50,8 +50,12 @@ class LocateAuditSettleFields(unittest.TestCase):
         self.post(dist=2, settled=True)
         self.post(dist=-38, settled=False, superseded=True)
         self.post(dist=0, settled=True, clamp=93)
+        self.post(dist=3, settled=True, gesture=True)   # the reader took the landing over with the target on its row (round three, low 3)
         rows = self.rows()
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual((rows[3]["settled"], rows[3]["gesture"]), (True, True), "the takeover mark reaches the audit: %r" % rows[3])
+        for r in rows[:3]:
+            self.assertNotIn("gesture", r, "no mark on a landing the reader left alone: %r" % r)
         self.assertEqual((rows[0]["ok"], rows[0]["dist"], rows[0]["settled"]), (True, 2, True), rows[0])
         self.assertNotIn("superseded", rows[0], "the mark is written only when the page said so")
         self.assertEqual((rows[1]["dist"], rows[1]["settled"], rows[1]["superseded"]), (-38, False, True), rows[1])
@@ -71,11 +75,11 @@ class LocateAuditSettleFields(unittest.TestCase):
 
     def test_mistyped_settle_fields_are_not_copied(self):
         # round two, low 2: the four fields are typed like the fields beside them; a bool is not a distance, a word is not a mark
-        self.post(dist="9", settled="yes", superseded=1, clamp=True)
+        self.post(dist="9", settled="yes", superseded=1, clamp=True, gesture="wheel")
         self.post(dist=True, settled=None, clamp=2.5)
         rows = self.rows()
         self.assertEqual(len(rows), 2)
-        for k in ("dist", "settled", "superseded", "clamp"):
+        for k in ("dist", "settled", "superseded", "clamp", "gesture"):
             self.assertNotIn(k, rows[0], "a mistyped field is dropped, never written: %r" % rows[0])
         self.assertNotIn("dist", rows[1], "a bool is not a distance: %r" % rows[1])
         self.assertNotIn("settled", rows[1])
