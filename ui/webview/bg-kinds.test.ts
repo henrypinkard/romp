@@ -43,6 +43,10 @@ test("the sections are the kinds, in the rows' display order, and no section of 
   assert.match(body, /lab\.textContent = "In the background · " \+ listBreakdown\(counted, keptN\);/, "the working header counts every row it lists");
   assert.match(body, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(counted, keptN\);/, "…and the mixed idle header");
   assert.match(body, /if \(kept\.length\) lab\.append\(" · " \+ listBreakdown\(kept\.map\(/, "…and the peer-named idle header counts the tracked rows below");
+  assert.match(body, /lab\.textContent = "Awaiting" \+ \(word \? " " \+ word : ""\) \+ " · " \+ why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\) \+ \(kept\.length \? " · " \+ listBreakdown\(counted, keptN\) : ""\);/,
+    "…and the one-kind idle header counts the rows beyond the wait's, by kind, with the kept subset (round three, low 3)");
+  assert.match(body, /THE HEADER'S RULE \(T394 round three, lows 1 and 2\): the leading word is the wait and its count is the awaited rows/, "the rule, stated where the header is built");
+  assert.match(body, /subset of those rows wearing the judge's verdict, never a further partition/, "…the kept count is a subset, never a partition");
   assert.doesNotMatch(body, /listBreakdown\(items, keptN\)/, "no header reads the kernel's rows alone");
   const key = fn("awaitKey");
   assert.match(key, /st\.awaitingTaskIds \|\| \[\], st\.bgServiceIds \|\| \[\], st\.awaitingItems \|\| \[\]/, "a verdict-only frame repaints the box (round two, low 1)");

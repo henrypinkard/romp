@@ -150,7 +150,7 @@ test("the box groups the rows by kind, headers only when more than one group sho
   assert.match(body, /for \(const row of kept\) if \(row\.kind === g\.kind\) list\.appendChild\(bgRow\(row, sid\)\);/);
   // the header: mixed → "Awaiting <n> · <breakdown>" counting the kept rows apart; one kind → the sentence as before, the kept count after it
   assert.match(body, /\} else if \(groups\.length > 1\) \{\s*\n\s*lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(counted, keptN\);/);
-  assert.match(body, /lab\.textContent = "Awaiting" \+ \(word \? " " \+ word : ""\) \+ " · " \+ why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\) \+ \(keptN \? " · " \+ keptWord\(keptN\) : ""\);/);
+  assert.match(body, /lab\.textContent = "Awaiting" \+ \(word \? " " \+ word : ""\) \+ " · " \+ why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\) \+ \(kept\.length \? " · " \+ listBreakdown\(counted, keptN\) : ""\);/);
   // the no-rows fallback still expands to the full sentence — never a dead end
   assert.match(body, /if \(!groups\.length && !leftovers\.length\) \{[\s\S]*?const w = el\("div", "bg-await-why"\); w\.textContent = why;/);
   // the header vocabulary is .bg-status's — the notice SOURCE-label rung (0.72em uppercase, 2026-09-08; was 10px), dim

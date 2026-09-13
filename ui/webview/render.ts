@@ -13900,6 +13900,12 @@ function renderBgTasks() {
   const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);   // ▸ closed → ▾ open (expands DOWNWARD beneath the header)
   head.appendChild(el("span", "bg-dot"));
   const lab = el("span", "bg-fold-label");
+  // THE HEADER'S RULE (T394 round three, lows 1 and 2): the leading word is the wait and its count is the awaited rows (the chip's
+  // number); the breakdown after the separator counts EVERY row the list shows, by kind, awaited or not; "N kept running" is the
+  // subset of those rows wearing the judge's verdict, never a further partition. So "Awaiting 2 · 1 agent · 2 commands · 1 kept
+  // running" is a session waiting on two of three listed rows, one of them a command the judge called furniture. The one-kind idle
+  // header keeps the wait's own sentence and adds the breakdown only when the list shows rows beyond the wait's (else the word
+  // already counts them all).
   if (why) {
     // IDLE, waiting on the rows — the chip reads Awaiting and the header agrees with it in number: ONE rule
     // words both (awaitWord). The kernel's why leads with the verb ("waiting on a background command: …");
@@ -13922,7 +13928,7 @@ function renderBgTasks() {
     } else if (groups.length > 1) {
       lab.textContent = "Awaiting " + word + " · " + listBreakdown(counted, keptN);   // mixed kinds: the number, then every listed row by kind, then the kept rows
     } else {
-      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "") + (keptN ? " · " + keptWord(keptN) : "");
+      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "") + (kept.length ? " · " + listBreakdown(counted, keptN) : "");   // the rows beyond the wait's counted too, by kind, the kept subset after (round three, low 3)
     }
   } else {
     // WORKING (or idle with nothing awaited — a service the session keeps around): the same rows, worded

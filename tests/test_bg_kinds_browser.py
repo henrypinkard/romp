@@ -90,11 +90,18 @@ const f0 = cfg.frame; const task = (id) => f0.bgTasks.tasks.find((t) => t.id ===
 const only = (tasks, serviceIds, state) => ({ ...f0, status: { ...f0.status, state, awaitingItems: [], awaitingTaskIds: [], bgServiceIds: serviceIds }, bgTasks: { count: tasks.length, tasks } });
 const settle = async (f) => { await page.evaluate((x) => window.postMessage(x, "*"), f); await page.waitForTimeout(500); return probe(); };
 const placedOnly = await settle(only([task(cfg.placedId)], [], "working"));
-const placedKept = await settle(only([task(cfg.placedId)], [cfg.placedId], "working"));
+// the verdict arrives by a BARE STATUS frame (round three, low 4): a session frame repaints the box unconditionally for the active
+// tab, a status frame only through awaitKey, so this is the executed coverage of the key carrying bgServiceIds
+const placedKept = await settle({ type: "status", id: f0.id, status: { ...f0.status, state: "working", awaitingItems: [], awaitingTaskIds: [], bgServiceIds: [cfg.placedId] } });
 const doneOnly = await settle(only([task(cfg.doneId)], [], "idle"));
+// the one-kind idle wait with tracked rows beyond it (round three, low 3): waiting on one command, a kept service and a finished
+// command listed too; every listed row counted, the kept subset after
+const idleOne = await settle({ ...f0, status: { ...f0.status, state: "idle", awaitingWhy: "waiting on a background command: Build the docs site", awaitingKind: "commands", awaitingCount: 1,
+                                               awaitingItems: f0.status.awaitingItems.filter((it) => it.kind === "commands"), awaitingTaskIds: [cfg.cmdId], bgServiceIds: [cfg.svcId, cfg.doneId] },
+                                bgTasks: { count: 3, tasks: [task(cfg.cmdId), task(cfg.svcId), task(cfg.doneId)] } });
 if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/romp_chat-T394-bg-kinds-light-served.png" }); }
 await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ dark, light, placedOnly, placedKept, doneOnly }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ dark, light, placedOnly, placedKept, doneOnly, idleOne }) + "\n", () => process.exit(0));
 """
 
 
@@ -202,7 +209,7 @@ class ServedBgKinds(unittest.TestCase):
                          {"id": DONE_ID, "status": "completed", "summary": "Warm the docs cache", "command": "mkdocs build --dirty", "output": "done"}]}}
             cfg = os.path.join(self.lab, "cfg.json")
             with open(cfg, "w") as f:
-                json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "frame": frame, "placedId": PLACED_ID, "doneId": DONE_ID,
+                json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "frame": frame, "placedId": PLACED_ID, "doneId": DONE_ID, "cmdId": CMD_ID, "svcId": SVC_ID,
                            "shots": os.environ.get("BG_KINDS_SHOTS", "")}, f)
             driver = os.path.join(self.lab, "driver.mjs")
             with open(driver, "w") as f:
@@ -289,11 +296,21 @@ class ServedBgKinds(unittest.TestCase):
         self.assertEqual([(x["section"], x["label"], x["kept"]) for x in po["rows"]], [(None, "Run the parser test chunk", None)], "one row, no verdict word: %r" % po["rows"])
         self.assertEqual(po["header"], "In the background · 1 command", "the header counts the listed row: %r" % po["header"])
         pk = r["placedKept"]
-        self.assertEqual([x["kept"] for x in pk["rows"]], [KEPT_WORD], "the verdict-only frame repainted the box: the row wears the suffix: %r" % pk["rows"])
+        self.assertEqual([x["kept"] for x in pk["rows"]], [KEPT_WORD], "the verdict by a bare status frame repainted the box: the row wears the suffix (round three, low 4): %r" % pk["rows"])
         self.assertEqual(pk["header"], "In the background · 1 command · 1 kept running", "…and the header counts it as kept: %r" % pk["header"])
+        self.assertIn("bg-kept", pk["rows"][0]["cls"].split(), "…and the kept class: %r" % pk["rows"][0]["cls"])
         do = r["doneOnly"]
         self.assertEqual([(x["label"], x["caption"], x["kept"]) for x in do["rows"]], [("Warm the docs cache", "completed", None)], "the finished task, unmarked: %r" % do["rows"])
         self.assertEqual(do["header"], "In the background · 1 command", "counted, never a separator with nothing after it: %r" % do["header"])
+
+    def test_the_one_kind_idle_header_counts_every_listed_row_by_the_headers_rule(self):
+        # round three, lows 1 to 3. THE RULE: the leading word is the wait and its count is the awaited rows (the chip's number); the
+        # breakdown counts every row the list shows, by kind; N kept running is the subset wearing the verdict, never a partition
+        r = self._result()
+        io = r["idleOne"]
+        self.assertEqual([(x["label"], x["kept"]) for x in io["rows"]], [("Build the docs site", None), ("Serve the docs preview", KEPT_WORD), ("Warm the docs cache", None)], "the wait's row, the kept service, the finished command: %r" % io["rows"])
+        self.assertEqual(io["header"], "Awaiting command · a background command: Build the docs site · 3 commands · 1 kept running",
+                         "the wait's word and sentence, then every listed row by kind, then the kept subset: %r" % io["header"])
 
     def test_a_completed_only_box_wears_the_dim_ink_on_its_header_dot(self):
         # round two, low 2: the worst status seeds from the tasks, so a completed-only box reads completed, the dim ink, not the running gold
