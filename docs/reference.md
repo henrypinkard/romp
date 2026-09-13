@@ -1554,7 +1554,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   of that file's fold document, written from the walk's own read at the
   quiescence drop and restored at the next boot, so such a file is read whole
   once (a live session's own files, its /clear anchor among them, stay
-  resident instead, since the chain walk reads them at every pass). The
+  resident instead, since the chain walk reads them at every pass; a leaf
+  with no assembly document, one with no compaction boundary, takes the memo
+  road too, since the leaf road's seeded walk had nothing to seed and read it
+  whole at every boot). The
   counters: the memo's answers (`served`), the walks it took (`walked`), the
   walks over a memo the file's growth or rewrite retired (`stale`; a file
   whose entry merely left memory and came back is walked, not stale) and the
