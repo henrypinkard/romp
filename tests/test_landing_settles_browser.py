@@ -155,7 +155,7 @@ const rows5 = (await rows()).slice(rowsBefore5);
 // ROAD 10 (round four, medium): the reader's arrow keys. The key handler scrolls the pane through the write helper (writer key-nav),
 // so the scroll is a write echo the classifier never calls a gesture; the write rule read it as another mover's and land-realign
 // wrote three steps back. A reader-driven writer is the reader's takeover.
-const rowsBefore10 = (await rows()).length;
+const rowsBefore10 = (await rows()).length; const ledgerBefore10 = (await ledger()).length;   // the road's own slice (round five, low)
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(36), anchorT: cfg.base + 72 });
 try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(36), { timeout: 20000 }); }
 catch (e) { const st = await state(); console.error("the key road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
@@ -163,9 +163,39 @@ const landed10 = await page.evaluate(() => { const a = document.activeElement; i
 for (let i = 0; i < 3; i++) { await page.keyboard.press("ArrowDown"); await page.waitForTimeout(100); }
 await page.waitForTimeout(1400);
 const after10 = await page.evaluate(() => document.getElementById("content").scrollTop);
-const writes10 = (await ledger()).filter((wr) => wr.writer === "land-realign" && wr.before > landed10);
-const keyWrites10 = (await ledger()).filter((wr) => wr.writer === "key-nav").length;
+const writes10 = (await ledger()).slice(ledgerBefore10).filter((wr) => wr.writer === "land-realign");
+const keyWrites10 = (await ledger()).slice(ledgerBefore10).filter((wr) => wr.writer === "key-nav").length;
 const rows10 = (await rows()).slice(rowsBefore10);
+// ROAD 11 (round five, medium): the history chord. Ctrl+M goes back in the chat's own navigation history through the write helper
+// (writer nav-history); the census makes it the reader's takeover
+const rowsBefore11 = (await rows()).length; const ledgerBefore11 = (await ledger()).length;
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(38), anchorT: cfg.base + 76 });
+try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(38), { timeout: 20000 }); }
+catch (e) { const st = await state(); console.error("the chord road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
+const landed11 = await page.evaluate(() => { const a = document.activeElement; if (a && a !== document.body && a.blur) a.blur(); return document.getElementById("content").scrollTop; });
+await page.keyboard.press("Control+m");
+await page.waitForTimeout(1400);
+const after11 = await page.evaluate(() => document.getElementById("content").scrollTop);
+const navWrites11 = (await ledger()).slice(ledgerBefore11).filter((wr) => wr.writer === "nav-history");
+const nav11 = navWrites11.length; const navTo11 = nav11 ? navWrites11[nav11 - 1].after : null;   // where the chord sent the view
+const writes11 = (await ledger()).slice(ledgerBefore11).filter((wr) => wr.writer === "land-realign");
+const rows11 = (await rows()).slice(rowsBefore11);
+// ROAD 12 (round five, medium): a fragment link inside a message. A real click on a link planted in the landed turn's body, pointing
+// at a later turn's body by id, scrolls the pane through the write helper (writer section-link): the reader's takeover
+const rowsBefore12 = (await rows()).length; const ledgerBefore12 = (await ledger()).length;
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(42), anchorT: cfg.base + 84 });
+try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(42), { timeout: 20000 }); }
+catch (e) { const st = await state(); console.error("the link road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
+const planted12 = await page.evaluate(([from, to]) => { const src = document.querySelector('#content .turn[data-uuid="' + from + '"] .md'); const dst = document.querySelector('#content .turn[data-uuid="' + to + '"] .md');
+  if (!src || !dst) return null; dst.id = "lab-frag"; const a = document.createElement("a"); a.href = "#lab-frag"; a.className = "lab-frag"; a.textContent = "further down"; src.appendChild(a);
+  return { landed: document.getElementById("content").scrollTop, srcOk: true }; }, [q(42), q(44)]);
+if (!planted12) { console.error("the link road found no message bodies to plant in"); process.exit(1); }
+await page.click(".lab-frag");
+await page.waitForTimeout(1400);
+const after12 = await page.evaluate(() => document.getElementById("content").scrollTop);
+const link12 = (await ledger()).slice(ledgerBefore12).filter((wr) => wr.writer === "section-link").length;
+const writes12 = (await ledger()).slice(ledgerBefore12).filter((wr) => wr.writer === "land-realign");
+const rows12 = (await rows()).slice(rowsBefore12);
 // ROAD 8 (round two, medium): the browser's own scroll anchoring during the settle. A 400 px node inserted ABOVE the viewport
 // in the landing's frame moves scrollTop with no write and no input; the classifier calls that a gesture, and the settle used to
 // end on it and file the landing settled false, dist null. With the reader's input as the evidence a gesture needs, it is a
@@ -227,7 +257,7 @@ const st = await state();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-settled.png" });
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify({ o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2,
-  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, grab9, landed10, after10, writes10, keyWrites10, rows10, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
+  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, grab9, landed10, after10, writes10, keyWrites10, rows10, landed11, after11, nav11, navTo11, writes11, rows11, planted12, after12, link12, writes12, rows12, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
 """
 
 
@@ -360,6 +390,30 @@ class ServedLandingSettles(WindowLab):
         self.assertEqual(r["writes10"], [], "no land-realign wrote the reader's steps back: %r" % r["writes10"])
         taken = [x for x in r["rows10"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
         self.assertEqual(len(taken), 1, "one exact row for the key road's landing: %r" % r["rows10"])
+        self.assertTrue(taken[0].get("gesture"), "the row says the reader took the landing over: %r" % taken[0])
+
+    def test_the_history_chord_during_the_settle_is_the_readers_takeover(self):
+        # round five, medium: Ctrl+M inside the window goes back in the chat's history through the write helper (nav-history)
+        r = self._result()
+        self.assertGreaterEqual(r["nav11"], 1, "the chord wrote the pane (nav-history): %s writes" % r["nav11"])
+        # the history spot may sit near the landing (the road before landed close by): the proof is that the view ENDS where the chord's
+        # own write put it and did not return to the landing, not how far that is
+        self.assertNotEqual(r["after11"], r["landed11"], "the view left the landing: %s" % r["after11"])
+        self.assertLessEqual(abs(r["after11"] - (r["navTo11"] if r["navTo11"] is not None else -1)), 2, "the view ends where the chord's write put it (%s), now %s" % (r["navTo11"], r["after11"]))
+        self.assertEqual(r["writes11"], [], "no land-realign wrote the reader's history step back: %r" % r["writes11"])
+        taken = [x for x in r["rows11"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(len(taken), 1, "one exact row for the chord road's landing: %r" % r["rows11"])
+        self.assertTrue(taken[0].get("gesture"), "the row says the reader took the landing over: %r" % taken[0])
+
+    def test_a_click_on_a_fragment_link_inside_a_message_during_the_settle_is_the_readers_takeover(self):
+        # round five, medium: a real click on a link planted in the landed body, pointing at a later turn's body (section-link)
+        r = self._result()
+        self.assertIsNotNone(r["planted12"], "the link and its target were planted in two message bodies")
+        self.assertGreaterEqual(r["link12"], 1, "the click wrote the pane (section-link): %s writes" % r["link12"])
+        self.assertGreater(r["after12"] - r["planted12"]["landed"], 100, "the view ends at the link's target, below the landing: %s from %s" % (r["after12"], r["planted12"]["landed"]))
+        self.assertEqual(r["writes12"], [], "no land-realign wrote the reader's link step back: %r" % r["writes12"])
+        taken = [x for x in r["rows12"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(len(taken), 1, "one exact row for the link road's landing: %r" % r["rows12"])
         self.assertTrue(taken[0].get("gesture"), "the row says the reader took the landing over: %r" % taken[0])
 
 

@@ -50,12 +50,31 @@ test("a gesture needs the reader's input behind it (round two, medium): an input
   assert.equal(LS.scrollerGrab(false, 100, 605, 800, 600), true, "…or the horizontal one's");
   assert.equal(LS.scrollerGrab(false, 100, 100, 800, 600), false, "a press on the content's children is a drag inside the content: the timed rule");
   // round four: the reader's input that arrives as a WRITE of #content (the classifier never sees it as a gesture)
-  assert.deepEqual([...LS.READER_WRITERS].sort(), ["jump-button", "key-nav", "wheel-scale"], "the reader's own writers, one named set beside the landing's");
+  assert.deepEqual([...LS.READER_WRITERS].sort(), ["focus-live", "jump-button", "key-nav", "nav-history", "section-link", "wheel-scale"], "the reader's own writers, derived from the census (round five)");
+  for (const w of ["nav-history", "section-link", "focus-live"]) assert.equal(LS.writerIsReader(w), true, w + " is the reader's: a chord, a link click, the live-tail chip (round five)");
   assert.equal(LS.writerIsReader("key-nav"), true, "an arrow key's step is the reader's takeover");
   assert.equal(LS.writerIsReader("wheel-scale"), true);
   assert.equal(LS.writerIsReader("land-realign"), false, "the landing's own writers are never a takeover");
   assert.equal(LS.writerIsReader("rewindow"), false, "the page's movers are samples");
   assert.equal(LS.writerIsReader("append-stick"), false);
+  assert.equal(LS.writerIsReader("never-named"), false, "an unlisted writer is no takeover");
+});
+
+test("the census names every writer render.ts gives writeScroll, and nothing else: a new writer cannot land unclassified (round five)", () => {
+  // every writer literal, read out of render.ts the way scroll-write.test.ts reads the raw-write ban: the last string of each
+  // writeScroll, scrollContentBy or scrollElInto call that is not an alignment word, and of the landing's own two wrappers
+  // (landOn's local land(), settleLand()), which pass their writer through
+  const literals = new Set<string>();
+  const re = /\b(?:writeScroll|scrollContentBy|scrollElInto|land|settleLand)\(([^;]*?)\);/g;
+  for (let m = re.exec(RENDER); m; m = re.exec(RENDER)) {
+    // the writer is the call's LAST argument (a stick flag may follow it); a call passing a variable names no literal here
+    const last = /(?:^|,)\s*"([a-z-]+)"(?:,\s*(?:true|false))?\s*$/.exec(m[1]);
+    if (last && !["start", "center", "nearest"].includes(last[1])) literals.add(last[1]);
+  }
+  assert.ok(literals.size >= 20, "the writer literals found in render.ts: " + [...literals].sort().join(", "));
+  for (const w of literals) assert.ok(w in LS.WRITER_CLASS, "unclassified writer in render.ts: " + w);
+  for (const w of Object.keys(LS.WRITER_CLASS)) assert.ok(literals.has(w), "a census entry render.ts no longer writes: " + w);
+  assert.deepEqual([...literals].sort(), Object.keys(LS.WRITER_CLASS).sort(), "the census IS the set of writers");
 });
 
 test("the window's end files the landing as it stands: settled within the row, else unsettled, never held forever", () => {

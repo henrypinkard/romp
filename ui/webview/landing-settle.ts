@@ -47,14 +47,24 @@ export function scrollerGrab(targetIsScroller: boolean, offsetX: number, offsetY
   return targetIsScroller || offsetX >= clientWidth || offsetY >= clientHeight;
 }
 
-/** Writers of #content that are the READER's own hand (round four): the arrow keys' step (key-nav), the wheel over a scroll notch
- *  (wheel-scale), the jump chip (jump-button). Their writes go through the write helper, so the scroll classifier reads them as
- *  write echoes and never as gestures; for the settle they are the reader's takeover, not another writer's move to undo (three
- *  arrow steps inside the window were each written back by land-realign). The landing's own writers (land-on, land-realign) and
- *  the page's movers (a rewindow, a spacer, a fold, a restore) stay samples. */
-export const READER_WRITERS: ReadonlySet<string> = new Set(["key-nav", "wheel-scale", "jump-button"]);
+/** THE CENSUS of #content's writers (round five): every writer name writeScroll is given, classified. "reader": the write is
+ *  the reader's own input arriving as a write (a key or a chord, a click on a fragment link or the jump chip or the feed's
+ *  go-to-the-live-tail chip, the wheel over a scroll notch), which the scroll classifier reads as a write echo and never as a
+ *  gesture; a settling landing yields to it. "page": the page's own mover (the landing's writes, a restore, an append, the tail's
+ *  shrink, a rewindow, a fold, a box, the bar, an ask's reveal, a send, a cancel), which the settle samples and re-lands over.
+ *  A writer must be listed here to write at all: landing-settle.test.ts reads every writer literal out of render.ts and holds
+ *  it to this table, and the table to render.ts, so a new writer cannot land unclassified (round four named three reader
+ *  writers and missed three: the history chords, a fragment link, the live-tail chip, each written back by land-realign). */
+export const WRITER_CLASS: Readonly<Record<string, "reader" | "page">> = {
+  "key-nav": "reader", "wheel-scale": "reader", "jump-button": "reader", "nav-history": "reader", "section-link": "reader", "focus-live": "reader",
+  "land-on": "page", "land-realign": "page", "land-bottom": "page", "land-saved": "page", "keep-offset": "page", "anchor-restore": "page",
+  "reload-restore": "page", "append-stick": "page", "append-raw": "page", "tail-shrink": "page", "rewindow": "page", "box-resize": "page",
+  "box-below": "page", "tabbar-drag": "page", "toolgroup-toggle": "page", "liveask-reveal": "page", "optimistic-send": "page", "queued-x": "page",
+};
+/** The reader's own writers, derived from the census. */
+export const READER_WRITERS: ReadonlySet<string> = new Set(Object.keys(WRITER_CLASS).filter((w) => WRITER_CLASS[w] === "reader"));
 export function writerIsReader(writer: string): boolean {
-  return READER_WRITERS.has(writer);
+  return WRITER_CLASS[writer] === "reader";
 }
 
 export interface SettleSample { at: number; dist: number }   // at: ms since the landing write; dist: the target's top vs the viewport top, px
