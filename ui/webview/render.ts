@@ -8380,7 +8380,7 @@ function staleActiveFallback(ids: readonly string[], visibleIds: readonly string
   if (wantActive && heldHere(wantActive)) return;   // awaited by this column, listed or not: T357's restore takes it when it comes
   // a wanted tab another column holds is nobody's to await here (dragged away before the reload): retired, the first visible member takes the box
   const first = visibleIds[0];
-  setTimeout(() => { if (!activeId && !provisionalId && tabInView(first)) { wantActive = null; setActive(first); } }, 0);
+  setTimeout(() => { if (!activeId && !provisionalId && tabInView(first)) { wantActive = null; silentActivate(first); } }, 0);   // SILENT: a shown column adopts its tab without a focus hop, so a non-focused split column keeps its tab out of the no-active diet (2026-09-15)
 }
 
 // Full-screen bridge (the user 2026-07-05): the picker is rendered inside the /chat iframe, so its
@@ -12652,6 +12652,41 @@ function notifyActive() {
   try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "activeTab", id: activeId, nonce, gesture }, "*"); } catch (e) { /* standalone page — no shell */ }
 }
 
+// Announce THIS column's own SHOWN tab to the kernel/relay ONLY (never the shell): the relay re-arm on a socket's
+// (re)open (romp:hostRelayUp / romp:wsup) must carry the tab THIS column shows, from the column's own state, not the
+// page-level focus. A SPLIT column that is not the focused one has activeId unset (focus is arbitrated across
+// columns, setActive forwards a non-held id and returns), so activeTabToReannounce(activeId) read nothing and the
+// column's relay stayed no-active — its shown tab skeletoned by the no-active diet with nothing to re-announce it
+// (the user's board, 2026-09-15: the focused column held one thread, a second column showed a long session that came
+// back a skeleton after a relay reopen). This posts activeTab for the column's shown tab WITHOUT the shell hop, so a
+// non-focused column re-arms its own relay without claiming focus. (relay-active.ts decides IF; this is the send.)
+function announceActiveToRelay(sid: string): void {
+  if (vscodeApi) vscodeApi.postMessage({ type: "activeTab", id: sid, nonce: ++activeTabNonce });
+}
+
+// The tab THIS column shows, from the column's OWN state: the live activeId when set, else the persisted wantActive
+// (this column's blob activeId, read at load before a non-focused column has activated its tab). What the relay
+// re-arm announces so every SHOWN column, focused or not, keeps its own tab out of the kernel's skeleton diet.
+function shownTabForRelay(): string | null { return activeId || wantActive; }
+
+// A SHOWN column with no active adopts its OWN shown tab SILENTLY (the split-board scroll-back wall, 2026-09-15).
+// Each chat column is its own iframe; a NON-focused split column has activeId unset (focus is arbitrated across
+// columns), so its relay dial dropped the active (the host-match guard) and the kernel's no-active diet skeletoned
+// its shown tab — a long session came back a skeleton with no head gap and could not scroll back. The fix: a shown
+// column always has an active. This sets activeId and PERSISTS the blob (so the next dial carries the shown tab past
+// the guard's timing), loads its draft, marks it active in this column's strip, and announces it to the kernel/relay
+// ONLY — with NO shell focus hop (announceActiveToRelay, not notifyActive), NO scroll, NO pending-send anchor and NO
+// landing. Keyed on the show-tab EVENT (staleActiveFallback, from a renderTabs reconcile), never a per-frame or timer
+// check; a column showing nothing activates nothing (staleActiveFallback's own guard).
+function silentActivate(id: string): void {
+  if (activeId === id) return;
+  activeId = id;
+  loadComposerFor(id, true);   // the tab's own draft, as an adoption loads it — no scroll
+  persistActive(id);           // the column's blob, so the next dial carries the shown tab
+  renderTabs();                // mark the shown tab active in this column's strip
+  announceActiveToRelay(id);   // the kernel/relay ONLY: no shell focus hop, so focus stays where it was
+}
+
 // Move id to the front of the recency stack (most-recently-active).
 function touchMru(id: string) {
   const i = mru.indexOf(id);
@@ -16108,7 +16143,7 @@ window.addEventListener("romp:wsup", () => {
   // redial carries ?active= from the PERSISTED activeId, which a dismissal's fallback and a sole-tab adoption
   // change without setActive — so a restarted local kernel could key a tab the user had left and serve the
   // one they are looking at as a background tab. The live activeId is re-announced on the socket's open.
-  if (activeTabToReannounce(activeId, "")) notifyActive();
+  const st = shownTabForRelay(); if (st && activeTabToReannounce(st, "")) announceActiveToRelay(st);   // this column's OWN shown tab, focused or not
 });
 // federation dispatches this on a host relay socket (re)connect — the exact event that makes that
 // host's owed acks reachable again; the detail names the host, so only its entries re-ship
@@ -16132,7 +16167,11 @@ window.addEventListener("romp:hostRelayUp", (e) => {
   // connect hint on every dial; the relay has no hint, so the same fact is re-sent here as the activeTab
   // message every tab switch sends (notifyActive; routeOutbound strips the host prefix). Decision in
   // relay-active.ts.
-  if (activeTabToReannounce(activeId, h)) notifyActive();
+  const st = shownTabForRelay(); if (st && activeTabToReannounce(st, h)) announceActiveToRelay(st);   // this column's OWN shown tab, focused or not
+  // …and the shown-tab silent activation keyed on THIS event too (2026-09-15): the host was OFFLINE at reload (no strip,
+  // !tabOrderSeen), so the one-shot fallback was blocked; the relay reopening is a show-tab event — re-run the strip
+  // render, which re-fires staleActiveFallback → silentActivate for a shown column that still has no active.
+  if (!activeId && !provisionalId) renderTabs();
 });
 
 // Sids whose SEND is HELD until every pending ship acks (the user 2026-08-16: sending mid-upload
