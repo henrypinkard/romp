@@ -9485,7 +9485,8 @@ class SdkBackend:
     def __init__(self, state_dir, claude_bin: str, notify, poke=None, push=None,
                  push_session=None,
                  mcp_config: str | None = None, append_prompt_path: str | None = None,
-                 log=None, reconcile: bool = False, boot_at=None, code_version=None, boot_phase=None):
+                 log=None, reconcile: bool = False, boot_at=None, code_version=None, boot_phase=None,
+                 on_session_return=None):
         self.state_dir = Path(state_dir)
         self.claude_bin = claude_bin
         self.code_version = str(code_version or "")   # the kernel's git sha, stamped on every lease this kernel
@@ -9510,6 +9511,8 @@ class SdkBackend:
         self._owns_memo: dict = {}         # sid -> ((reg mtime_ns, size), owns?) — see owns()
         self._known_fsids_memo: dict = {}  # sid -> ((reg, episodes, states) stat keys, frozenset of fsids) — see known_fsids()
         self._push_cb = push               # wake the kernel's PUSHER → immediate chat push (live tail)
+        self._on_session_return_cb = on_session_return   # kernel._repromote_returned_session: a returned session
+        #   (a fresh lease / a host re-attach) un-skeletons the focused remote tab of a relay client watching it (2026-09-15)
         self._push_session_cb = push_session   # targeted ONE-session push (kernel _push_session_now) for
         #   per-session chip events (the connect handshake): a wake alone leaves the flip riding the next
         #   full push cycle, which runs seconds on a busy fleet (the user 2026-08-10)
@@ -9968,6 +9971,7 @@ class SdkBackend:
             t = self._new_host_transport(sess, ht.host_sock(self.state_dir, sess.sid), offset)
             sess._host = t
             self._log("host (%s): attaching to the live host (pid %s), replay from %d" % (sess.name, holder.get("pid"), offset + 1))
+            self._fire_session_return(sess.sid)   # the session RETURNED (a host re-attach): re-promote it for a relay client watching it
             return t
         if lease is not None and lease_state(lease, now) == "valid":
             raise CLIConnectionErrorLike("a live CLI already holds this session's lease (held by a kernel); not starting a second")
@@ -10006,7 +10010,20 @@ class SdkBackend:
         t = self._new_host_transport(sess, sock, -1)
         sess._host = t
         self._log("host (%s): started a session host (pid %d)" % (sess.name, proc.pid))
+        self._fire_session_return(sess.sid)   # the session RETURNED (a fresh host/lease): re-promote it for a relay client watching it
         return t
+
+    def _fire_session_return(self, sid):
+        """Tell the kernel a session RETURNED (a fresh lease minted or a host re-attached), so a relay client whose
+        active names it is re-promoted from the death's leftover skeleton to a full frame on the next push (the
+        session-return event, 2026-09-15). Best-effort: a raising callback must never fail the attach/start."""
+        cb = self._on_session_return_cb
+        if cb is None:
+            return
+        try:
+            cb(str(sid))
+        except Exception as e:
+            self._log("session-return callback failed (%s): %s" % (sid, e))
 
     def _new_host_transport(self, sess, sock, offset):
         ht = _ht()
