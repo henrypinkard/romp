@@ -875,12 +875,15 @@ class SkeletonReconnect(unittest.TestCase):
         self.assertIn(S1, relay_other["skeleton"], "a relay client NOT watching S1 keeps its skeleton (no board-full storm)")
         self.assertIn(S1, page["skeleton"], "a local page (kind page, not relay) is unchanged")
 
-    def test_the_backend_fires_the_return_event_at_the_host_attach_and_start(self):
-        # the wiring: the backend calls _fire_session_return(sess.sid) at BOTH the host re-attach and the fresh host start,
-        # SdkBackend takes an on_session_return callback, and the kernel passes _repromote_returned_session as it.
+    def test_the_backend_fires_the_return_event_at_the_connect_common_to_every_road(self):
+        # the wiring: the backend fires _fire_session_return(self.sid) at the CONNECT, the road common to a host
+        # attach/spawn and a kernel child, so with session-hosts off (the kill switch) it fires too — NOT at the host
+        # attach/start alone (inside _host_transport_for, past its hosts-off early return). SdkBackend takes an
+        # on_session_return callback, and the kernel passes _repromote_returned_session as it.
         root = os.path.dirname(HERE)
         be = open(os.path.join(root, "kernel", "sdk_backend.py")).read()
-        self.assertEqual(be.count("self._fire_session_return(sess.sid)"), 2, "fired at the host re-attach AND the fresh start")
+        self.assertIn("self.backend._fire_session_return(self.sid)", be, "fired at the connect, common to every road")
+        self.assertNotIn("self._fire_session_return(sess.sid)", be, "not at the host attach/start (that missed the hosts-off road)")
         self.assertIn("on_session_return=None", be, "SdkBackend takes the callback")
         ker = open(os.path.join(root, "kernel", "kernel.py")).read()
         self.assertIn("on_session_return=_repromote_returned_session", ker, "the kernel wires the re-promotion callback")

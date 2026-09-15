@@ -6541,6 +6541,9 @@ class SdkSession:
                     # periodic cycle, a fresh session wore the opening dots seconds after its CLI was
                     # ready to take a message (measured live 2026-08-10: connect done ~1.5s after
                     # create, the ready chip landing at 5-12s with the cycle).
+                    self.backend._fire_session_return(self.sid)   # the session is (re)open on this road (a host attach/spawn or a
+                    #   kernel child, the hosts-off kill switch included): re-promote it for a relay client watching it, before the
+                    #   session push below, so the memo is reset for the full to land (the lease-mint site common to both roads, 2026-09-15)
                     self.backend._push_session(self.sid)
                     self._connected.set()   # the control channel exists from here (move() waits on this)
                     if self._host is None:
@@ -9971,7 +9974,6 @@ class SdkBackend:
             t = self._new_host_transport(sess, ht.host_sock(self.state_dir, sess.sid), offset)
             sess._host = t
             self._log("host (%s): attaching to the live host (pid %s), replay from %d" % (sess.name, holder.get("pid"), offset + 1))
-            self._fire_session_return(sess.sid)   # the session RETURNED (a host re-attach): re-promote it for a relay client watching it
             return t
         if lease is not None and lease_state(lease, now) == "valid":
             raise CLIConnectionErrorLike("a live CLI already holds this session's lease (held by a kernel); not starting a second")
@@ -10010,13 +10012,12 @@ class SdkBackend:
         t = self._new_host_transport(sess, sock, -1)
         sess._host = t
         self._log("host (%s): started a session host (pid %d)" % (sess.name, proc.pid))
-        self._fire_session_return(sess.sid)   # the session RETURNED (a fresh host/lease): re-promote it for a relay client watching it
         return t
 
     def _fire_session_return(self, sid):
         """Tell the kernel a session RETURNED (a fresh lease minted or a host re-attached), so a relay client whose
         active names it is re-promoted from the death's leftover skeleton to a full frame on the next push (the
-        session-return event, 2026-09-15). Best-effort: a raising callback must never fail the attach/start."""
+        session-return event, 2026-09-15). Best-effort: a raising callback must never fail the connect."""
         cb = self._on_session_return_cb
         if cb is None:
             return
