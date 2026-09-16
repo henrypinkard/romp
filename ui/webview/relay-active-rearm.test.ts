@@ -65,10 +65,10 @@ test("render.ts re-sends activeTab on romp:hostRelayUp for that host's active ta
 test("a non-focused split column re-arms its OWN shown tab to the relay only (not the shell), from its own state (the split-board scroll-back wall, 2026-09-15)", () => {
   // The bug: each column is its own iframe with its own activeId, but a NON-focused column has activeId unset
   // (focus is arbitrated across columns; setActive forwards a non-held id and returns), so the old re-announce
-  // read the page-level activeId (nothing) and the column's relay stayed no-active — its shown tab skeletoned by
+  // read the page-level activeId (nothing) and the column's relay stayed no-active, its shown tab skeletoned by
   // the no-active diet with nothing to re-announce it. The fix reads the column's OWN state (activeId or the
-  // persisted wantActive) and posts to the kernel/relay ONLY, so a non-focused column re-arms without claiming focus.
-  assert.match(RENDER, /function shownTabForRelay\(\): string \| null \{ return activeId \|\| wantActive; \}/, "the column's shown tab is its live activeId or its persisted wantActive, never the page-level focus");
+  // persisted wantActive), filtered to a tab this column holds and shows, so it never announces a want another column holds.
+  assert.match(RENDER, /function shownTabForRelay\(\): string \| null \{ const id = activeId \|\| wantActive; return \(id && heldHere\(id\) && tabInView\(id\)\) \? id : null; \}/, "the column's own shown tab, FILTERED to a tab this column holds and shows: never a want another column holds (low b)");
   const m = RENDER.match(/function announceActiveToRelay\(sid: string\): void \{([\s\S]*?)\n\}/);
   assert.ok(m, "announceActiveToRelay exists");
   assert.match(m![1], /vscodeApi\.postMessage\(\{ type: "activeTab", id: sid, nonce: \+\+activeTabNonce \}\)/, "posts activeTab for the given sid to the kernel");
@@ -78,10 +78,11 @@ test("a non-focused split column re-arms its OWN shown tab to the relay only (no
 test("a SHOWN column with no active adopts its tab SILENTLY so it always has an active (the fundamental fix; the dial then carries it)", () => {
   const m = RENDER.match(/function silentActivate\(id: string\): void \{([\s\S]*?)\n\}/);
   assert.ok(m, "silentActivate exists");
+  assert.match(m![1], /noteMru\(id\);/, "enters the recency stack, as setActive opens (low c)");
   assert.match(m![1], /activeId = id;/, "sets the active");
   assert.match(m![1], /persistActive\(id\);/, "persists the blob so the next dial carries the shown tab past the guard's timing");
-  assert.match(m![1], /announceActiveToRelay\(id\);/, "announces the shown tab to the kernel/relay");
-  assert.doesNotMatch(m![1], /notifyActive\(|window\.parent|showActive\(|pendingAnchor|landing/i, "SILENT: no shell focus hop, no scroll, no pending-send anchor, no landing");
+  assert.match(m![1], /showActive\(\);/, "reveals the transcript on its own, and re-arms the relay via notifyActive (medium 1)");
+  assert.doesNotMatch(m![1], /focusActiveTab\(|navHist|pendingAnchor|landToast|scrollToAnchor/i, "the SILENT part: no focus hop (focusActiveTab) and none of setActive's nav/anchor/landing");
   // the show-tab EVENT (staleActiveFallback, from a renderTabs reconcile) activates silently, not via the full setActive
   assert.match(RENDER, /wantActive = null; silentActivate\(first\); \} \}, 0\);/, "the shown-tab fallback activates silently, keyed on the render event; a column showing nothing activates nothing (the guards above it)");
 });

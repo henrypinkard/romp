@@ -225,8 +225,8 @@ try {
     out.offlineFooter = await (async () => { const fr = await frameOf("f-chat-2"); try { return fr ? await fr.evaluate(() => document.querySelectorAll("#content .turn[data-uuid]").length) : null; } catch (e) { return "ERR"; } })();
     hostDown = false;   // the host comes back online: the relay reconnects (federation retry ~2s) and the strip arrives
     await page.waitForTimeout(5000);
-    await focusCol1();   // keep focus on col 1; do NOT touch col 2
-    await page.waitForTimeout(800);
+    // low a: do NOT re-focus col 1 here. The common out.focusedFrame read below runs before any focusCol1 for this
+    // scenario, so a focus hop from the activation is captured, not erased by a click.
   }
   // both columns must have rendered a turn
   const f1 = await frameOf("f-chat"); const f2 = await frameOf("f-chat-2");
@@ -344,9 +344,12 @@ class FederatedTwoColWall(unittest.TestCase):
         self._assert_both_fill(self._drive("col2"), "col2")
 
     def test_host_offline_at_reload_then_online_column_two_fills_without_a_focus_change(self):
-        # The user's exact wall: col 2's remote host is OFFLINE at reload (no strip: !tabOrderSeen for that host), so the
-        # one-shot fallback is blocked; when the host comes back ONLINE the strip arrives and the shown tab must activate
-        # ON THAT EVENT — fill to turn 0 with a head gap, focus staying on col 1. At the base col 2 stays a skeleton.
+        # col 2's remote host is OFFLINE at reload (no strip: !tabOrderSeen for that host); when the host comes back
+        # ONLINE the strip arrives and the shown tab activates on that event, filling to turn 0 with a head gap while
+        # focus stays on col 1. This is a REGRESSION, green at base: in a clean lab the original one-shot re-runs on the
+        # re-listing strip and fills col 2 too, so the base does NOT stay a skeleton. The user's block (the one-shot's
+        # revalidation losing a race to the kill, and the re-listing not re-running) is not hermetically reproducible;
+        # the red-first is the source pins in relay-active-rearm.test.ts.
         r = self._drive("host_offline")
         self.assertIsNone(r.get("died"), "driver error: %s" % r.get("died"))
         c2 = r.get("col2") or {}

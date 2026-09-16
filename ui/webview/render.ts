@@ -12667,24 +12667,29 @@ function announceActiveToRelay(sid: string): void {
 // The tab THIS column shows, from the column's OWN state: the live activeId when set, else the persisted wantActive
 // (this column's blob activeId, read at load before a non-focused column has activated its tab). What the relay
 // re-arm announces so every SHOWN column, focused or not, keeps its own tab out of the kernel's skeleton diet.
-function shownTabForRelay(): string | null { return activeId || wantActive; }
+function shownTabForRelay(): string | null { const id = activeId || wantActive; return (id && heldHere(id) && tabInView(id)) ? id : null; }   // this column's OWN shown tab, never a want another column holds (round two, low b)
 
 // A SHOWN column with no active adopts its OWN shown tab SILENTLY (the split-board scroll-back wall, 2026-09-15).
 // Each chat column is its own iframe; a NON-focused split column has activeId unset (focus is arbitrated across
 // columns), so its relay dial dropped the active (the host-match guard) and the kernel's no-active diet skeletoned
-// its shown tab — a long session came back a skeleton with no head gap and could not scroll back. The fix: a shown
-// column always has an active. This sets activeId and PERSISTS the blob (so the next dial carries the shown tab past
-// the guard's timing), loads its draft, marks it active in this column's strip, and announces it to the kernel/relay
-// ONLY — with NO shell focus hop (announceActiveToRelay, not notifyActive), NO scroll, NO pending-send anchor and NO
-// landing. Keyed on the show-tab EVENT (staleActiveFallback, from a renderTabs reconcile), never a per-frame or timer
-// check; a column showing nothing activates nothing (staleActiveFallback's own guard).
+// its shown tab: a long session came back a skeleton with no head gap and could not scroll back. The fix: a shown
+// column always has an active. A stripped setActive: it enters the recency stack, sets activeId, PERSISTS the blob
+// (so the next dial carries the shown tab past the guard's timing), loads the draft, marks the tab active, and
+// REVEALS the transcript (showActive). showActive re-arms the relay through notifyActive, and the window's feed
+// focused-session section moves through the kernel either way (base behaviour, not a regression). What it omits is
+// the FOCUS hop (no focusActiveTab) and setActive's nav/anchor/landing, so a non-focused split column re-arms and
+// shows its own tab without stealing keyboard focus. Keyed on the show-tab EVENTS (staleActiveFallback from a
+// renderTabs reconcile, including a re-listing after a kill; the relay reopen re-runs the render), never a one-shot
+// or timer; a column showing nothing activates nothing (staleActiveFallback's own guard).
 function silentActivate(id: string): void {
+  noteMru(id);                 // enter the recency stack, as setActive opens (round two, low c)
   if (activeId === id) return;
   activeId = id;
-  loadComposerFor(id, true);   // the tab's own draft, as an adoption loads it — no scroll
+  loadComposerFor(id, true);   // the tab's own draft
   persistActive(id);           // the column's blob, so the next dial carries the shown tab
   renderTabs();                // mark the shown tab active in this column's strip
-  announceActiveToRelay(id);   // the kernel/relay ONLY: no shell focus hop, so focus stays where it was
+  showActive();                // reveal the transcript on its own, and re-arm the relay via notifyActive; NO focus
+  //                              hop (no focusActiveTab), no nav/anchor/landing (round two, medium 1)
 }
 
 // Move id to the front of the recency stack (most-recently-active).
