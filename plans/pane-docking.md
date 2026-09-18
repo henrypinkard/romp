@@ -146,9 +146,11 @@ more generic overlay and is kept.
 
 ## 3. No title bars, no resting chrome: grab surfaces and the drag arm
 
-**Decision: the kit adds NO resting chrome. It exists only while a drag is in flight.** No title bars,
-no handles at rest, no z-order, no floating windows, no minimise. The grab surfaces are places that
-already exist, plus a modifier:
+**Decision: the kit adds NO resting chrome. The ONE resting affordance is the CURSOR** (the user,
+2026-09-18: the affordance is the cursor, never chrome). Over any grab surface at rest the pointer is
+the open hand (`cursor: grab`); on press-and-hold it becomes the closed hand (`cursor: grabbing`). That
+open-hand cursor is the only cue a surface is draggable: no title bars, no handles at rest, no z-order,
+no floating windows, no minimise. The grab surfaces are places that already exist, plus a modifier:
 
 - **The empty run of a pane's existing top row, WHERE ONE EXISTS.** (Correction: the dispatch lists an
   empty top-row run for chat, feed, outline and files; the code gives one to only two.) Verified:
@@ -168,6 +170,15 @@ already exist, plus a modifier:
   (`.col{padding-right:3px}` `:61620`, and the pane's own padding) is dead space today. The kit treats
   the gutter and the padding ring as pane-move handles (a plain drag resizes an edge as now; a drag that
   crosses into another pane's zone docks). This gives feed/outline/timeline a handle without chrome.
+- **The chat's vertical bar** (the user named it in the grab-area list). Mapped to `#gv-a`, the column
+  gutter immediately right of the chat pane (`gutter('gv-a', lastChat, 'fleet-pane')`,
+  `.row>.gv{flex:0 0 7px}`, `cursor:col-resize`): it is the visible vertical bar beside the chat, so it
+  carries the open-hand cursor and arms a chat-pane move. Alternative, if overloading the resize gutter
+  reads as ambiguous: a dedicated edge strip on the chat pane's right; the doc keeps `#gv-a` as the
+  primary and notes the strip as the fallback.
+- **The composer's dead space** (the user's list). The chat composer area OUTSIDE the input box and its
+  buttons is a grab surface: a press there that is not on the textarea or a control arms a pane move,
+  cursor-only (the open hand), under the same never-a-drag-on-text-or-a-control rule as everywhere else.
 - **Option-drag (Alt) anywhere, including over content.** Holding Option (mac) / Alt (elsewhere),
   `e.altKey` uniformly, arms a pane move from any point in a pane, over content included. This is
   COHERENT with an existing binding: Alt(Option)+Arrow ALREADY moves focus between panes
@@ -230,6 +241,16 @@ The mapping of a drop to an operation: a tab on a pane EDGE opens a new chat lea
 split with a chat group); a tab on another chat leaf's STRIP joins that group (today's move); a whole
 pane on an edge docks/splits; a whole pane on a strip is refused (a pane is not a tab). Reorder within a
 strip is unchanged.
+
+**The drop preview: a live accent outline of the resulting rectangle** (the user, 2026-09-18). The four
+half-zones stay the HIT MODEL, what the pointer's position resolves the drop to; but what the user SEES
+is a single blue (the accent) OUTLINE of the pane's WOULD-BE rectangle, drawn where the pane would land
+and re-drawn as the pointer moves between zones, so the drop is explicit before release. It is the
+existing `#col-ghost`/side-and-bottom-zone ghost generalised: instead of a fixed half-pane rectangle it
+tracks the pointer and outlines the exact resulting rect (the whole pane's new place, or the sub-rect a
+split would create). The outline is accent-coloured and pointer-events:none, above the panes; the lifted
+pane itself reads as slightly raised (section 3). One outline at a time, following the pointer; on
+release it snaps to the committed rect, on cancel it vanishes with no layout change.
 
 ## 5. Five operations, presets, and the rail
 
