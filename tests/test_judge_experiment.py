@@ -654,6 +654,56 @@ class Harness(unittest.TestCase):
         row = [r for r in labels if r["id"] == e["id"]][0]
         self.assertIsNotNone(row.get("tierOne"), "label() reads tier one via the seedStart window for an opener-less ending: %r" % row)
 
+    def test_evict_document_and_the_label_loop_keep_the_event_model_caches_flat(self):
+        """The 2026-09-24 memory fix: the label/arm loops parse many one-shot documents, and neither event-model cache's own
+        bound helps, so they grow to the cap. evict_document drops a document from both caches, and the label loop calls it per
+        ending so the caches stay flat across the corpus instead of one entry per ending."""
+        em = self.je._event_model()
+        # the function: parsing then evicting a document leaves both caches as they were
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear()
+        for i in range(6):
+            sid = "evi%d" % i
+            p = self.pdir / (sid + ".jsonl")
+            p.write_text("".join(json.dumps(r) + "\n" for r in [uline(sid, T0, "ask%d" % i, "u1"), aline(sid, T0 + 30, "ok", "a1", "u1")]))
+            em.parse_session(str(p), rompuuid=sid)
+        self.assertGreaterEqual(len(em._ASM_CACHE), 6, "without eviction the assembly cache holds one per document")
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear()
+        peak = 0
+        for i in range(6):
+            sid = "evi%d" % i; p = self.pdir / (sid + ".jsonl")
+            em.parse_session(str(p), rompuuid=sid); em.evict_document(str(p))
+            peak = max(peak, len(em._ASM_CACHE))
+        self.assertLessEqual(peak, 1, "evict_document keeps the assembly cache flat across documents: peak %d" % peak)
+        self.assertEqual((len(em._ASM_CACHE), len(em._JSONL_CACHE)), (0, 0), "both caches empty after evicting every document")
+        # the label loop calls it per ending (the call site): both caches stay flat over a real corpus, not one-per-ending
+        dest, m = self._corpus(name="evictloop")
+        em._JSONL_CACHE.clear(); em._ASM_CACHE.clear()
+        self.je.label(dest, os.path.join(self.td, "lbl-evict"), str(self.state), claude_bin=self.fake)
+        self.assertLessEqual(len(em._ASM_CACHE), 1, "the label loop evicts each ending: assembly cache flat, not %d of %d" % (len(em._ASM_CACHE), len(m["endings"])))
+
+    def test_an_ending_unplanned_in_every_arm_is_excused_one_unplanned_in_a_subset_is_not(self):
+        """The cross-arm rule (manager 2026-09-24): an ending unplanned in EVERY arm is a corpus property, excused from every
+        arm's metrics and denominators, and does not break comparability; an ending unplanned in a STRICT SUBSET of arms marks
+        those arms not comparable. report() computes the excused set as the intersection across arms."""
+        dest, m = self._corpus(name="xarm")
+        e_all, e_one = m["endings"][0]["id"], m["endings"][1]["id"]
+        run_root = os.path.join(self.td, "runs-xarm")
+        def write_arm(arm, unplanned):
+            os.makedirs(os.path.join(run_root, arm))
+            r = {"arm": arm, "failures": 0, "buildsPerCard": 3, "callsByJudge": {"planner": 5, "closer": 5},
+                 "endingsUnplanned": unplanned, "endings": {x["id"]: {"builds": [{}] * 3} for x in m["endings"]}}
+            Path(run_root, arm, "results.json").write_text(json.dumps(r))
+        write_arm("A", [e_all, e_one])      # e_all corpus-wide, e_one A-only
+        write_arm("B", [e_all])
+        write_arm("C", [e_all])
+        rows = self.je.report(dest, run_root, str(self.state))
+        by = {r["arm"]: r for r in rows}
+        self.assertEqual(by["A"]["excusedEndings"], [e_all], "the excused set is the cross-arm intersection")
+        self.assertFalse(by["A"]["comparable"], "A has an ending the others planned: not comparable")
+        self.assertTrue(by["B"]["comparable"] and by["C"]["comparable"], "B and C's only unplanned is the excused one: comparable")
+        self.assertEqual({by[a]["comparableDenominator"] for a in "ABC"}, {len(m["endings"]) - 1}, "denominators match, all minus the excused ending")
+        self.assertIn("corpus-unplanned", (Path(run_root) / "table.md").read_text())
+
     def test_a_crashed_ending_is_named_in_endings_crashed_from_a_real_run(self):
         """Round-four low: endingsCrashed is populated by a REAL crashed pass (not only measure's pass-through). A planner that
         raises for one ending files pass-crash, and that ending is named in endingsCrashed and the arm reads not comparable."""
@@ -1646,6 +1696,8 @@ class Harness(unittest.TestCase):
         (self.state / "names" / sid).write_text("boom\t%s\t#abcdef\n" % self.cwd)
         real = self.je._event_model()
         class _Boom:
+            def __getattr__(self, n):
+                return getattr(real, n)            # delegate everything else (evict_document, etc.) to the real event model
             def parse_session(self, path, **k):
                 if sid in str(path):
                     raise ValueError("a transcript the fold cannot read")
@@ -1824,6 +1876,8 @@ class Harness(unittest.TestCase):
         class _Boom:
             def parse_session(self, *a, **k):
                 raise ValueError("synthetic parse boom")
+            def evict_document(self, *a):
+                pass
         saved = self.je._EM[0]
         self.je._EM[0] = _Boom()
         try:

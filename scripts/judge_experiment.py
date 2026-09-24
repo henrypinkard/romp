@@ -1097,6 +1097,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                 results["endingsUnplanned"].append(eid)
             results["endings"][eid] = {"class": e["class"], "builds": builds_out}
             flush()
+            jd.em.evict_document(str(path))   # drop this ending from the event model's record+assembly caches so RSS stays flat over the corpus (2026-09-24)
             cost, n, _ = ledger_cost(usage)
             if budget_usd is not None and cost > budget_usd * BUDGET_OVERRUN:
                 results["stopped"] = {"after": eid, "cost": round(cost, 4), "budget": budget_usd}
@@ -1292,7 +1293,7 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
     return out
 
 
-def measure(manifest, results, live_state, labels=None, labels_state="absent"):
+def measure(manifest, results, live_state, labels=None, labels_state="absent", excused=None):
     """Per arm, scored against the user's OWN later actions on the live cards (road (b): NOT the labeller's class, which the
     pilot showed is not a truth about an ending's shape). Leaks into Completed: the arm placed a top completed that the user
     then re-opened. False interrupts: the arm left a top needs_input that the user plainly crossed off, with no re-open and
@@ -1315,7 +1316,11 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
     attribution = []                                             # per-ending: id, arm, leak, false interrupt, both class keyings
     faults = []
     builds_n = results.get("buildsPerCard") or max((len(r.get("builds") or []) for r in results["endings"].values()), default=0)
+    excused = set(excused or ())                                  # endings unplanned in EVERY arm (a corpus property): excluded from every
+    #                                                              arm's metrics AND denominators, so the arms compare on the same set
     for eid, r in results["endings"].items():
+        if eid in excused:
+            continue                                             # a corpus-unplanned ending contributes to no metric, in any arm
         e = by_id.get(eid, {})
         store_key = e.get("storeKey")
         builds = [_scored(b) for b in r["builds"]]
@@ -1369,16 +1374,19 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
     calls_by_j = results.get("callsByJudge")
     no_record = calls_by_j is None                                          # an old/withdrawn results record: no per-judge record, cannot be read comparable
     silent_judges = [j for j in MEASURED_JUDGES if not calls_by_j.get(j)] if not no_record else []   # a measured judge with ZERO calls: not comparable
-    unplanned = list(results.get("endingsUnplanned") or [])                 # endings whose arm run made zero planner calls: any one marks the arm not comparable
+    unplanned = list(results.get("endingsUnplanned") or [])                 # endings this arm planned nothing on
     crashed = list(results.get("endingsCrashed") or [])                     # endings that crashed a pass (already counted in failures): named, never dropped silently
+    unplanned_here = sorted(set(unplanned) - excused)                       # unplanned in THIS arm but NOT corpus-wide: a strict-subset silence -> not comparable
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
             "answeredThenCleared": answered_then_cleared, "flaps": flaps, "gesturedEndings": gestured,
             "untouchedEndings": untouched, "unplacedEndings": unplaced, "unresolvedEndings": unresolved,
             "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
             "stopped": results.get("stopped"), "failures": failures, "nonArmFailures": int(results.get("nonArmFailures") or 0),
-            "comparable": failures == 0 and not silent_judges and not no_record and not unplanned and not crashed, "buildsPerCard": builds_n,
+            "comparable": failures == 0 and not silent_judges and not no_record and not unplanned_here and not crashed, "buildsPerCard": builds_n,
             "callsByJudge": calls_by_j or {}, "silentJudges": silent_judges, "noPerJudgeRecord": no_record,
-            "endingsUnplanned": unplanned, "endingsCrashed": crashed,
+            "endingsUnplanned": unplanned, "unplannedNotExcused": unplanned_here,
+            "excusedEndings": sorted(excused), "comparableDenominator": len(results["endings"]) - len(excused),
+            "endingsCrashed": crashed,
             "retry": results.get("retry") or {}, "failuresByKind": results.get("failuresByKind") or {},
             "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
             "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
@@ -1402,9 +1410,12 @@ def report(corpus, run_root, live_state, figure=None):
             labels, labels_state = {}, "unreadable"             # a torn OR wrong-shape labels.json (a top-level object, a list of
             #                                                     strings, a number) is RECORDED (labellerKeying), never a silent
             #                                                     empty pass that reads as zero leaks per stratum (the 2026-09-22 PR 2035 review)
-    rows = []
-    for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
-        rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, labels=labels, labels_state=labels_state))
+    arm_results = [json.loads((d / "results.json").read_text())
+                   for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file())]
+    # an ending unplanned in EVERY arm is a corpus property (its turn plans nothing), not an arm-specific silence: excuse it from
+    # every arm's metrics and denominators (manager 2026-09-24). With one arm the intersection is that arm's own unplanned set.
+    excused = set.intersection(*[set(r.get("endingsUnplanned") or []) for r in arm_results]) if arm_results else set()
+    rows = [measure(manifest, r, live_state, labels=labels, labels_state=labels_state, excused=excused) for r in arm_results]
     lines = ["| arm | endings | gestured | untouched | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | measured calls (planner/placer/closer/unblocker) | stopped | first-attempt kills | re-samples | recovered | failures |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
@@ -1419,8 +1430,8 @@ def report(corpus, run_root, live_state, figure=None):
                 parts.append("; ".join("%s 0 calls" % j for j in r["silentJudges"]))   # a silent measured judge names the arm not comparable (manager 2026-09-23)
             if r.get("noPerJudgeRecord"):
                 parts.append("no per-judge record")            # an old/withdrawn results record has no callsByJudge: cannot be read comparable
-            if r.get("endingsUnplanned"):
-                parts.append("%d ending(s) unplanned" % len(r["endingsUnplanned"]))   # an ending that planned nothing (a sealed-whole seed): never silent
+            if r.get("unplannedNotExcused"):
+                parts.append("%d ending(s) unplanned here but planned by another arm" % len(r["unplannedNotExcused"]))   # a strict-subset silence, not the corpus-wide excused set
             if r.get("endingsCrashed"):
                 parts.append("%d ending(s) crashed" % len(r["endingsCrashed"]))   # a crashed pass named beside pass-crash, never dropped silently
             cell = "%s, not comparable" % ("; ".join(parts) or ("%d" % r["failures"]))
@@ -1434,6 +1445,12 @@ def report(corpus, run_root, live_state, figure=None):
             r["leaks"], r["falseInterrupts"], r["answeredThenCleared"], r["flaps"], r["costUsd"], r["calls"], r["callMsMean"],
             mj, "yes" if r["stopped"] else "no",
             rt.get("firstAttemptKills", 0), rt.get("retryAttempts", 0), rt.get("recoveredCalls", 0), cell))
+    if rows:
+        _tot = rows[0]["endings"]; _exc = len(rows[0].get("excusedEndings") or [])
+        lines.append("")
+        lines.append("corpus-unplanned (excused, planned nothing in EVERY arm): %d of %d endings; comparable denominator %d. "
+                     "These are excluded from every arm's metrics and denominators so the arms compare on the same set."
+                     % (_exc, _tot, _tot - _exc))
     counts = sorted({r.get("buildsPerCard") or 0 for r in rows})
     scope = ("%d builds" % counts[0]) if (len(counts) == 1 and counts[0]) else \
             ("builds per arm (" + ", ".join("%s %d" % (r["arm"], r.get("buildsPerCard") or 0) for r in rows) + ")" if rows else "the builds")
@@ -1666,6 +1683,8 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
                      "spanS": int(time.time() - float(e["cutT"] or 0)),
                      "tierOneError": row_err,   # a faulted read or an unresolved key, told apart from a genuine tierOne null
                      "askError": ask_err})      # the ending turn's ask could not be parsed; the labeller ran on the final text alone
+        if path:
+            _event_model().evict_document(str(path))   # keep the label loop's record+assembly caches flat over the corpus (2026-09-24)
     (run_root / "labels.json").write_text(json.dumps(rows, indent=1))
     stable = sum(1 for r in rows if r["label"])
     stable_pct = round(100.0 * stable / len(rows), 1) if rows else None
