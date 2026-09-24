@@ -4721,8 +4721,9 @@ class GuardedNode(dict):
 # rolled past) and beside them (_RAW_PUBLISHED, never in the readers' slots) the text a publish in this process wrote. Nothing is
 # digested or copied at a load or a save, and the base is parsed only when a rebase happens (the round-one verifier of the field carry:
 # a digest per field at every load and save cost a 5000-node store 121 ms a load against 15 and 6 MB more retained). The memo and its
-# histories are the CACHE for the common case; the GUARANTEE is the holder's own transient reference to its base's bytes (`_baseSrc`: the
-# memo's pickle for the version the load read, moved to the version each rebase read and to the text each publish wrote), which no
+# histories serve only the reference-less roads (a store rebuilt from JSON, a copy of the shared view); the GUARANTEE for every other
+# holder is its own transient reference to its base's bytes (`_baseSrc`: the memo's pickle for the version the load read, moved to the
+# version each rebase read and to the text each publish wrote), which no
 # eviction reaches and which the rebase reads FIRST (an identity is not the bytes: an equal-length in-place rewrite keeps the file's identity
 # while the memo refills with the other writer's bytes), so a holder's save always finds the bytes it read or wrote however many versions
 # others published meanwhile (the post-merge review of PR 2108: a bounded history lost it after five). The reference is BYTES, never live
@@ -4849,14 +4850,16 @@ _RAW_STORE_LOCK = threading.Lock()
 _RAW_STORE_STATS = {"hit": 0, "miss": 0, "compare_miss": 0, "evict": 0}
 _RAW_HISTORY_KEEP = 4                            # a judge pass TYPICALLY runs about four publish-then-load cycles by another writer between a holder's load
 #                                                  and its save, each rolling the memo past one version, so four read versions serve a holder WITHOUT its
-#                                                  own reference (a store rebuilt from JSON, a copy of the shared view) from the shared memo; it is a cache depth, not a correctness bound (the post-merge review of PR 2108: five
-#                                                  resolves in one pass, or a peer's death converting five waits to blocks, run past it): the holder's own
+#                                                  own reference (a store rebuilt from JSON, a copy of the shared view) from the shared memo; it is a cache depth,
+#                                                  not a correctness bound (the post-merge review of PR 2108: five resolves in one pass, or a peer's death
+#                                                  converting five waits to blocks, run past it): the holder's own
 #                                                  reference to its base (`_baseSrc`, stamped by load_goals and moved by every rebase and publish) is the
 #                                                  guarantee, bounded by the live holders, one base each
 _RAW_HISTORY = {}                                # store path → the last few versions a READ rolled the memo past, as (identity, pickled parse): a
 #                                                  reference to the memo's own pickle, no copy. The field carry's base for a holder WITHOUT its own reference
-#                                                  (a holder's reference is read first) still standing on one of them; a deque of _RAW_HISTORY_KEEP per path, dropped with the path's memo entry (_raw_store_forget,
-#                                                  both evictions), counted in the gauge (raw_store_stats), cleared with the memo
+#                                                  (a holder's reference is read first) still standing on one of them; a deque of _RAW_HISTORY_KEEP per path,
+#                                                  dropped with the path's memo entry (_raw_store_forget, both evictions), counted in the gauge
+#                                                  (raw_store_stats), cleared with the memo
 _RAW_PUBLISHED_KEEP = 3
 _RAW_PUBLISHED = {}                              # store path → the last few versions this process PUBLISHED, as (identity, text): the writer's own next
 #                                                  base, since only a read fills the memo and none may parse that version before the writer's next save

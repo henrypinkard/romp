@@ -412,10 +412,11 @@ class StoreCas(unittest.TestCase):
         jd.record_verdict(a2, a2["nodes"][g1], "unblocker", "note", T0 + 50, why="ours"); jd.save_goals(SID, a2)
         self.assertNotIn("label", jd.load_goals(SID)["nodes"][g1], "the removal the other writer made rides the stale save")
 
-    def test_the_field_base_is_the_bytes_the_load_read_found_by_identity_and_moves_with_each_publish(self):
-        """No digest, no copy at a load or a save: the base is the bytes the load read, found by the identity the load stamped in the
-        raw-parse memo's history of the last few versions, only when a rebase runs. After a publish the holder stands on what it wrote,
-        so a later move by the other writer is carried on the next save."""
+    def test_the_field_base_is_the_holders_own_reference_read_first_and_moves_with_each_publish(self):
+        """No digest, no copy at a load or a save: the base is the bytes the load read, held by the holder's own transient reference (the
+        memo's pickle of that version) and read FIRST by the rebase; the raw-parse memo's history of the last few versions, found by the
+        identity the load stamped, serves only a holder without that reference; the base is parsed only when a rebase runs. After a
+        publish the holder stands on what it wrote, so a later move by the other writer is carried on the next save."""
         self._seed()
         g1 = self._nid(1)
         a = jd.load_goals(SID)
